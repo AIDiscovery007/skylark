@@ -1,0 +1,21 @@
+{
+	"extends": "./tsconfig.base.json",
+	"compilerOptions": {
+		"noEmit": true,
+		"baseUrl": ".",
+		"target": "ES2024",
+		"erasableSyntaxOnly": false,
+		"lib": ["ES2024", "DOM", "DOM.Iterable"],
+		"types": ["node"]
+	},
+	"include": [
+		"electron.vite.config.ts",
+		"vitest.config.ts",
+		"src/main/**/*.ts",
+		"src/preload/**/*.ts",
+		"src/shared/**/*.ts",
+		"test/main/**/*.ts",
+		"test/preload/**/*.ts"
+	],
+	"exclude": ["node_modules", "out", "dist"]
+}

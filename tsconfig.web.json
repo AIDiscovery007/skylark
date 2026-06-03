@@ -1,0 +1,26 @@
+{
+	"extends": "./tsconfig.base.json",
+	"compilerOptions": {
+		"noEmit": true,
+		"baseUrl": ".",
+		"erasableSyntaxOnly": false,
+		"module": "ESNext",
+		"moduleResolution": "Bundler",
+		"lib": ["ES2022", "DOM", "DOM.Iterable"],
+		"jsx": "react-jsx",
+		"types": ["node", "vite/client"],
+		"paths": {
+			"@/*": ["./src/renderer/*"],
+			"@renderer/*": ["./src/renderer/*"],
+			"@shared/*": ["./src/shared/*"]
+		}
+	},
+	"include": [
+		"src/renderer/**/*.ts",
+		"src/renderer/**/*.tsx",
+		"src/shared/**/*.ts",
+		"test/renderer/**/*.ts",
+		"test/renderer/**/*.tsx"
+	],
+	"exclude": ["node_modules", "out", "dist"]
+}
