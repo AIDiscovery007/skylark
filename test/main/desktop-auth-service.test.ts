@@ -1,10 +1,10 @@
 import type { OAuthCredentials, OAuthProviderInterface } from "@earendil-works/pi-ai";
-import { registerOAuthProvider, resetOAuthProviders } from "@earendil-works/pi-ai/oauth";
 import { type AuthCredential, AuthStorage } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DesktopAuthService } from "../../src/main/auth/desktop-auth-service.ts";
 import type { DesktopProviderKeysStore } from "../../src/main/storage/provider-keys-store.ts";
 import type { DesktopOAuthLoginEvent } from "../../src/shared/types.ts";
+import { registerOAuthProvider, resetOAuthProviders } from "../support/pi-provider-test-registry.ts";
 
 type AuthStorageData = Record<string, AuthCredential>;
 

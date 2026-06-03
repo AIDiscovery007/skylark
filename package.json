@@ -13,9 +13,16 @@
 		"clear:sessions": "node scripts/clear-session-history.mjs",
 		"dev": "electron-vite dev",
 		"build": "electron-vite build && shx chmod +x out/main/workspace-runtime-cli.js",
-		"dist:mac:unsigned": "npm run build && electron-builder --config electron-builder.config.cjs --mac --arm64 --publish never",
-		"check": "biome check --write --error-on-warnings src test Skylark-release.json electron.vite.config.ts electron-builder.config.cjs vitest.config.ts tsconfig.json tsconfig.base.json tsconfig.node.json tsconfig.web.json package.json && tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
-		"test": "vitest --run"
+		"dist:mac:unsigned": "npm run clean && npm run build && electron-builder --config electron-builder.config.cjs --mac --arm64 --publish never",
+		"check:deps": "node scripts/check-dependency-specifiers.mjs",
+		"check:boundaries": "node scripts/check-standalone-boundaries.mjs",
+		"check:imports": "node scripts/check-ts-relative-imports.mjs",
+		"check": "npm run check:deps && npm run check:boundaries && npm run check:imports && biome check --write --error-on-warnings src test Skylark-release.json electron.vite.config.ts electron-builder.config.cjs vitest.config.ts tsconfig.json tsconfig.base.json tsconfig.node.json tsconfig.web.json package.json && tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
+		"test:unit": "vitest --run --no-file-parallelism test/main test/renderer test/shared test/preload",
+		"test:e2e": "vitest --run --no-file-parallelism test/e2e",
+		"test": "npm run test:unit && npm run test:e2e",
+		"precommit": "node scripts/check-lockfile-commit.mjs && npm run check && npm run test:unit",
+		"prepare": "husky"
 	},
 	"dependencies": {
 		"@earendil-works/pi-agent-core": "0.78.0",
@@ -61,6 +68,7 @@
 		"electron": "42.2.0",
 		"electron-builder": "26.8.1",
 		"electron-vite": "3.1.0",
+		"husky": "9.1.7",
 		"jsdom": "29.0.2",
 		"shx": "0.4.0",
 		"tailwindcss": "4.2.2",

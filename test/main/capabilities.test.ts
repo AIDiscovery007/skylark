@@ -9,12 +9,12 @@ import {
 	fauxAssistantMessage,
 	fauxText,
 	fauxToolCall,
-	registerFauxProvider,
 } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { DesktopMcpManager } from "../../src/main/mcp/mcp-manager.ts";
 import { DesktopMcpStore } from "../../src/main/mcp/mcp-store.ts";
 import { createDesktopAgentRuntime } from "../../src/main/runtime/create-runtime.ts";
+import { registerFauxProvider } from "../support/pi-provider-test-registry.ts";
 
 const require = createRequire(import.meta.url);
 const registrations: FauxProviderRegistration[] = [];
@@ -236,13 +236,12 @@ describe("desktop capabilities", () => {
 		await runtime.prompt("/skill:desktop-review check the capability surface");
 		await runtime.waitForIdle();
 
-		expect(observedPrompts[0]).toBe("summarize MCP setup");
-		expect(observedSystemPrompts[0]).toContain("Brief: summarize MCP setup");
-		expect(observedPrompts[1]).toBe("check the capability surface");
-		expect(observedPrompts[1]).not.toContain("Use this skill to review capability work.");
-		expect(observedSystemPrompts[1]).toContain("<selected_skills>");
-		expect(observedSystemPrompts[1]).toContain("<name>desktop-review</name>");
-		expect(observedSystemPrompts[1]).toContain("Use the read tool on the listed location");
+		expect(observedPrompts[0]).toBe("Brief: summarize MCP setup");
+		expect(observedSystemPrompts[0]).not.toContain("Brief: summarize MCP setup");
+		expect(observedPrompts[1]).toContain('<skill name="desktop-review"');
+		expect(observedPrompts[1]).toContain("Use this skill to review capability work.");
+		expect(observedPrompts[1]).toContain("check the capability surface");
+		expect(observedSystemPrompts[1]).not.toContain("<selected_skills>");
 		expect(observedSystemPrompts[1]).not.toContain("Use load_skill to load a selected skill body");
 	});
 

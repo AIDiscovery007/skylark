@@ -58,7 +58,7 @@ export const DESKTOP_BASELINE_TOOL_NAMES = [...DEFAULT_DESKTOP_TOOL_NAMES, ...DE
 
 const DEFAULT_PROVIDER_TRANSPORT: Transport = "auto";
 const DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS = 45_000;
-const DESKTOP_READ_EXACT_OUTPUT_GUIDELINES = [
+export const DESKTOP_READ_EXACT_OUTPUT_GUIDELINES = [
 	"When the user asks for local file content only, use read and return exactly the local file text with no extra commentary.",
 	"Do not refuse to quote local workspace file content that the user explicitly asked to read.",
 ] as const;
@@ -80,7 +80,7 @@ const PLAN_MODE_BLOCKED_TOOL_NAMES = new Set([
 	"configure_mcp_server",
 ]);
 
-const PLAN_MODE_PROMPT_GUIDELINES = [
+export const PLAN_MODE_PROMPT_GUIDELINES = [
 	"Plan mode is active for this session.",
 	"Plan mode is a safe conversation, exploration, and planning mode; it does not require every reply to be a plan.",
 	"Reply normally to greetings, casual conversation, conceptual questions, status checks, and discussion that does not ask for a concrete work plan.",
@@ -95,7 +95,7 @@ const PLAN_MODE_PROMPT_GUIDELINES = [
 	"When producing a proposed plan, the <proposed_plan> block must contain Markdown with a title, Summary, Key Changes, Test Plan, and Assumptions when relevant.",
 ];
 
-const EXECUTE_MODE_PROMPT_GUIDELINES = [
+export const EXECUTE_MODE_PROMPT_GUIDELINES = [
 	"Execute mode is active for this session. You may use the available tools to implement, verify, and report the requested change.",
 	"Before finalizing, compare the user's core requested actions with what actually happened; if a requested action was not completed, say why instead of presenting a draft as completed work.",
 	"For project surveys, summaries, context files, or documentation drafts, start with a bounded survey of top-level structure, key manifests, README/context files, and essential config. Do not perform unbounded recursive scans unless the user asks for exhaustive analysis.",
@@ -958,8 +958,24 @@ function createSubagentToolDefinition(options: CreateSubagentToolDefinitionOptio
 					customTools: createSubagentChildToolDefinitions(options.cwd, parentSessionId),
 				});
 				childSession = childSessionResult.session;
-				childSession.setActiveToolsByName([...SUBAGENT_CHILD_TOOL_NAMES]);
-				unsubscribe = childSession.agent.subscribe((event) => {
+				const activeChildSession = childSession;
+				activeChildSession.setActiveToolsByName([...SUBAGENT_CHILD_TOOL_NAMES]);
+				const previousPrepareNextTurn = activeChildSession.agent.prepareNextTurn;
+				activeChildSession.agent.prepareNextTurn = async (signal) => {
+					const nextTurnSnapshot = await previousPrepareNextTurn?.(signal);
+					if (!limitReached) {
+						return nextTurnSnapshot;
+					}
+					return {
+						...nextTurnSnapshot,
+						context: {
+							systemPrompt: nextTurnSnapshot?.context?.systemPrompt ?? activeChildSession.state.systemPrompt,
+							messages: nextTurnSnapshot?.context?.messages ?? [...activeChildSession.state.messages],
+							tools: [],
+						},
+					};
+				};
+				unsubscribe = activeChildSession.agent.subscribe((event) => {
 					options.publishSubagentEvent?.({
 						parentSessionId,
 						subagentId,

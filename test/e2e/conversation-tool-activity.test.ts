@@ -1,13 +1,7 @@
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-	type FauxProviderRegistration,
-	fauxAssistantMessage,
-	fauxText,
-	fauxToolCall,
-	registerFauxProvider,
-} from "@earendil-works/pi-ai";
+import { type FauxProviderRegistration, fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -18,6 +12,7 @@ import { DESKTOP_BASELINE_TOOL_NAMES } from "../../src/main/runtime/mode-aware-r
 import { MessageList } from "../../src/renderer/components/chat/MessageList.tsx";
 import { INITIAL_AGENT_RENDERER_STATE } from "../../src/renderer/lib/conversation-timeline-projection.ts";
 import { agentStore } from "../../src/renderer/stores/agent-store.ts";
+import { registerFauxProvider } from "../support/pi-provider-test-registry.ts";
 
 const registrations: FauxProviderRegistration[] = [];
 
@@ -485,15 +480,20 @@ describe("desktop-ai-agent conversation flow", () => {
 		}
 	});
 
-	it("answers exact local read requests without a model continuation", async () => {
+	it("answers exact local read requests through the read tool", async () => {
 		const workspaceDir = await mkdtemp(join(tmpdir(), "desktop-agent-exact-read-"));
 		await writeFile(join(workspaceDir, "REAL_TEST_SUMMARY.md"), "first line\nsecond line\n", "utf-8");
 
 		const faux = createFauxRegistration();
 		faux.setResponses([
-			() => {
-				throw new Error("provider should not be called for deterministic exact local reads");
-			},
+			fauxAssistantMessage(
+				[
+					fauxText("Reading the file first."),
+					fauxToolCall("read", { path: "REAL_TEST_SUMMARY.md" }, { id: "exact-read-1" }),
+				],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("first line"),
 		]);
 
 		const host = new DesktopRuntimeHost(() =>
@@ -524,7 +524,7 @@ describe("desktop-ai-agent conversation flow", () => {
 
 			const state = agentStore.getState();
 
-			expect(faux.state.callCount).toBe(0);
+			expect(faux.state.callCount).toBe(2);
 			expect(state.toolCalls[0]?.toolName).toBe("read");
 			expect(state.messages.at(-1)?.content).toEqual(
 				expect.arrayContaining([expect.objectContaining({ type: "text", text: "first line" })]),

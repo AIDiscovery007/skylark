@@ -79,6 +79,9 @@ import {
 	createModeAwareRuntimePolicy,
 	DESKTOP_BASELINE_TOOL_NAMES,
 	DESKTOP_CREATE_EVENTS_TOOL_NAME,
+	DESKTOP_READ_EXACT_OUTPUT_GUIDELINES,
+	EXECUTE_MODE_PROMPT_GUIDELINES,
+	PLAN_MODE_PROMPT_GUIDELINES,
 } from "./mode-aware-runtime-policy.ts";
 import type {
 	CoreAgentSessionEvent,
@@ -144,6 +147,43 @@ const DESKTOP_COMPLETION_FEEDBACK_ACTION_TOOL_NAMES = new Set([
 ]);
 const DESKTOP_PROMPT_ATTACHMENTS_METADATA_KEY = "desktopPromptAttachments";
 const DESKTOP_PROMPT_VISIBLE_TEXT_METADATA_KEY = "desktopPromptVisibleText";
+const DESKTOP_MODE_GUIDELINES_START = "<skylark_mode_guidelines>";
+const DESKTOP_MODE_GUIDELINES_END = "</skylark_mode_guidelines>";
+
+function installDesktopProviderRequestDefaults(session: AgentSession): void {
+	const streamFn = session.agent.streamFn;
+	session.agent.streamFn = (model, context, options) =>
+		streamFn(model, context, {
+			...options,
+			timeoutMs: options?.timeoutMs ?? DESKTOP_PROVIDER_REQUEST_TIMEOUT_MS,
+		});
+}
+
+function removeDesktopModeGuidelines(systemPrompt: string): string {
+	const startIndex = systemPrompt.indexOf(DESKTOP_MODE_GUIDELINES_START);
+	if (startIndex < 0) {
+		return systemPrompt;
+	}
+	const endIndex = systemPrompt.indexOf(DESKTOP_MODE_GUIDELINES_END, startIndex);
+	if (endIndex < 0) {
+		return systemPrompt.slice(0, startIndex).trimEnd();
+	}
+	return `${systemPrompt.slice(0, startIndex)}${systemPrompt.slice(endIndex + DESKTOP_MODE_GUIDELINES_END.length)}`.trimEnd();
+}
+
+function applyDesktopModeGuidelines(session: AgentSession, agentMode: DesktopAgentMode): void {
+	const modeGuidelines = agentMode === "plan" ? PLAN_MODE_PROMPT_GUIDELINES : EXECUTE_MODE_PROMPT_GUIDELINES;
+	const guidelines = [...DESKTOP_READ_EXACT_OUTPUT_GUIDELINES, ...modeGuidelines];
+	const section = [
+		DESKTOP_MODE_GUIDELINES_START,
+		"Skylark mode and tool guidelines:",
+		...guidelines.map((guideline) => `- ${guideline}`),
+		DESKTOP_MODE_GUIDELINES_END,
+	].join("\n");
+	const systemPrompt = `${removeDesktopModeGuidelines(session.state.systemPrompt)}\n\n${section}`;
+	session.state.systemPrompt = systemPrompt;
+	(session as unknown as { _baseSystemPrompt?: string })._baseSystemPrompt = systemPrompt;
+}
 
 const DESKTOP_MODEL_PREFERENCE: KnownProvider[] = [
 	"anthropic",
@@ -598,6 +638,7 @@ class LocalDesktopRuntime implements DesktopAgentRuntime {
 	private readonly capabilityTools: ToolDefinition[];
 	private completedActionToolInCurrentTurn = false;
 	private installedToolGuard = false;
+	private lastCompactionResult: CompactionResult | undefined;
 	private runtimePolicy: ReturnType<typeof createModeAwareRuntimePolicy> | undefined;
 	private _agentMode: DesktopAgentMode;
 
@@ -607,7 +648,7 @@ class LocalDesktopRuntime implements DesktopAgentRuntime {
 		private readonly mcpManager: DesktopMcpManager,
 		public readonly diagnostics: readonly DesktopAgentDiagnostic[],
 		agentMode: DesktopAgentMode = "execute",
-		private _taskProgress: DesktopTaskProgress | undefined = undefined,
+		private readonly taskProgressRef: { current: DesktopTaskProgress | undefined } = { current: undefined },
 		private readonly desktopSessionId: string | undefined = undefined,
 		private readonly ownsMcpManager = false,
 		private readonly agentDir = getAgentDir(),
@@ -635,7 +676,7 @@ class LocalDesktopRuntime implements DesktopAgentRuntime {
 	}
 
 	get taskProgress(): DesktopTaskProgress | undefined {
-		return this._taskProgress;
+		return this.taskProgressRef.current;
 	}
 
 	setAgentMode(agentMode: DesktopAgentMode): void {
@@ -687,12 +728,24 @@ class LocalDesktopRuntime implements DesktopAgentRuntime {
 					: {}),
 				source: "interactive",
 			});
+			if (attachmentMetadata.length > 0) {
+				this.attachDesktopPromptMetadata(visibleText, attachmentMetadata);
+			}
 		};
 		return runPrompt();
 	}
 
-	compact(customInstructions?: string): Promise<CompactionResult> {
-		return this.session.compact(customInstructions);
+	async compact(customInstructions?: string): Promise<CompactionResult> {
+		try {
+			const result = await this.session.compact(customInstructions);
+			this.lastCompactionResult = result;
+			return result;
+		} catch (error) {
+			if (error instanceof Error && error.message === "Already compacted" && this.lastCompactionResult) {
+				return this.lastCompactionResult;
+			}
+			throw error;
+		}
 	}
 
 	abort(): void {
@@ -735,6 +788,25 @@ class LocalDesktopRuntime implements DesktopAgentRuntime {
 		if (event.type === "agent_end") {
 			this.completedActionToolInCurrentTurn = false;
 		}
+	}
+
+	private attachDesktopPromptMetadata(
+		visibleText: string,
+		attachmentMetadata: DesktopPromptAttachmentDisplay[],
+	): void {
+		const userMessage = [...this.session.state.messages].reverse().find((message) => message.role === "user");
+		if (!userMessage) {
+			return;
+		}
+		const metadataContainer = userMessage as unknown as { metadata?: { custom?: Record<string, unknown> } };
+		metadataContainer.metadata = {
+			...metadataContainer.metadata,
+			custom: {
+				...metadataContainer.metadata?.custom,
+				[DESKTOP_PROMPT_VISIBLE_TEXT_METADATA_KEY]: visibleText,
+				[DESKTOP_PROMPT_ATTACHMENTS_METADATA_KEY]: attachmentMetadata,
+			},
+		};
 	}
 
 	async dispose(): Promise<void> {
@@ -855,7 +927,7 @@ class LocalDesktopRuntime implements DesktopAgentRuntime {
 				createEvents: this.createEvents,
 				subagentSessionsDir: this.subagentSessionsDir,
 				updateTaskProgress: (taskProgress) => {
-					this._taskProgress = taskProgress;
+					this.taskProgressRef.current = taskProgress;
 				},
 			});
 		}
@@ -916,6 +988,22 @@ class LocalDesktopRuntime implements DesktopAgentRuntime {
 		this.refreshCustomTools();
 	}
 
+	private updateRegisteredCustomTools(
+		builtInTools: ToolDefinition[],
+		capabilityTools: ToolDefinition[],
+		mcpTools: ToolDefinition[],
+	): void {
+		const sessionInternals = this.session as unknown as {
+			_customTools?: ToolDefinition[];
+			_refreshToolRegistry?: (options?: { activeToolNames?: string[]; includeAllExtensionTools?: boolean }) => void;
+		};
+		sessionInternals._customTools = [...builtInTools, ...capabilityTools, ...mcpTools];
+		sessionInternals._refreshToolRegistry?.({
+			activeToolNames: this.session.getActiveToolNames(),
+			includeAllExtensionTools: true,
+		});
+	}
+
 	private refreshCustomTools(): void {
 		const runtimePolicy = this.getRuntimePolicy();
 		const modeAwareBuiltInTools = runtimePolicy.builtInTools;
@@ -924,6 +1012,7 @@ class LocalDesktopRuntime implements DesktopAgentRuntime {
 				? this.mcpManager.getToolDefinitions({ approvalRequester: undefined })
 				: this.mcpManager.getToolDefinitions();
 		const capabilityTools = this._agentMode === "execute" ? this.capabilityTools : [];
+		this.updateRegisteredCustomTools(modeAwareBuiltInTools, capabilityTools, mcpTools);
 		this.session.setActiveToolsByName(
 			runtimePolicy.resolveRefreshedActiveToolNames({
 				builtInToolNames: modeAwareBuiltInTools.map((tool) => tool.name),
@@ -931,6 +1020,7 @@ class LocalDesktopRuntime implements DesktopAgentRuntime {
 				mcpToolNames: mcpTools.map((tool) => tool.name),
 			}),
 		);
+		applyDesktopModeGuidelines(this.session, this._agentMode);
 	}
 }
 
@@ -1022,7 +1112,7 @@ export async function createDesktopAgentRuntime(
 	const mcpManager = options.mcpManager ?? createFallbackMcpManager(options.approvalRequester);
 	await mcpManager.initialize();
 	const agentMode = resolveDesktopAgentMode(options.agentMode);
-	let taskProgress = resolveDesktopTaskProgress(options.taskProgress);
+	const taskProgressRef = { current: resolveDesktopTaskProgress(options.taskProgress) };
 
 	const authStorage = await createDesktopAuthStorage(authLookup, [selected.model.provider], agentDir);
 	const services = await createAgentSessionServices({
@@ -1083,7 +1173,7 @@ export async function createDesktopAgentRuntime(
 		createEvents: options.createEvents,
 		subagentSessionsDir: options.subagentSessionsDir,
 		updateTaskProgress: (nextTaskProgress) => {
-			taskProgress = nextTaskProgress;
+			taskProgressRef.current = nextTaskProgress;
 		},
 	});
 	const sessionResult = await createAgentSessionFromServices({
@@ -1105,6 +1195,8 @@ export async function createDesktopAgentRuntime(
 			runtimePolicy.resolveInitialActiveToolNames(sessionResult.session.getActiveToolNames()),
 		);
 	}
+	applyDesktopModeGuidelines(sessionResult.session, agentMode);
+	installDesktopProviderRequestDefaults(sessionResult.session);
 	const runtime = new LocalDesktopRuntime(
 		cwd,
 		sessionResult.session,
@@ -1114,7 +1206,7 @@ export async function createDesktopAgentRuntime(
 			...services.diagnostics.map((diagnostic) => ({ type: diagnostic.type, message: diagnostic.message })),
 		],
 		agentMode,
-		taskProgress,
+		taskProgressRef,
 		options.sessionId,
 		ownsMcpManager,
 		agentDir,

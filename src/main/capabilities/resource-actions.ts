@@ -455,6 +455,14 @@ export async function createCapabilityCatalog(
 			description: "Manually compact the session context",
 			source: "builtin",
 		},
+		...skillsResult.skills.map(
+			(skill): DesktopSlashCommandSummary => ({
+				name: `skill:${skill.name}`,
+				description: skill.description,
+				source: "skill",
+				sourcePath: skill.filePath,
+			}),
+		),
 		...promptsResult.prompts.map(
 			(prompt: PromptTemplate): DesktopSlashCommandSummary => ({
 				name: prompt.name,

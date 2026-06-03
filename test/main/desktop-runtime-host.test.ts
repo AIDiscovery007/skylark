@@ -3,13 +3,7 @@ import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentState } from "@earendil-works/pi-agent-core";
-import {
-	type FauxProviderRegistration,
-	fauxAssistantMessage,
-	fauxText,
-	type Model,
-	registerFauxProvider,
-} from "@earendil-works/pi-ai";
+import { type FauxProviderRegistration, fauxAssistantMessage, fauxText, type Model } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CreateDesktopAgentRuntimeOptions } from "../../src/main/runtime/create-runtime.ts";
 import { createDesktopAgentRuntime } from "../../src/main/runtime/create-runtime.ts";
@@ -35,6 +29,7 @@ import type {
 	DesktopTaskProgress,
 } from "../../src/shared/types.ts";
 import { DEFAULT_DESKTOP_COMPACT_INSTRUCTION, DESKTOP_TASK_PROGRESS_TOOL_NAME } from "../../src/shared/types.ts";
+import { registerFauxProvider } from "../support/pi-provider-test-registry.ts";
 
 type MutableFakeAgentState = Omit<
 	AgentState,

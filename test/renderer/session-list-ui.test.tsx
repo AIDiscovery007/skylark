@@ -635,7 +635,12 @@ describe("SessionList UI", () => {
 				onSelectProject={async () => undefined}
 				onSelectSession={async () => undefined}
 				projects={[
-					createProject("project-1", "skylark", 0, "/Users/qiaochao/projects/skylark"),
+					createProject(
+						"project-1",
+						"desktop-ai-agent",
+						0,
+						"/Users/qiaochao/projects/skylark/packages/desktop-ai-agent",
+					),
 					createProject("project-2", "desktop-ai-agent", 0, "/Users/qiaochao/Downloads/desktop-ai-agent"),
 				]}
 				sessionsByProjectId={{ "project-1": [], "project-2": [] }}
@@ -645,7 +650,7 @@ describe("SessionList UI", () => {
 		const packageProject = screen.getByRole("button", { name: "desktop-ai-agent · packages" });
 		const downloadsProject = screen.getByRole("button", { name: "desktop-ai-agent · Downloads" });
 
-		expect(packageProject.getAttribute("title")).toBe("/Users/qiaochao/projects/skylark");
+		expect(packageProject.getAttribute("title")).toBe("/Users/qiaochao/projects/skylark/packages/desktop-ai-agent");
 		expect(downloadsProject.getAttribute("title")).toBe("/Users/qiaochao/Downloads/desktop-ai-agent");
 	});
 

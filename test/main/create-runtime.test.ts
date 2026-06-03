@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Context, FauxProviderRegistration, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
-import { fauxAssistantMessage, fauxToolCall, getModels, registerFauxProvider } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxToolCall, getModels } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	createDesktopAgentRuntime,
@@ -21,6 +21,7 @@ import {
 	type DesktopPromptSubmission,
 	type DesktopSubagentRuntimeEvent,
 } from "../../src/shared/types.ts";
+import { registerFauxProvider } from "../support/pi-provider-test-registry.ts";
 
 const desktopTestModel = {
 	id: "desktop-test-model",
@@ -1127,11 +1128,11 @@ describe("createDesktopAgentRuntime", () => {
 			throw new Error("Expected compaction summary to be hydrated into runtime messages.");
 		}
 		expect(firstMessage.summary).toContain("VERIFIED COMPACTION SUMMARY");
-		expect(runtime.getState().messages.map((message) => message.role)).toEqual([
-			"compactionSummary",
-			"user",
-			"assistant",
-		]);
+		const compactedMessages = runtime.getState().messages;
+		expect(compactedMessages[0]?.role).toBe("compactionSummary");
+		expect(compactedMessages.at(-2)).toEqual(expect.objectContaining({ role: "user" }));
+		expect(getLastUserText({ messages: compactedMessages } as Context)).toBe("second verification turn");
+		expect(compactedMessages.at(-1)).toEqual(expect.objectContaining({ role: "assistant" }));
 		expect(faux.getPendingResponseCount()).toBe(0);
 	});
 

@@ -33,19 +33,18 @@ describe("createDesktopStoragePaths", () => {
 		expect(paths.sessionsDir).toBe(join("/tmp/skylark-home", "sessions"));
 	});
 
-	it("keeps packaged release state inside Electron userData for a fresh installed app", () => {
+	it("keeps packaged release agent state in the visible Skylark home", () => {
 		const paths = createDesktopMainStoragePaths("/Users/test/Library/Application Support/Skylark", {
 			homeDir: "/Users/test",
 			isPackaged: true,
 		});
 
-		expect(paths.agentRootDir).toBe(join("/Users/test/Library/Application Support/Skylark", "desktop-agent"));
+		expect(paths.agentRootDir).toBe(join("/Users/test", ".skylark"));
 		expect(paths.rootDir).toBe(paths.agentRootDir);
-		expect(paths.projectIndexFilePath).toBe(
-			join("/Users/test/Library/Application Support/Skylark", "desktop-agent", "projects", "index.json"),
-		);
-		expect(paths.sessionIndexFilePath).toBe(
-			join("/Users/test/Library/Application Support/Skylark", "desktop-agent", "session_index.jsonl"),
+		expect(paths.projectIndexFilePath).toBe(join("/Users/test", ".skylark", "projects", "index.json"));
+		expect(paths.sessionIndexFilePath).toBe(join("/Users/test", ".skylark", "session_index.jsonl"));
+		expect(paths.platformStateFilePath).toBe(
+			join("/Users/test/Library/Application Support/Skylark", "desktop-agent", "platform-state.json"),
 		);
 	});
 

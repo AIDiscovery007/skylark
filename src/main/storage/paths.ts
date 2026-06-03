@@ -78,8 +78,5 @@ export function createDesktopMainStoragePaths(
 	userDataPath: string,
 	options: CreateDesktopMainStoragePathsOptions,
 ): DesktopStoragePaths {
-	return createDesktopStoragePaths(
-		userDataPath,
-		options.isPackaged ? { agentRootDir: join(userDataPath, "desktop-agent") } : { homeDir: options.homeDir },
-	);
+	return createDesktopStoragePaths(userDataPath, { homeDir: options.homeDir });
 }
