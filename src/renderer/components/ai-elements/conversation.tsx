@@ -39,6 +39,7 @@ function assignRef<T>(ref: Ref<T> | undefined, value: T | null): void {
 export type ConversationContentProps = ComponentProps<"div"> & {
 	scrollClassName?: string;
 	scrollProps?: ConversationViewportProps;
+	stickToBottom?: boolean;
 };
 
 export const ConversationContent = ({
@@ -46,12 +47,14 @@ export const ConversationContent = ({
 	children,
 	scrollClassName,
 	scrollProps,
+	stickToBottom = true,
 	...props
 }: ConversationContentProps) => (
 	<ConversationContentInner
 		className={className}
 		scrollClassName={scrollClassName}
 		scrollProps={scrollProps}
+		stickToBottom={stickToBottom}
 		{...props}
 	>
 		{children}
@@ -63,6 +66,7 @@ const ConversationContentInner = ({
 	children,
 	scrollClassName,
 	scrollProps,
+	stickToBottom = true,
 	...props
 }: ConversationContentProps) => {
 	const context = useStickToBottomContext();
@@ -70,10 +74,12 @@ const ConversationContentInner = ({
 
 	const setViewportRef = useCallback(
 		(element: HTMLDivElement | null) => {
-			context.scrollRef(element);
+			if (stickToBottom) {
+				context.scrollRef(element);
+			}
 			assignRef(viewportRef, element);
 		},
-		[context, viewportRef],
+		[context, stickToBottom, viewportRef],
 	);
 
 	return (
@@ -87,7 +93,11 @@ const ConversationContentInner = ({
 			}}
 			{...viewportProps}
 		>
-			<div className={cn("flex flex-col gap-8 p-4", className)} ref={context.contentRef} {...props}>
+			<div
+				className={cn("flex flex-col gap-8 p-4", className)}
+				ref={stickToBottom ? context.contentRef : undefined}
+				{...props}
+			>
 				{children}
 			</div>
 		</div>

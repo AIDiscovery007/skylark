@@ -765,10 +765,22 @@ function usePinnedAssistantViewportAutoScroll({
 			shouldAutoScrollRef.current = isAssistantViewportPinnedToBottom(viewportElement);
 		}
 
+		function handleWheel(event: WheelEvent): void {
+			if (event.deltaY >= 0) {
+				return;
+			}
+			shouldAutoScrollRef.current = false;
+			cancelScheduledScroll();
+		}
+
 		handleScroll();
 		viewportElement.addEventListener("scroll", handleScroll, { passive: true });
-		return () => viewportElement.removeEventListener("scroll", handleScroll);
-	}, [enabled, viewportRef]);
+		viewportElement.addEventListener("wheel", handleWheel, { passive: true });
+		return () => {
+			viewportElement.removeEventListener("scroll", handleScroll);
+			viewportElement.removeEventListener("wheel", handleWheel);
+		};
+	}, [cancelScheduledScroll, enabled, viewportRef]);
 
 	useLayoutEffect(() => {
 		if (!enabled) {
@@ -1066,43 +1078,90 @@ function formatAttachmentSize(size: number): string {
 	return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function formatAttachmentType(attachment: DesktopPromptAttachmentDisplay | DesktopPreparedPromptAttachment): string {
+	if (attachment.kind === "image") {
+		return "Image";
+	}
+	if (attachment.mimeType.includes("spreadsheet")) {
+		return "Spreadsheet";
+	}
+	if (attachment.mimeType.includes("wordprocessingml")) {
+		return "Document";
+	}
+	if (attachment.mimeType.startsWith("text/") || attachment.mimeType.includes("json")) {
+		return "Text";
+	}
+	return "File";
+}
+
+function formatAttachmentSecondaryText(
+	attachment: DesktopPromptAttachmentDisplay | DesktopPreparedPromptAttachment,
+): string {
+	const attachmentType = formatAttachmentType(attachment);
+	return attachment.size > 0 ? `${attachmentType} / ${formatAttachmentSize(attachment.size)}` : attachmentType;
+}
+
 function PromptAttachmentChips({
 	attachments,
+	compact = false,
 	onRemove,
 }: {
 	attachments: (DesktopPromptAttachmentDisplay | DesktopPreparedPromptAttachment)[];
+	compact?: boolean;
 	onRemove?: (attachment: DesktopPromptAttachmentDisplay | DesktopPreparedPromptAttachment) => void;
 }) {
 	if (attachments.length === 0) {
 		return null;
 	}
 	return (
-		<Attachments className="min-w-0" variant="inline">
+		<Attachments
+			className={cn("min-w-0", compact && "w-full flex-col items-stretch gap-1.5")}
+			variant={compact ? "list" : "inline"}
+		>
 			{attachments.map((attachment) => {
 				const filePart = toPromptAttachmentFilePart(attachment);
 				return (
 					<Attachment
 						aria-label={attachment.name}
-						className="max-w-full border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] text-[13px] leading-none shadow-[var(--shadow-minimal)]"
+						className={cn(
+							"border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] shadow-[var(--shadow-minimal)]",
+							compact
+								? "min-h-9 w-fit max-w-full gap-2 rounded-md px-2.5 py-1.5 text-[12px] leading-none"
+								: "max-w-full text-[13px] leading-none",
+						)}
 						data={filePart}
 						key={attachment.id}
 						onRemove={onRemove ? () => onRemove(attachment) : undefined}
 						title={`${attachment.name} ${formatAttachmentSize(attachment.size)}`}
 					>
 						<AttachmentPreview
+							className={compact ? "size-6 rounded-[6px] bg-[color:var(--surface-2)]" : undefined}
 							fallbackIcon={
 								attachment.kind === "image" ? (
-									<ImageIcon className="size-3.5 text-muted-foreground" />
+									<ImageIcon className={cn("text-muted-foreground", compact ? "size-3.5" : "size-3.5")} />
 								) : (
-									<FileText className="size-3.5 text-muted-foreground" />
+									<FileText className={cn("text-muted-foreground", compact ? "size-3.5" : "size-3.5")} />
 								)
 							}
 						/>
-						<AttachmentInfo />
-						<span className="shrink-0 text-[11px] text-muted-foreground">
-							{formatAttachmentSize(attachment.size)}
-						</span>
-						<AttachmentRemove label={`Remove ${attachment.name}`} />
+						{compact ? (
+							<div className="min-w-0">
+								<span className="block max-w-[260px] truncate font-medium text-[color:var(--text-primary)]">
+									{attachment.name}
+								</span>
+								<span className="block truncate text-[11px] text-muted-foreground">
+									{formatAttachmentSecondaryText(attachment)}
+								</span>
+							</div>
+						) : (
+							<>
+								<AttachmentInfo />
+								<span className="shrink-0 text-[11px] text-muted-foreground">
+									{formatAttachmentSize(attachment.size)}
+								</span>
+								<AttachmentRemove label={`Remove ${attachment.name}`} />
+							</>
+						)}
 					</Attachment>
 				);
 			})}
@@ -1746,7 +1805,7 @@ function UserMessage({ message }: { message: DesktopThreadMessage }) {
 				data-slot="user-message-bubble"
 			>
 				<SelectedCapabilityChips invocations={capabilityInvocations} />
-				<PromptAttachmentChips attachments={promptAttachments} />
+				<PromptAttachmentChips attachments={promptAttachments} compact />
 				{imageParts.map((part, index) => (
 					<UserImagePart image={part.image} key={`${message.id}-image-${index}`} />
 				))}
@@ -2531,6 +2590,13 @@ export function ChatWorkbench({
 	const [selectedPromptAttachments, setSelectedPromptAttachments] = useState<DesktopPreparedPromptAttachment[]>([]);
 	const [attachmentErrors, setAttachmentErrors] = useState<DesktopPromptAttachmentError[]>([]);
 	const [composerInset, setComposerInset] = useState(DEFAULT_COMPOSER_INSET_PX);
+	const previousAttachmentSessionIdRef = useRef<typeof activeAgentSessionId>(undefined);
+	useEffect(() => {
+		if (previousAttachmentSessionIdRef.current === activeAgentSessionId) return;
+		previousAttachmentSessionIdRef.current = activeAgentSessionId;
+		setSelectedPromptAttachments([]);
+		setAttachmentErrors([]);
+	}, [activeAgentSessionId]);
 	const assistantMessages = useMemo(
 		() =>
 			createAssistantUiRuntimeMessages({
@@ -2743,6 +2809,7 @@ export function ChatWorkbench({
 										ref: setThreadViewportRef,
 										style: { paddingBottom: composerInset },
 									}}
+									stickToBottom={false}
 								>
 									{assistantMessages.length === 0 ? (
 										<AssistantEmptyState

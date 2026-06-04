@@ -466,7 +466,7 @@ async function findPreferredDesktopModel(options: {
 		}
 	}
 
-	if (await options.authLookup.getApiKey("kimi-coding")) {
+	if (await options.authLookup.hasAuth("kimi-coding")) {
 		return {
 			diagnostics,
 			model: createKimiCodingModel(configuredModelId ?? "kimi-for-coding"),
@@ -476,9 +476,8 @@ async function findPreferredDesktopModel(options: {
 	const providers = uniqueProviders();
 
 	for (const provider of providers) {
-		const apiKey = await options.authLookup.getApiKey(provider);
 		const model = pickPreferredDesktopModelForProvider(provider, getModels(provider));
-		if (apiKey && model) {
+		if ((await options.authLookup.hasAuth(provider)) && model) {
 			return { diagnostics, model };
 		}
 	}
@@ -516,6 +515,58 @@ async function findPreferredDesktopModel(options: {
 	};
 }
 
+function isSameDesktopModel(left: Model<any>, right: Model<any>): boolean {
+	return (
+		normalizeDesktopProviderIdentifier(left.provider) === normalizeDesktopProviderIdentifier(right.provider) &&
+		left.id === right.id
+	);
+}
+
+async function resolveDesktopRuntimeModel(options: {
+	authLookup: DesktopProviderAuthLookup;
+	model?: Model<any>;
+	settings?: DesktopSettingsData;
+}): Promise<{ diagnostics: DesktopAgentDiagnostic[]; model: Model<any> }> {
+	if (!options.model) {
+		return findPreferredDesktopModel({ authLookup: options.authLookup, settings: options.settings });
+	}
+
+	const model = hydrateDesktopModelMetadata(options.model);
+	const provider = normalizeDesktopProviderIdentifier(model.provider);
+	if (!options.settings?.defaultProvider) {
+		return { diagnostics: [], model };
+	}
+
+	if (await options.authLookup.hasAuth(provider)) {
+		return { diagnostics: [], model };
+	}
+
+	const fallback = await findPreferredDesktopModel({ authLookup: options.authLookup, settings: options.settings });
+	const fallbackProvider = normalizeDesktopProviderIdentifier(fallback.model.provider);
+	if ((await options.authLookup.hasAuth(fallbackProvider)) && !isSameDesktopModel(model, fallback.model)) {
+		return {
+			diagnostics: [
+				{
+					type: "warning",
+					message: `Session provider ${provider} has no usable API key in desktop settings or environment. Falling back to ${fallback.model.provider}/${fallback.model.id}.`,
+				},
+				...fallback.diagnostics,
+			],
+			model: fallback.model,
+		};
+	}
+
+	return {
+		diagnostics: [
+			{
+				type: "warning",
+				message: `Session provider ${provider} has no usable API key in desktop settings or environment. Prompts may fail until credentials are configured.`,
+			},
+		],
+		model,
+	};
+}
+
 function isCoreAgentEvent(event: AgentSessionEvent): event is CoreAgentSessionEvent {
 	return (
 		event.type === "agent_start" ||
@@ -541,7 +592,7 @@ async function createDesktopAuthStorage(
 	agentDir = getAgentDir(),
 ): Promise<AuthStorage> {
 	const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
-	const providers = new Set([...getDesktopCatalogProviders(), ...extraProviders]);
+	const providers = new Set(extraProviders.map((provider) => normalizeDesktopProviderIdentifier(provider)));
 	for (const provider of providers) {
 		if (provider === "openai-codex") {
 			continue;
@@ -708,7 +759,7 @@ class LocalDesktopRuntime implements DesktopAgentRuntime {
 			size: attachment.size,
 		}));
 		const runPrompt = async () => {
-			await this.session.prompt(promptText, {
+			const promptPromise = this.session.prompt(promptText, {
 				...(promptRequest.capabilityInvocations
 					? {
 							capabilitySelections: promptRequest.capabilityInvocations.map((invocation) => ({
@@ -728,8 +779,17 @@ class LocalDesktopRuntime implements DesktopAgentRuntime {
 					: {}),
 				source: "interactive",
 			});
-			if (attachmentMetadata.length > 0) {
-				this.attachDesktopPromptMetadata(visibleText, attachmentMetadata);
+			const promptMetadataPromise =
+				attachmentMetadata.length > 0
+					? this.attachDesktopPromptMetadataWhenAvailable(visibleText, attachmentMetadata)
+					: undefined;
+			try {
+				await promptPromise;
+			} finally {
+				await promptMetadataPromise;
+				if (attachmentMetadata.length > 0) {
+					this.attachDesktopPromptMetadata(visibleText, attachmentMetadata);
+				}
 			}
 		};
 		return runPrompt();
@@ -793,10 +853,10 @@ class LocalDesktopRuntime implements DesktopAgentRuntime {
 	private attachDesktopPromptMetadata(
 		visibleText: string,
 		attachmentMetadata: DesktopPromptAttachmentDisplay[],
-	): void {
+	): boolean {
 		const userMessage = [...this.session.state.messages].reverse().find((message) => message.role === "user");
 		if (!userMessage) {
-			return;
+			return false;
 		}
 		const metadataContainer = userMessage as unknown as { metadata?: { custom?: Record<string, unknown> } };
 		metadataContainer.metadata = {
@@ -807,6 +867,19 @@ class LocalDesktopRuntime implements DesktopAgentRuntime {
 				[DESKTOP_PROMPT_ATTACHMENTS_METADATA_KEY]: attachmentMetadata,
 			},
 		};
+		return true;
+	}
+
+	private async attachDesktopPromptMetadataWhenAvailable(
+		visibleText: string,
+		attachmentMetadata: DesktopPromptAttachmentDisplay[],
+	): Promise<void> {
+		for (let attempt = 0; attempt < 50; attempt++) {
+			if (this.attachDesktopPromptMetadata(visibleText, attachmentMetadata)) {
+				return;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
 	}
 
 	async dispose(): Promise<void> {
@@ -1105,9 +1178,8 @@ export async function createDesktopAgentRuntime(
 	const getApiKey = options.getApiKey ?? ((provider: string) => getEnvApiKey(provider));
 	const authLookup = createDesktopProviderAuthLookup({ getApiKey, hasAuth: options.hasAuth });
 	const settings = await options.getSettings?.();
-	const selected = options.model
-		? { diagnostics, model: hydrateDesktopModelMetadata(options.model) }
-		: await findPreferredDesktopModel({ authLookup, settings });
+	const selected = await resolveDesktopRuntimeModel({ authLookup, model: options.model, settings });
+	diagnostics.push(...selected.diagnostics);
 	const ownsMcpManager = !options.mcpManager;
 	const mcpManager = options.mcpManager ?? createFallbackMcpManager(options.approvalRequester);
 	await mcpManager.initialize();

@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { stripPromptFileBlocks } from "../shared/prompt-file-blocks.ts";
 
 export const DEFAULT_SESSION_TITLE = "New Session";
 export const SESSION_TITLE_MAX_CHARS = 10;
@@ -112,7 +113,7 @@ function stripLeadingFiller(value: string): string {
 }
 
 export function deriveFallbackSessionTitleFromText(text: string | undefined): string {
-	const normalized = text?.replace(/\s+/g, " ").trim() ?? "";
+	const normalized = text ? stripPromptFileBlocks(text).replace(/\s+/g, " ").trim() : "";
 	if (!normalized) {
 		return DEFAULT_SESSION_TITLE;
 	}

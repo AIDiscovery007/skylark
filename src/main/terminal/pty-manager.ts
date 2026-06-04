@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { type IDisposable, type IPty, spawn } from "node-pty";
 import type { SerializedTerminalEvent } from "../../shared/serialized-terminal-event.ts";
 import type {
@@ -55,7 +55,27 @@ export function resolvePtySpawnHelperPath(
 		join(packageRoot, "prebuilds", `${platform}-${arch}`, "spawn-helper"),
 	];
 
-	return helperCandidates.find((helperPath) => existsSync(helperPath));
+	for (const helperPath of helperCandidates) {
+		const unpackedHelperPath = resolveAsarUnpackedPath(helperPath);
+		if (unpackedHelperPath && existsSync(unpackedHelperPath)) {
+			return unpackedHelperPath;
+		}
+		if (existsSync(helperPath)) {
+			return helperPath;
+		}
+	}
+
+	return undefined;
+}
+
+function resolveAsarUnpackedPath(filePath: string): string | undefined {
+	const asarPathMarker = `.asar${sep}`;
+	const asarPathIndex = filePath.indexOf(asarPathMarker);
+	if (asarPathIndex === -1) {
+		return undefined;
+	}
+
+	return `${filePath.slice(0, asarPathIndex)}.asar.unpacked${filePath.slice(asarPathIndex + ".asar".length)}`;
 }
 
 export function ensurePtySpawnHelperExecutable(

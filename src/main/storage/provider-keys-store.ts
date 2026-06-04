@@ -32,6 +32,7 @@ export class ElectronSafeStorageAdapter implements DesktopSecretStorage {
 
 export class DesktopProviderKeysStore {
 	private readonly store: JsonFileStore<ProviderKeyMap>;
+	private readonly decryptedValueCache = new Map<string, string>();
 
 	constructor(
 		filePath: string,
@@ -41,17 +42,27 @@ export class DesktopProviderKeysStore {
 	}
 
 	async get(provider: string): Promise<string | undefined> {
+		const canonicalProvider = normalizeDesktopProviderIdentifier(provider);
+		const cachedValue = this.decryptedValueCache.get(canonicalProvider);
+		if (cachedValue !== undefined) {
+			return cachedValue;
+		}
+
 		const keyMap = await this.store.read();
 		const storedValue = this.findStoredProviderValue(keyMap, provider);
 		if (!storedValue) {
+			this.decryptedValueCache.delete(canonicalProvider);
 			return undefined;
 		}
 
 		if (!storedValue.encrypted) {
+			this.decryptedValueCache.set(canonicalProvider, storedValue.value);
 			return storedValue.value;
 		}
 
-		return this.secretStorage.decrypt(storedValue.value);
+		const decryptedValue = this.secretStorage.decrypt(storedValue.value);
+		this.decryptedValueCache.set(canonicalProvider, decryptedValue);
+		return decryptedValue;
 	}
 
 	async set(provider: string, key: string): Promise<void> {
@@ -70,9 +81,11 @@ export class DesktopProviderKeysStore {
 			next[canonicalProvider] = storedValue;
 			return next;
 		});
+		this.decryptedValueCache.set(canonicalProvider, key);
 	}
 
 	async delete(provider: string): Promise<void> {
+		const canonicalProvider = normalizeDesktopProviderIdentifier(provider);
 		await this.store.update((current) => {
 			const next = { ...current };
 			for (const alias of getDesktopProviderAliases(provider)) {
@@ -85,10 +98,15 @@ export class DesktopProviderKeysStore {
 			}
 			return next;
 		});
+		this.decryptedValueCache.delete(canonicalProvider);
+		for (const alias of getDesktopProviderAliases(provider)) {
+			this.decryptedValueCache.delete(normalizeDesktopProviderIdentifier(alias));
+		}
 	}
 
 	async has(provider: string): Promise<boolean> {
-		return (await this.get(provider)) !== undefined;
+		const keyMap = await this.store.read();
+		return this.findStoredProviderValue(keyMap, provider) !== undefined;
 	}
 
 	async list(): Promise<DesktopProviderKeyStatus[]> {

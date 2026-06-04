@@ -91,28 +91,39 @@ export function useAgentStream(activeSessionId?: string): AgentStreamControls {
 	const prompt = useCallback(
 		async (request: DesktopPromptSubmission) => {
 			if (!activeSessionId) {
-				throw new Error("No active session is selected.");
+				const error = new Error("No active session is selected.");
+				setBridgeError(error.message);
+				throw error;
 			}
 
-			if (hasMeasuredFirstPrompt) {
+			const submitPrompt = async () => {
 				await window.desktopAgent.prompt({ sessionId: activeSessionId, ...request });
-				return;
-			}
+			};
 
-			hasMeasuredFirstPrompt = true;
-			markRendererPerformance("renderer:first-prompt:submit:start");
 			try {
-				await window.desktopAgent.prompt({ sessionId: activeSessionId, ...request });
-			} finally {
-				markRendererPerformance("renderer:first-prompt:submit:end");
-				measureRendererPerformance(
-					"renderer first prompt submit",
-					"renderer:first-prompt:submit:start",
-					"renderer:first-prompt:submit:end",
-				);
+				if (hasMeasuredFirstPrompt) {
+					await submitPrompt();
+					return;
+				}
+
+				hasMeasuredFirstPrompt = true;
+				markRendererPerformance("renderer:first-prompt:submit:start");
+				try {
+					await submitPrompt();
+				} finally {
+					markRendererPerformance("renderer:first-prompt:submit:end");
+					measureRendererPerformance(
+						"renderer first prompt submit",
+						"renderer:first-prompt:submit:start",
+						"renderer:first-prompt:submit:end",
+					);
+				}
+			} catch (error: unknown) {
+				setBridgeError(error instanceof Error ? error.message : String(error));
+				throw error;
 			}
 		},
-		[activeSessionId],
+		[activeSessionId, setBridgeError],
 	);
 
 	const abort = useCallback(async () => {

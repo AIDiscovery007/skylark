@@ -1,4 +1,5 @@
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { stripPromptFileBlocks } from "../../shared/prompt-file-blocks.ts";
 import type {
 	DesktopAgentDiagnostic,
 	DesktopAgentModel,
@@ -299,7 +300,7 @@ function getUserMessageText(event: SerializedAgentEvent): string | undefined {
 					.filter((part) => part.type === "text")
 					.map((part) => part.text)
 					.join(" ");
-	const normalizedText = text.trim().replace(/\s+/g, " ");
+	const normalizedText = stripPromptFileBlocks(text).replace(/\s+/g, " ").trim();
 	return normalizedText || undefined;
 }
 

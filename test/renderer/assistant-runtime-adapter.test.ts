@@ -408,6 +408,28 @@ describe("assistant runtime adapter", () => {
 		]);
 	});
 
+	it("strips injected prompt file blocks from user messages before attachment metadata hydrates", () => {
+		const [converted] = createAssistantUiRuntimeMessages({
+			messages: [
+				userMessage('Please inspect this\n\n<file name="/workspace/project/notes.md">\nhidden context\n</file>', 1),
+			],
+			showThinkingBlocks: true,
+		});
+
+		expect(converted.role).toBe("user");
+		expect(getParts(converted)).toEqual([{ type: "text", text: "Please inspect this" }]);
+		expect(converted.metadata?.custom?.[DESKTOP_PROMPT_ATTACHMENTS_METADATA_KEY]).toEqual([
+			{
+				id: "prompt-file-0-notes.md",
+				kind: "text",
+				mimeType: "text/markdown",
+				name: "notes.md",
+				path: "/workspace/project/notes.md",
+				size: 0,
+			},
+		]);
+	});
+
 	it("renders compaction summaries as restrained system notices", () => {
 		const [converted] = createAssistantUiRuntimeMessages({
 			messages: [

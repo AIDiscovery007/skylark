@@ -85,4 +85,12 @@ describe("session title naming", () => {
 		expect(deriveFallbackSessionTitle([], "代码审查")).toBe("代码审查");
 		expect(deriveFallbackSessionTitleFromText("Read package.json in this workspace")).toBe("Read");
 	});
+
+	it("strips prompt file blocks before deriving fallback titles", () => {
+		expect(
+			deriveFallbackSessionTitleFromText(
+				'Summarize this spreadsheet and list its columns.\n\n<file name="/Users/qiaochao/Downloads/笔记列表明细表.xlsx">\nExcel snapshot\n</file>',
+			),
+		).toBe("Summarize");
+	});
 });

@@ -3,7 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IDisposable, IPty } from "node-pty";
 import { describe, expect, it, vi } from "vitest";
-import { DesktopPtyManager, ensurePtySpawnHelperExecutable } from "../../src/main/terminal/pty-manager.ts";
+import {
+	DesktopPtyManager,
+	ensurePtySpawnHelperExecutable,
+	resolvePtySpawnHelperPath,
+} from "../../src/main/terminal/pty-manager.ts";
 import type { SerializedTerminalEvent } from "../../src/shared/serialized-terminal-event.ts";
 
 class FakeDisposable implements IDisposable {
@@ -80,6 +84,27 @@ describe("DesktopPtyManager", () => {
 			expect(statSync(helperPath).mode & 0o111).not.toBe(0);
 		} finally {
 			rmSync(packageRoot, { force: true, recursive: true });
+		}
+	});
+
+	it("chmods the unpacked spawn helper mirror when node-pty resolves from app.asar", () => {
+		const resourcesRoot = mkdtempSync(join(tmpdir(), "desktop-pty-manager-asar-"));
+		const packageRoot = join(resourcesRoot, "app.asar", "node_modules", "node-pty");
+		const helperDir = join(resourcesRoot, "app.asar.unpacked", "node_modules", "node-pty", "build", "Release");
+		const helperPath = join(helperDir, "spawn-helper");
+
+		try {
+			mkdirSync(helperDir, { recursive: true });
+			writeFileSync(helperPath, "#!/bin/sh\n");
+			chmodSync(helperPath, 0o644);
+
+			expect(resolvePtySpawnHelperPath(packageRoot, "darwin", "arm64")).toBe(helperPath);
+
+			ensurePtySpawnHelperExecutable(packageRoot, "darwin", "arm64");
+
+			expect(statSync(helperPath).mode & 0o111).not.toBe(0);
+		} finally {
+			rmSync(resourcesRoot, { force: true, recursive: true });
 		}
 	});
 

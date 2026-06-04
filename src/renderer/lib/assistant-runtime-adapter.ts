@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { stripPromptFileBlocks } from "../../shared/prompt-file-blocks.ts";
 import {
 	DESKTOP_TASK_PROGRESS_TOOL_NAME,
 	type DesktopPromptAttachmentDisplay,
@@ -152,6 +153,20 @@ export const DESKTOP_FILE_REFERENCES_METADATA_KEY = "desktopFileReferences";
 export const DESKTOP_PROPOSED_PLAN_METADATA_KEY = "desktopProposedPlan";
 export const DESKTOP_PROMPT_ATTACHMENTS_METADATA_KEY = "desktopPromptAttachments";
 export const DESKTOP_PROMPT_VISIBLE_TEXT_METADATA_KEY = "desktopPromptVisibleText";
+const PROMPT_FILE_NAME_PATTERN = /<file\b[^>]*\bname=(["'])(.*?)\1[^>]*>/gi;
+const FALLBACK_PROMPT_ATTACHMENT_MIME_TYPES = new Map<string, string>([
+	[".csv", "text/csv"],
+	[".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+	[".gif", "image/gif"],
+	[".jpeg", "image/jpeg"],
+	[".jpg", "image/jpeg"],
+	[".json", "application/json"],
+	[".md", "text/markdown"],
+	[".png", "image/png"],
+	[".txt", "text/plain"],
+	[".webp", "image/webp"],
+	[".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+]);
 export const DESKTOP_COMPACTION_NOTICE_METADATA_KEY = "desktopCompactionNotice";
 
 export interface DesktopRunActivityMetadata {
@@ -306,8 +321,14 @@ export function createAssistantUiRuntimeMessages({
 			flushAssistantRun(false);
 			const customMetadata = getUserCustomMetadata(message);
 			const capabilityInvocations = getUserCapabilityInvocations(message);
+			const promptAttachments = getUserPromptAttachments(customMetadata);
+			const fallbackPromptAttachments =
+				promptAttachments.length === 0 ? createFallbackPromptAttachments(message.content) : [];
 			const metadataCustom = {
 				...customMetadata,
+				...(fallbackPromptAttachments.length > 0
+					? { [DESKTOP_PROMPT_ATTACHMENTS_METADATA_KEY]: fallbackPromptAttachments }
+					: {}),
 				...(capabilityInvocations.length > 0
 					? { [DESKTOP_CAPABILITY_INVOCATIONS_METADATA_KEY]: capabilityInvocations }
 					: {}),
@@ -792,13 +813,19 @@ function convertUserContent(
 	if (visibleText !== undefined) {
 		return visibleText.length > 0 ? [{ type: "text", text: visibleText }] : [];
 	}
-	if (typeof content === "string") return content;
+	if (typeof content === "string") {
+		const safeContent = stripPromptFileBlocks(content);
+		return safeContent === content ? content : safeContent.length > 0 ? [{ type: "text", text: safeContent }] : [];
+	}
 	if (!Array.isArray(content)) return [];
 
 	const parts: ThreadContentPart[] = [];
 	for (const part of content.filter(isUserContentPart)) {
 		if (part.type === "text") {
-			parts.push({ type: "text", text: part.text });
+			const text = stripPromptFileBlocks(part.text);
+			if (text.length > 0) {
+				parts.push({ type: "text", text });
+			}
 		}
 		if (part.type === "image") {
 			const imagePart: ThreadImagePart = {
@@ -809,6 +836,63 @@ function convertUserContent(
 		}
 	}
 	return parts;
+}
+
+function createFallbackPromptAttachments(
+	content: Extract<AgentMessage, { role: "user" }>["content"],
+): DesktopPromptAttachmentDisplay[] {
+	const text = getUserContentText(content);
+	if (!text.includes("<file")) {
+		return [];
+	}
+
+	const attachments: DesktopPromptAttachmentDisplay[] = [];
+	for (const match of text.matchAll(PROMPT_FILE_NAME_PATTERN)) {
+		const pathOrName = match[2]?.trim();
+		if (!pathOrName) {
+			continue;
+		}
+		const name = getDisplayFileName(pathOrName);
+		const mimeType = getFallbackPromptAttachmentMimeType(name);
+		attachments.push({
+			id: `prompt-file-${attachments.length}-${name}`,
+			kind: mimeType.startsWith("image/") ? "image" : "text",
+			name,
+			...(pathOrName.startsWith("/") ? { path: pathOrName } : {}),
+			mimeType,
+			size: 0,
+		});
+	}
+	return attachments;
+}
+
+function getUserContentText(content: Extract<AgentMessage, { role: "user" }>["content"]): string {
+	if (typeof content === "string") {
+		return content;
+	}
+	if (!Array.isArray(content)) {
+		return "";
+	}
+	return content
+		.filter((part) => part.type === "text")
+		.map((part) => part.text)
+		.join("\n");
+}
+
+function getDisplayFileName(pathOrName: string): string {
+	return (
+		pathOrName
+			.split(/[\\/]+/)
+			.filter(Boolean)
+			.at(-1) ?? pathOrName
+	);
+}
+
+function getFallbackPromptAttachmentMimeType(name: string): string {
+	const extensionMatch = /\.[^.]+$/.exec(name.toLowerCase());
+	return extensionMatch
+		? (FALLBACK_PROMPT_ATTACHMENT_MIME_TYPES.get(extensionMatch[0]) ?? "text/plain")
+		: "text/plain";
 }
 
 function getUserCustomMetadata(message: Extract<AgentMessage, { role: "user" }>): Record<string, unknown> {

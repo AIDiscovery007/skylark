@@ -20,22 +20,22 @@ describe("desktop application identity", () => {
 	it("uses Skylark release metadata as the packaged desktop app version source", () => {
 		expect(SKYLARK_RELEASE).toEqual({
 			appId: "com.qiaochao.skylark",
-			buildVersion: "0.2.0",
+			buildVersion: "0.3.0",
 			productName: "Skylark",
-			version: "0.2.0",
+			version: "0.3.0",
 		});
 		expect(DESKTOP_PRODUCT_NAME).toBe("Skylark");
 	});
 
 	it("builds About panel options from the active Electron app version", () => {
-		const app = { getVersion: vi.fn(() => "0.2.0") };
+		const app = { getVersion: vi.fn(() => "0.3.0") };
 
 		expect(buildDesktopAboutPanelOptions(app)).toMatchObject({
 			applicationName: "Skylark",
-			applicationVersion: "0.2.0",
+			applicationVersion: "0.3.0",
 			copyright: "Based on pi-mono (MIT).",
 			credits: expect.stringContaining("badlogic/pi-mono"),
-			version: "0.2.0",
+			version: "0.3.0",
 		});
 		expect(app.getVersion).toHaveBeenCalled();
 	});

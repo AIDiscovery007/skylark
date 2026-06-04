@@ -391,6 +391,24 @@ describe("conversationTimelineProjection", () => {
 		expect(sessions[0]?.messageCount).toBe(2);
 	});
 
+	it("strips prompt file blocks from projected project session titles", () => {
+		const userPrompt =
+			'Summarize this spreadsheet and list its columns.\n\n<file name="/Users/qiaochao/Downloads/笔记列表明细表.xlsx">\nhidden spreadsheet content\n</file>';
+		let sessions = [createSession("session-created", "2026-04-21T10:00:00.000Z", "New Session")];
+
+		sessions = updateProjectSessionSummariesForAgentEvent(
+			sessions,
+			createEvent({ type: "message_end", message: createUserMessage(userPrompt, 1) }, "session-created"),
+		);
+
+		expect(sessions[0]).toEqual(
+			expect.objectContaining({
+				title: "Summarize this spreadsheet and list its columns.",
+				messageCount: 1,
+			}),
+		);
+	});
+
 	it("projects profile snapshot metadata without reordering session summaries", () => {
 		const sessionOne = createSession("session-1", "2026-04-21T09:00:00.000Z", "First");
 		const sessionTwo = createSession("session-2", "2026-04-21T10:00:00.000Z", "Second");

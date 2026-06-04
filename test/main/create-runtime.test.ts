@@ -102,6 +102,17 @@ function getToolText(result: { content: Array<{ type: string; text?: string }> }
 	return content.text;
 }
 
+async function waitForValue<T>(read: () => T | undefined): Promise<T> {
+	for (let attempt = 0; attempt < 50; attempt++) {
+		const value = read();
+		if (value !== undefined) {
+			return value;
+		}
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	throw new Error("Timed out waiting for value.");
+}
+
 afterEach(() => {
 	while (registrations.length > 0) {
 		registrations.pop()?.unregister();
@@ -1082,6 +1093,70 @@ describe("createDesktopAgentRuntime", () => {
 		});
 	});
 
+	it("attaches prompt attachment metadata before the agent response completes", async () => {
+		const faux = createFauxRegistration();
+		let finishResponse: (() => void) | undefined;
+		faux.setResponses([
+			async () => {
+				await new Promise<void>((resolve) => {
+					finishResponse = resolve;
+				});
+				return fauxAssistantMessage("ok");
+			},
+		]);
+		const runtime = await createDesktopAgentRuntime({
+			cwd: "/workspace/project",
+			getApiKey: () => "secret",
+			model: {
+				id: "desktop-runtime-model",
+				name: "Desktop Runtime Model",
+				api: "faux",
+				provider: "desktop-runtime-faux",
+				baseUrl: "https://faux.local",
+				reasoning: false,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 128000,
+				maxTokens: 4096,
+			} satisfies Model<"faux">,
+		});
+
+		const promptPromise = runtime.prompt({
+			text: "Summarize this",
+			attachments: [
+				{
+					id: "attachment-1",
+					kind: "text",
+					name: "notes.md",
+					mimeType: "text/markdown",
+					size: 42,
+					promptText: '<file name="notes.md">attached context</file>',
+					images: [],
+				},
+			],
+		});
+
+		const userMessage = await waitForValue(() =>
+			runtime.getState().messages.find((message) => message.role === "user"),
+		);
+		expect((userMessage as { metadata?: { custom?: Record<string, unknown> } }).metadata?.custom).toMatchObject({
+			desktopPromptVisibleText: "Summarize this",
+			desktopPromptAttachments: [
+				{
+					id: "attachment-1",
+					kind: "text",
+					name: "notes.md",
+					mimeType: "text/markdown",
+					size: 42,
+				},
+			],
+		});
+
+		(await waitForValue(() => finishResponse))();
+		await promptPromise;
+		await runtime.waitForIdle();
+	});
+
 	it("runs manual compaction through the desktop runtime and retains the latest turn", async () => {
 		const faux = createFauxRegistration();
 		faux.setResponses([
@@ -1228,6 +1303,39 @@ describe("createDesktopAgentRuntime", () => {
 		expect(state.model.baseUrl).toBe("https://api.kimi.com/coding");
 	});
 
+	it("falls back from an unauthenticated persisted session model to an authenticated configured model", async () => {
+		const configuredModel = getModels("deepseek").find((model) => model.id === "deepseek-v4-flash");
+		if (!configuredModel) {
+			throw new Error("Expected DeepSeek test model to be available.");
+		}
+
+		const runtime = await createDesktopAgentRuntime({
+			cwd: "/workspace/project",
+			model: desktopTestModel,
+			getApiKey: async (provider) => (provider === configuredModel.provider ? "configured-secret" : undefined),
+			hasAuth: async (provider) => provider === configuredModel.provider,
+			getSettings: async () => ({
+				defaultProvider: configuredModel.provider,
+				defaultModel: configuredModel.id,
+				defaultThinkingLevel: "off",
+			}),
+			tools: [],
+		});
+
+		const state = runtime.getState();
+		expect(state.model.provider).toBe(configuredModel.provider);
+		expect(state.model.id).toBe(configuredModel.id);
+		expect(runtime.diagnostics).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					type: "warning",
+					message: expect.stringContaining("openai"),
+				}),
+			]),
+		);
+		await runtime.dispose?.();
+	});
+
 	it("reuses provider auth lookups while creating a runtime", async () => {
 		const getApiKey = vi.fn(async (provider: string) => (provider === "kimi-coding" ? "kimi-secret" : undefined));
 		const hasAuth = vi.fn(async (provider: string) => provider === "kimi-coding");
@@ -1252,6 +1360,37 @@ describe("createDesktopAgentRuntime", () => {
 		expect(Math.max(...apiKeyCallCounts.values())).toBe(1);
 		expect(hasAuth.mock.calls.filter(([provider]) => provider === "kimi-coding")).toHaveLength(1);
 		expect(getApiKey.mock.calls.filter(([provider]) => provider === "kimi-coding")).toHaveLength(1);
+	});
+
+	it("loads only the selected provider key while creating runtime auth storage", async () => {
+		const getApiKey = vi.fn(async (provider: string) => {
+			if (provider === "deepseek") {
+				return "deepseek-secret";
+			}
+			throw new Error(`Unexpected key lookup for ${provider}`);
+		});
+		const hasAuth = vi.fn(async (provider: string) => provider === "deepseek");
+		const configuredModel = getModels("deepseek").find((model) => model.id === "deepseek-v4-flash");
+		if (!configuredModel) {
+			throw new Error("Expected DeepSeek test model to be available.");
+		}
+
+		const runtime = await createDesktopAgentRuntime({
+			cwd: "/workspace/project",
+			getApiKey,
+			hasAuth,
+			getSettings: async () => ({
+				defaultProvider: "deepseek",
+				defaultModel: "deepseek-v4-flash",
+				defaultThinkingLevel: "off",
+			}),
+			tools: [],
+		});
+		await runtime.dispose?.();
+
+		expect(runtime.getState().model.provider).toBe(configuredModel.provider);
+		expect(getApiKey).toHaveBeenCalledTimes(1);
+		expect(getApiKey).toHaveBeenCalledWith("deepseek");
 	});
 
 	it("keeps the configured default provider instead of falling back to Kimi when Kimi is configured", async () => {

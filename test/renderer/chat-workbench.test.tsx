@@ -165,6 +165,23 @@ function setAssistantViewportMetrics(
 	});
 }
 
+function createResizeObserverEntry(target: Element, height: number): ResizeObserverEntry {
+	return {
+		contentRect: {
+			bottom: height,
+			height,
+			left: 0,
+			right: 0,
+			toJSON: () => ({}),
+			top: 0,
+			width: 0,
+			x: 0,
+			y: 0,
+		},
+		target,
+	} as ResizeObserverEntry;
+}
+
 function setElementRect(
 	element: Element,
 	rect: { bottom: number; height: number; left?: number; right?: number; top: number; width?: number },
@@ -545,6 +562,47 @@ describe("ChatWorkbench", () => {
 
 		await waitFor(() => {
 			expect(onSubmitPrompt).toHaveBeenCalledWith({ text: "", attachments: [attachment] });
+		});
+	});
+
+	it("clears prompt attachment errors when switching sessions", async () => {
+		const user = userEvent.setup();
+		agentStore.setState({ activeSessionId: "session-1" });
+		Object.defineProperty(window, "desktopAgent", {
+			configurable: true,
+			value: {
+				openPromptAttachments: vi.fn(async () => ({
+					attachments: [],
+					errors: [
+						{
+							name: "budget.xlsx",
+							path: "/workspace/project/budget.xlsx",
+							message:
+								"Unsupported binary prompt attachment. Supported prompt attachments are text files, images, .docx, and .xlsx.",
+						},
+					],
+				})),
+			},
+		});
+
+		render(
+			<ChatWorkbench
+				onAbort={vi.fn(async () => undefined)}
+				onSubmitPrompt={vi.fn(async () => undefined)}
+				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
+				showThinkingBlocks={false}
+			/>,
+		);
+
+		await user.click(screen.getByLabelText("Attach files"));
+		expect(await screen.findByText(/budget\.xlsx/)).toBeTruthy();
+
+		await act(async () => {
+			agentStore.setState({ activeSessionId: "session-2" });
+		});
+
+		await waitFor(() => {
+			expect(screen.queryByText(/budget\.xlsx/)).toBeNull();
 		});
 	});
 
@@ -1538,6 +1596,75 @@ describe("ChatWorkbench", () => {
 		expect(screen.queryByText(/Expand inside AgentSession/)).toBeNull();
 	});
 
+	it("renders sent prompt attachments as compact file cards without exposing prompt text", () => {
+		agentStore.setState({
+			messages: [
+				{
+					role: "user",
+					content: 'Summarize this\n\n<file name="notes.md">hidden attachment context</file>',
+					timestamp: 1,
+					metadata: {
+						custom: {
+							desktopPromptVisibleText: "Summarize this",
+							desktopPromptAttachments: [
+								{
+									id: "attachment-1",
+									kind: "text",
+									name: "notes.md",
+									mimeType: "text/markdown",
+									size: 42,
+								},
+							],
+						},
+					},
+				} as Extract<AgentMessage, { role: "user" }>,
+			],
+		});
+
+		render(
+			<ChatWorkbench
+				onAbort={vi.fn(async () => undefined)}
+				onSubmitPrompt={vi.fn(async () => undefined)}
+				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
+				showThinkingBlocks={false}
+			/>,
+		);
+
+		const attachmentCard = screen.getByLabelText("notes.md");
+		expect(screen.getByText("notes.md")).toBeTruthy();
+		expect(screen.getByText("Text / 42 B")).toBeTruthy();
+		expect(screen.getByText("Summarize this")).toBeTruthy();
+		expect(screen.queryByText(/hidden attachment context/)).toBeNull();
+		expect(attachmentCard.className).toContain("min-h-9");
+	});
+
+	it("renders fallback prompt attachment cards before prompt metadata hydrates", () => {
+		agentStore.setState({
+			messages: [
+				{
+					role: "user",
+					content:
+						'Summarize this\n\n<file name="/workspace/project/budget.xlsx">\nhidden spreadsheet context\n</file>',
+					timestamp: 1,
+				} as Extract<AgentMessage, { role: "user" }>,
+			],
+		});
+
+		render(
+			<ChatWorkbench
+				onAbort={vi.fn(async () => undefined)}
+				onSubmitPrompt={vi.fn(async () => undefined)}
+				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
+				showThinkingBlocks={false}
+			/>,
+		);
+
+		expect(screen.getByLabelText("budget.xlsx")).toBeTruthy();
+		expect(screen.getByText("Spreadsheet")).toBeTruthy();
+		expect(screen.getByText("Summarize this")).toBeTruthy();
+		expect(screen.queryByText(/hidden spreadsheet context/)).toBeNull();
+	});
+
 	it("renders user bubbles with minimal markdown without using a strong brand fill", () => {
 		agentStore.setState({
 			messages: [userMessage("Open [docs](https://example.com) and inspect `src/index.ts`.", 1)],
@@ -1811,6 +1938,73 @@ describe("ChatWorkbench", () => {
 		}
 	});
 
+	it("cancels pending streaming auto-scroll as soon as the user wheels upward", async () => {
+		vi.useFakeTimers();
+		const frameCallbacks = new Map<number, FrameRequestCallback>();
+		let nextFrameId = 1;
+		const requestAnimationFrame = vi
+			.spyOn(window, "requestAnimationFrame")
+			.mockImplementation((callback: FrameRequestCallback) => {
+				const frameId = nextFrameId;
+				nextFrameId += 1;
+				frameCallbacks.set(frameId, callback);
+				return frameId;
+			});
+		const cancelAnimationFrame = vi.spyOn(window, "cancelAnimationFrame").mockImplementation((frameId: number) => {
+			frameCallbacks.delete(frameId);
+		});
+		try {
+			agentStore.setState({
+				activeSessionId: "session-1",
+				isStreaming: true,
+				messages: [userMessage("Explain the plan", 1)],
+				streamingMessage: assistantMessage([{ type: "text", text: "First chunk" }], 2),
+			});
+
+			const { container } = render(
+				<ChatWorkbench
+					onAbort={vi.fn(async () => undefined)}
+					onSubmitPrompt={vi.fn(async () => undefined)}
+					runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
+					showThinkingBlocks={false}
+				/>,
+			);
+			const viewport = getAssistantViewport(container);
+			const scrollTo = vi.fn();
+			Object.defineProperty(viewport, "scrollTo", {
+				configurable: true,
+				value: scrollTo,
+			});
+			setAssistantViewportMetrics(viewport, { clientHeight: 100, scrollHeight: 1000, scrollTop: 900 });
+			frameCallbacks.clear();
+			scrollTo.mockClear();
+
+			await act(async () => {
+				agentStore.setState({
+					streamingMessage: assistantMessage(
+						[{ type: "text", text: "First chunk with a second streamed word" }],
+						3,
+					),
+				});
+			});
+			await act(async () => {
+				vi.advanceTimersByTime(160);
+			});
+			expect(frameCallbacks.size).toBeGreaterThan(0);
+
+			fireEvent.wheel(viewport, { deltaY: -40 });
+			for (const callback of frameCallbacks.values()) {
+				callback(0);
+			}
+
+			expect(scrollTo).not.toHaveBeenCalled();
+			expect(viewport.scrollTop).toBe(900);
+		} finally {
+			cancelAnimationFrame.mockRestore();
+			requestAnimationFrame.mockRestore();
+		}
+	});
+
 	it("does not force active assistant streaming back to bottom after the user scrolls away", async () => {
 		vi.useFakeTimers();
 		const requestAnimationFrame = vi
@@ -1867,6 +2061,80 @@ describe("ChatWorkbench", () => {
 		} finally {
 			cancelAnimationFrame.mockRestore();
 			requestAnimationFrame.mockRestore();
+		}
+	});
+
+	it("does not let content resize pull streaming back to the bottom after the user scrolls away", async () => {
+		vi.useFakeTimers();
+		const threadContentResizeCallbacks: ResizeObserverCallback[] = [];
+		const originalResizeObserver = globalThis.ResizeObserver;
+		class MockResizeObserver implements ResizeObserver {
+			constructor(private readonly callback: ResizeObserverCallback) {}
+
+			disconnect(): void {}
+
+			observe(element: Element): void {
+				if (element.parentElement?.getAttribute("data-slot") === "assistant-thread-viewport") {
+					threadContentResizeCallbacks.push(this.callback);
+				}
+			}
+
+			unobserve(): void {}
+		}
+		Object.defineProperty(globalThis, "ResizeObserver", {
+			configurable: true,
+			value: MockResizeObserver,
+		});
+		const requestAnimationFrame = vi
+			.spyOn(window, "requestAnimationFrame")
+			.mockImplementation((callback: FrameRequestCallback) => {
+				callback(0);
+				return 1;
+			});
+		const cancelAnimationFrame = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
+		try {
+			agentStore.setState({
+				activeSessionId: "session-1",
+				isStreaming: true,
+				messages: [userMessage("Explain the plan", 1)],
+				streamingMessage: assistantMessage([{ type: "text", text: "First chunk" }], 2),
+			});
+
+			const { container } = render(
+				<ChatWorkbench
+					onAbort={vi.fn(async () => undefined)}
+					onSubmitPrompt={vi.fn(async () => undefined)}
+					runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
+					showThinkingBlocks={false}
+				/>,
+			);
+			const viewport = getAssistantViewport(container);
+			setAssistantViewportMetrics(viewport, { clientHeight: 100, scrollHeight: 1000, scrollTop: 900 });
+
+			await act(async () => {
+				viewport.scrollTop = 200;
+				fireEvent.scroll(viewport);
+			});
+
+			const threadContent = viewport.firstElementChild;
+			if (!threadContent) {
+				throw new Error("Assistant thread content was not rendered.");
+			}
+			for (const callback of threadContentResizeCallbacks) {
+				callback([createResizeObserverEntry(threadContent, 1200)], {} as ResizeObserver);
+			}
+			await act(async () => {
+				vi.advanceTimersByTime(16);
+			});
+
+			expect(viewport.scrollTop).toBe(200);
+		} finally {
+			cancelAnimationFrame.mockRestore();
+			requestAnimationFrame.mockRestore();
+			Object.defineProperty(globalThis, "ResizeObserver", {
+				configurable: true,
+				value: originalResizeObserver,
+			});
 		}
 	});
 

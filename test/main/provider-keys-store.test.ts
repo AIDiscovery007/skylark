@@ -20,6 +20,8 @@ afterEach(async () => {
 });
 
 class FakeSecretStorage implements DesktopSecretStorage {
+	decryptCount = 0;
+
 	constructor(private readonly available: boolean) {}
 
 	isAvailable(): boolean {
@@ -31,6 +33,7 @@ class FakeSecretStorage implements DesktopSecretStorage {
 	}
 
 	decrypt(value: string): string {
+		this.decryptCount += 1;
 		return value.replace(/^enc:/, "");
 	}
 }
@@ -49,6 +52,32 @@ describe("DesktopProviderKeysStore", () => {
 			secureStorageAvailable: true,
 			providerKeysEncrypted: true,
 		});
+	});
+
+	it("checks whether a provider key exists without decrypting the stored secret", async () => {
+		const directoryPath = createTempDirectory();
+		const filePath = join(directoryPath, "provider-keys.json");
+		const secretStorage = new FakeSecretStorage(true);
+		const store = new DesktopProviderKeysStore(filePath, secretStorage);
+
+		await store.set("anthropic", "secret-value");
+
+		await expect(store.has("anthropic")).resolves.toBe(true);
+		expect(secretStorage.decryptCount).toBe(0);
+	});
+
+	it("caches decrypted provider keys for the current app process", async () => {
+		const directoryPath = createTempDirectory();
+		const filePath = join(directoryPath, "provider-keys.json");
+		const secretStorage = new FakeSecretStorage(true);
+		const store = new DesktopProviderKeysStore(filePath, secretStorage);
+
+		await store.set("anthropic", "secret-value");
+		const restartedStore = new DesktopProviderKeysStore(filePath, secretStorage);
+
+		await expect(restartedStore.get("anthropic")).resolves.toBe("secret-value");
+		await expect(restartedStore.get("anthropic")).resolves.toBe("secret-value");
+		expect(secretStorage.decryptCount).toBe(1);
 	});
 
 	it("falls back to plaintext storage when secure storage is unavailable", async () => {
