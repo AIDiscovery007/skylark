@@ -11,6 +11,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { softRevealTransition, subtleReveal } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import { getMessageToolCalls, type ToolCallActivity } from "../../lib/conversation-timeline-projection.ts";
+import { Task } from "../ai-elements/task.tsx";
 import { PiMarkIcon } from "../ui/Icons.tsx";
 import { ToolActivityRows, ToolRunSummary } from "./InlineToolRail.tsx";
 
@@ -459,6 +460,30 @@ function AssistantRunView({
 		assistantRunContent.unshift(renderAssistantThinkingStatus("assistant-run-thinking-status"));
 	}
 
+	const runContent =
+		runToolCalls.length > 0 ? (
+			<Task
+				className="space-y-5"
+				data-slot="tool-task"
+				onOpenChange={setIsRunToolsExpanded}
+				open={isRunToolsExpanded}
+			>
+				{assistantRunContent.length > 0
+					? assistantRunContent
+					: !runHasToolCallBlocks
+						? renderAssistantThinkingStatus()
+						: null}
+			</Task>
+		) : (
+			<div className="space-y-5">
+				{assistantRunContent.length > 0
+					? assistantRunContent
+					: !runHasToolCallBlocks
+						? renderAssistantThinkingStatus()
+						: null}
+			</div>
+		);
+
 	return (
 		<motion.article className="w-full" key={getAssistantRunKey(run, itemIndex)} layout {...subtleReveal}>
 			<div className="min-w-0 space-y-3">
@@ -469,13 +494,7 @@ function AssistantRunView({
 						</Badge>
 					</div>
 				) : null}
-				<div className="space-y-5">
-					{assistantRunContent.length > 0
-						? assistantRunContent
-						: !runHasToolCallBlocks
-							? renderAssistantThinkingStatus()
-							: null}
-				</div>
+				{runContent}
 			</div>
 		</motion.article>
 	);

@@ -28,6 +28,7 @@ describe("InlineToolRail UI", () => {
 		);
 
 		expect(screen.getByRole("button", { name: /已处理 0s/i })).toBeTruthy();
+		expect(container.querySelector("[data-slot='tool-task']")).toBeTruthy();
 		expect(container.querySelector(".h-px.min-w-0.flex-1.bg-border")).toBeTruthy();
 	});
 
@@ -74,25 +75,24 @@ describe("InlineToolRail UI", () => {
 			/>,
 		);
 
-		await user.click(screen.getByRole("button", { name: /ran command/i }));
+		await user.click(screen.getByRole("button", { name: /ran command bash/i }));
 
 		expect(screen.getByText("Command")).toBeTruthy();
 		expect(screen.getByText("desktop-ai-agent")).toBeTruthy();
 		const statusLabel = screen.getByText("运行中");
-		expect(statusLabel.className).toContain("justify-self-end");
-		expect(statusLabel.className).toContain("text-right");
-		const commandRow = screen.getByRole("button", { name: /ran command/i });
-		expect(commandRow.className).toContain("group/tool-row");
+		expect(statusLabel.className).toContain("shrink-0");
+		const commandRow = screen.getByRole("button", { name: /ran command bash/i });
+		expect(commandRow.closest("[data-slot='tool-task-item']")).not.toBeNull();
 		expect(commandRow.className).toContain("hover:bg-muted/35");
 		expect(commandRow.className).not.toContain("translate");
 		expect(commandRow.className).not.toContain("scale");
-		expect(within(commandRow).getByText("printf 'desktop-ai-agent\\n'").className).toContain("w-full");
-		expect(within(commandRow).getByText("printf 'desktop-ai-agent\\n'").className).toContain(
-			"group-hover/tool-row:bg-muted/80",
-		);
+		expect(
+			within(commandRow).getByText("Ran command").compareDocumentPosition(within(commandRow).getByText("bash")),
+		).toBe(globalThis.Node.DOCUMENT_POSITION_FOLLOWING);
+		expect(within(commandRow).getByText("printf 'desktop-ai-agent\\n'").className).toContain("truncate");
 		expect(container.querySelector("[data-slot='tool-activity-row-details']")?.getAttribute("style")).toBeNull();
 
-		await user.click(screen.getByRole("button", { name: /ran command/i }));
+		await user.click(screen.getByRole("button", { name: /ran command bash/i }));
 		expect(screen.queryByText("Command")).toBeNull();
 		expect(container.querySelector("[data-slot='tool-activity-details']")).toBeNull();
 	});

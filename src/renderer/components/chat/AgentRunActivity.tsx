@@ -1,6 +1,5 @@
-import { ChevronRight } from "lucide-react";
+import { BrainIcon, ChevronDownIcon } from "lucide-react";
 import { MotionConfig, motion } from "motion/react";
-import type { CSSProperties } from "react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
 	DESKTOP_RUN_ACTIVITY_METADATA_KEY,
@@ -12,13 +11,9 @@ import {
 import type { ToolCallActivity } from "../../lib/conversation-timeline-projection.ts";
 import { activityDrawerTransition } from "../../lib/motion.ts";
 import { cn } from "../../lib/utils.ts";
-import {
-	ChainOfThought,
-	ChainOfThoughtHeader,
-	ChainOfThoughtImage,
-	ChainOfThoughtStep,
-} from "../ai-elements/chain-of-thought.tsx";
-import { getToolActivitySections, ToolActivityDetails } from "./ToolCallCard.tsx";
+import { ChainOfThoughtStep } from "../ai-elements/chain-of-thought.tsx";
+import { Task, TaskTrigger } from "../ai-elements/task.tsx";
+import { ToolTaskActivity, type ToolTaskImagePreview } from "./ToolTaskActivity.tsx";
 
 const ACTIVITY_DRAWER_ANIMATION_MS = 400;
 const FINAL_ANSWER_DOMINANT_VIEWPORT_RATIO = 0.4;
@@ -36,39 +31,9 @@ type AgentReasoningChainOfThoughtPart = Extract<AgentChainOfThoughtPart, { type:
 type AgentToolCallChainOfThoughtPart = Extract<AgentChainOfThoughtPart, { type: "tool-call" }>;
 type AgentActivityStatus = { type: "complete" | "incomplete" | "requires-action" | "running" };
 
-interface ToolResultImage {
-	alt: string;
-	caption?: string;
-	src: string;
-}
-
-interface ActivityImagePreview {
-	alt: string;
-	src: string;
-	title?: string;
-}
-
 interface PendingPushCompensation {
 	direction: ActivityPushDirection;
 	open: boolean;
-}
-
-function parseCssPixels(value: string): number {
-	const parsedValue = Number.parseFloat(value);
-	return Number.isFinite(parsedValue) ? parsedValue : 0;
-}
-
-function getElementVisualHeight(element: HTMLElement | null): number {
-	if (!element) {
-		return 0;
-	}
-
-	const rectHeight = element.getBoundingClientRect().height;
-	const styles = window.getComputedStyle(element);
-	const marginHeight = parseCssPixels(styles.marginTop) + parseCssPixels(styles.marginBottom);
-	const measuredHeight =
-		(rectHeight || element.offsetHeight || element.clientHeight || element.scrollHeight) + marginHeight;
-	return Number.isFinite(measuredHeight) ? Math.max(0, Math.ceil(measuredHeight)) : 0;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -244,157 +209,38 @@ function resolveToolCallStatus(status: AgentActivityStatus, isError?: boolean): 
 	return "completed";
 }
 
-function getStringProperty(value: unknown, keys: string[]): string | undefined {
-	if (!isRecord(value)) {
+function getToolCallFromPart(
+	part: AgentToolCallChainOfThoughtPart,
+	index: number,
+	status: AgentActivityStatus,
+): ToolCallActivity {
+	const fallbackToolCallId = part.toolCallId ?? `${part.toolName}-${index}`;
+	return (
+		getToolCallArtifact(part.artifact) ??
+		({
+			toolCallId: fallbackToolCallId,
+			toolName: part.toolName,
+			args: part.args,
+			status: resolveToolCallStatus(status, part.isError),
+			startedAt: 0,
+			updatedAt: 0,
+			result: part.result,
+		} satisfies ToolCallActivity)
+	);
+}
+
+function formatToolCountLabel(toolCallCount: number): string | undefined {
+	if (toolCallCount === 0) {
 		return undefined;
 	}
-
-	for (const key of keys) {
-		const property = value[key];
-		if (typeof property === "string" && property.trim().length > 0) {
-			return property.trim();
-		}
-	}
-
-	return undefined;
+	return toolCallCount === 1 ? "1 tool" : `${toolCallCount} tools`;
 }
 
-function getPathBasename(value: string): string {
-	const normalized = value.replace(/\\/g, "/");
-	const lastSegment = normalized.split("/").filter(Boolean).pop();
-	return lastSegment ?? value;
-}
-
-function getToolResultContent(value: unknown): unknown[] {
-	if (!isRecord(value) || !Array.isArray(value.content)) {
-		return [];
-	}
-
-	return value.content;
-}
-
-function getImageMimeType(record: Record<string, unknown>): string | undefined {
-	return getStringProperty(record, ["mimeType", "mime_type", "mediaType", "media_type"]);
-}
-
-function getDataUrlImageSource(record: Record<string, unknown>): string | undefined {
-	const source = getStringProperty(record, ["image", "url"]);
-	return source?.startsWith("data:image/") ? source : undefined;
-}
-
-function getBase64ImageSource(record: Record<string, unknown>): string | undefined {
-	const mimeType = getImageMimeType(record);
-	if (!mimeType?.toLowerCase().startsWith("image/")) {
+function formatFailedToolCountLabel(failedToolCallCount: number): string | undefined {
+	if (failedToolCallCount === 0) {
 		return undefined;
 	}
-
-	const data = getStringProperty(record, ["data", "base64"]);
-	return data ? `data:${mimeType};base64,${data}` : undefined;
-}
-
-function getToolResultImage(record: unknown, fallbackName: string | undefined): ToolResultImage | undefined {
-	if (!isRecord(record)) {
-		return undefined;
-	}
-
-	const source = getDataUrlImageSource(record) ?? getBase64ImageSource(record);
-	if (!source) {
-		return undefined;
-	}
-
-	const caption = getStringProperty(record, ["caption", "name", "filename", "fileName"]) ?? fallbackName;
-	return {
-		alt: caption ?? "Tool result image",
-		caption,
-		src: source,
-	};
-}
-
-function getToolResultImages(toolCall: ToolCallActivity): ToolResultImage[] {
-	const fallbackPath = getStringProperty(toolCall.args, ["path", "filePath", "file_path"]);
-	const fallbackName = fallbackPath ? getPathBasename(fallbackPath) : undefined;
-	const resultImages = getToolResultContent(toolCall.result)
-		.map((part) => getToolResultImage(part, fallbackName))
-		.filter((image): image is ToolResultImage => image !== undefined);
-
-	if (resultImages.length > 0) {
-		return resultImages;
-	}
-
-	return getToolResultContent(toolCall.partialResult)
-		.map((part) => getToolResultImage(part, fallbackName))
-		.filter((image): image is ToolResultImage => image !== undefined);
-}
-
-function truncateInline(value: string, maxLength: number): string {
-	return value.length <= maxLength ? value : `${value.slice(0, maxLength - 1)}...`;
-}
-
-function getCommandSummary(command: string): string {
-	const trimmedCommand = command.trim();
-	const findTarget = trimmedCommand.match(/(?:^|[;&|]\s*)find\s+([^\s;&|]+)/);
-	if (findTarget?.[1]) {
-		return `find ${findTarget[1]}`;
-	}
-
-	const firstCommand = trimmedCommand.split(/[;&|\n]/)[0]?.trim() ?? trimmedCommand;
-	const tokens = firstCommand.match(/"([^"\\]|\\.)*"|'([^'\\]|\\.)*'|\S+/g) ?? [];
-	const executable = tokens[0]?.replace(/^["']|["']$/g, "");
-	if (!executable) {
-		return truncateInline(trimmedCommand, 72);
-	}
-
-	if (executable === "python3" || executable === "python") {
-		return executable;
-	}
-
-	const target = tokens
-		.slice(1)
-		.map((token) => token.replace(/^["']|["']$/g, ""))
-		.find((token) => token.length > 0 && !token.startsWith("-") && token !== "<<'PY'" && token !== '<<"PY"');
-
-	return truncateInline(target ? `${executable} ${target}` : executable, 72);
-}
-
-function getToolSummary(toolCall: ToolCallActivity): string {
-	if (toolCall.toolName.startsWith("mcp__")) {
-		const [serverId, ...toolNameParts] = toolCall.toolName.slice("mcp__".length).split("__");
-		const toolName = toolNameParts.join("__");
-		if (serverId && toolName) {
-			return truncateInline(`${serverId} / ${toolName}`, 96);
-		}
-	}
-
-	if (toolCall.toolName === "subagent") {
-		const title = getStringProperty(toolCall.args, ["title"]);
-		const task = getStringProperty(toolCall.args, ["task"]);
-		return truncateInline(title ?? task ?? "Subagent task", 96);
-	}
-
-	const path = getStringProperty(toolCall.args, ["path", "filePath", "file_path"]);
-	if (path) {
-		return truncateInline(path, 96);
-	}
-
-	const command = getStringProperty(toolCall.args, ["command"]);
-	if (command) {
-		return getCommandSummary(command);
-	}
-
-	const sections = getToolActivitySections(toolCall);
-	const preferredSection = sections.find((section) => section.label === "Change Set") ?? sections[0];
-	return preferredSection ? truncateInline(preferredSection.value.split("\n")[0] ?? "", 96) : toolCall.toolName;
-}
-
-function getToolStatusLabel(status: ToolCallActivity["status"]): string {
-	switch (status) {
-		case "completed":
-			return "Completed";
-		case "error":
-			return "Error";
-		case "running":
-			return "Running";
-	}
+	return failedToolCallCount === 1 ? "1 failed" : `${failedToolCallCount} failed`;
 }
 
 function getStepStatus(status: AgentActivityStatus): "active" | "complete" {
@@ -411,219 +257,6 @@ function AgentReasoningPart({ part, status }: { part: AgentReasoningChainOfThoug
 		>
 			{null}
 		</ChainOfThoughtStep>
-	);
-}
-
-function AgentToolCallImages({
-	images,
-	onPreviewImage,
-}: {
-	images: ToolResultImage[];
-	onPreviewImage?: (image: ActivityImagePreview) => void;
-}) {
-	if (images.length === 0) {
-		return null;
-	}
-
-	return (
-		<div className="grid max-w-full gap-2" data-slot="assistant-tool-call-cot-images">
-			{images.map((image, index) => (
-				<ChainOfThoughtImage
-					caption={image.caption}
-					className="max-w-[min(100%,20rem)]"
-					data-slot="assistant-tool-call-cot-image"
-					key={`${image.src.slice(0, 96)}-${index}`}
-					title={image.caption}
-				>
-					<button
-						aria-label={`Open image preview for ${image.alt}`}
-						className="block max-w-full cursor-zoom-in rounded-[calc(var(--radius-md)-2px)] text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
-						onClick={() => onPreviewImage?.({ alt: image.alt, src: image.src, title: image.caption })}
-						type="button"
-					>
-						<img
-							alt={image.alt}
-							className="max-h-56 max-w-full rounded-[calc(var(--radius-md)-2px)] object-contain"
-							src={image.src}
-						/>
-					</button>
-				</ChainOfThoughtImage>
-			))}
-		</div>
-	);
-}
-
-function AgentToolCall({
-	autoCollapseIndex,
-	isAutoCollapsing,
-	onBeforeToggle,
-	onOpenSubagentToolCall,
-	onPreviewImage,
-	part,
-	status,
-}: {
-	autoCollapseIndex: number;
-	isAutoCollapsing: boolean;
-	onBeforeToggle: () => void;
-	onOpenSubagentToolCall?: (toolCall: ToolCallActivity) => void;
-	onPreviewImage?: (image: ActivityImagePreview) => void;
-	part: AgentToolCallChainOfThoughtPart;
-	status: AgentActivityStatus;
-}) {
-	const fallbackToolCallId = part.toolCallId ?? `${part.toolName}-${autoCollapseIndex}`;
-	const toolCall =
-		getToolCallArtifact(part.artifact) ??
-		({
-			toolCallId: fallbackToolCallId,
-			toolName: part.toolName,
-			args: part.args,
-			status: resolveToolCallStatus(status, part.isError),
-			startedAt: 0,
-			updatedAt: 0,
-			result: part.result,
-		} satisfies ToolCallActivity);
-	const statusLabel = getToolStatusLabel(toolCall.status);
-	const toolSummary = getToolSummary(toolCall);
-	const toolResultImages = getToolResultImages(toolCall);
-	const [isOpen, setIsOpen] = useState(false);
-	const [shouldRenderDetails, setShouldRenderDetails] = useState(isOpen);
-	const [isDrawerOpen, setIsDrawerOpen] = useState(isOpen);
-	const [drawerHeight, setDrawerHeight] = useState(0);
-	const detailsRef = useRef<HTMLDivElement | null>(null);
-	const drawerMotionPhase = isOpen ? (isDrawerOpen ? "open" : "opening") : "closed";
-
-	function handleToolCallToggle(): void {
-		onBeforeToggle();
-		if (toolCall.toolName === "subagent" && onOpenSubagentToolCall) {
-			onOpenSubagentToolCall(toolCall);
-			return;
-		}
-		setIsOpen((current) => !current);
-	}
-
-	useLayoutEffect(() => {
-		if (isOpen) {
-			setShouldRenderDetails(true);
-			setIsDrawerOpen(false);
-			setDrawerHeight(0);
-			const animationFrameId = window.requestAnimationFrame(() => {
-				setDrawerHeight(getElementVisualHeight(detailsRef.current));
-				setIsDrawerOpen(true);
-			});
-			return () => window.cancelAnimationFrame(animationFrameId);
-		}
-
-		setIsDrawerOpen(false);
-		return undefined;
-	}, [isOpen]);
-
-	useLayoutEffect(() => {
-		if (!isOpen || !shouldRenderDetails) {
-			return undefined;
-		}
-
-		const updateDrawerHeight = (): void => {
-			setDrawerHeight(getElementVisualHeight(detailsRef.current));
-		};
-
-		updateDrawerHeight();
-		const detailsElement = detailsRef.current;
-		if (!detailsElement || typeof ResizeObserver === "undefined") {
-			return undefined;
-		}
-
-		const resizeObserver = new ResizeObserver(updateDrawerHeight);
-		resizeObserver.observe(detailsElement);
-		return () => resizeObserver.disconnect();
-	}, [isOpen, shouldRenderDetails]);
-
-	useEffect(() => {
-		if (isOpen) {
-			return;
-		}
-
-		if (!shouldRenderDetails) {
-			return;
-		}
-
-		const timeoutId = window.setTimeout(() => {
-			setShouldRenderDetails(false);
-		}, ACTIVITY_DRAWER_ANIMATION_MS);
-		return () => window.clearTimeout(timeoutId);
-	}, [isOpen, shouldRenderDetails]);
-
-	return (
-		<div className="min-w-0 max-w-full overflow-x-hidden [overflow-anchor:none]">
-			<ChainOfThoughtStep
-				className={cn("min-w-0 max-w-full", isAutoCollapsing && "runtime-tool-call-auto-collapse")}
-				data-auto-collapse={isAutoCollapsing ? "closing" : undefined}
-				data-auto-collapse-index={isAutoCollapsing ? autoCollapseIndex : undefined}
-				data-slot="assistant-tool-call-step"
-				style={
-					isAutoCollapsing ? ({ "--runtime-tool-collapse-index": autoCollapseIndex } as CSSProperties) : undefined
-				}
-				label={
-					<button
-						aria-expanded={isOpen}
-						aria-label={`${toolCall.toolName} ${toolSummary} ${statusLabel}`}
-						className="flex w-full min-w-0 items-center justify-between gap-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
-						onClick={handleToolCallToggle}
-						type="button"
-					>
-						<span className="min-w-0">
-							<span className="flex min-w-0 items-baseline gap-2">
-								<span className="truncate font-medium">{toolCall.toolName}</span>
-								<span className="truncate text-muted-foreground">{toolSummary}</span>
-							</span>
-						</span>
-						<span className="flex shrink-0 items-center gap-2 text-muted-foreground">
-							<ChevronRight
-								className={cn("size-4 transition-transform", isOpen && "rotate-90")}
-								data-slot="assistant-tool-call-chevron"
-							/>
-						</span>
-					</button>
-				}
-				status={toolCall.status === "running" ? "active" : "complete"}
-			>
-				<AgentToolCallImages images={toolResultImages} onPreviewImage={onPreviewImage} />
-				<motion.div
-					animate={{ height: isDrawerOpen ? drawerHeight : 0 }}
-					className="overflow-hidden"
-					data-motion="structural-drawer"
-					data-motion-engine="motion"
-					data-motion-mode="drawer"
-					data-motion-origin="top"
-					data-motion-owner="spacer"
-					data-motion-phase={drawerMotionPhase}
-					data-motion-scope="structural"
-					data-motion-target-height={isOpen ? drawerHeight : 0}
-					data-slot="assistant-tool-call-details-spacer"
-					data-state={isOpen ? "open" : "closed"}
-					data-structural-layout-driver="height"
-					initial={false}
-					transition={activityDrawerTransition}
-				>
-					{shouldRenderDetails ? (
-						<div
-							aria-hidden={!isOpen}
-							className="mt-1 block min-w-0 max-w-full overflow-x-hidden px-2 pb-1 [overflow-anchor:none]"
-							data-layout="timeline-flow"
-							data-motion="structural-drawer"
-							data-motion-engine="motion"
-							data-motion-mode="drawer"
-							data-motion-origin="top"
-							data-motion-owner="fixed-content"
-							data-motion-scope="structural"
-							data-slot="assistant-tool-call-details"
-							ref={detailsRef}
-						>
-							<ToolActivityDetails toolCall={toolCall} />
-						</div>
-					) : null}
-				</motion.div>
-			</ChainOfThoughtStep>
-		</div>
 	);
 }
 
@@ -695,43 +328,6 @@ function getActivityLabels(isRunning: boolean, phase?: DesktopRunActivityMetadat
 	};
 }
 
-function renderActivityPart({
-	autoCollapseIndex,
-	isAutoCollapsing,
-	index,
-	onBeforeToolToggle,
-	onOpenSubagentToolCall,
-	onPreviewImage,
-	part,
-	status,
-}: {
-	autoCollapseIndex: number;
-	isAutoCollapsing: boolean;
-	index: number;
-	onBeforeToolToggle: () => void;
-	onOpenSubagentToolCall?: (toolCall: ToolCallActivity) => void;
-	onPreviewImage?: (image: ActivityImagePreview) => void;
-	part: AgentChainOfThoughtPart;
-	status: AgentActivityStatus;
-}) {
-	if (part.type === "reasoning") {
-		return <AgentReasoningPart key={`reasoning-${index}`} part={part} status={status} />;
-	}
-
-	return (
-		<AgentToolCall
-			autoCollapseIndex={autoCollapseIndex}
-			isAutoCollapsing={isAutoCollapsing}
-			key={part.toolCallId ?? `tool-call-${index}`}
-			onBeforeToggle={onBeforeToolToggle}
-			onOpenSubagentToolCall={onOpenSubagentToolCall}
-			onPreviewImage={onPreviewImage}
-			part={part}
-			status={status}
-		/>
-	);
-}
-
 function getActivityStatus(messageStatus: DesktopThreadMessageStatus | undefined): AgentActivityStatus {
 	if (messageStatus?.type === "running" || messageStatus?.type === "requires-action") {
 		return { type: messageStatus.type };
@@ -754,13 +350,16 @@ export function AgentRunActivity({
 	messageId: string;
 	messageStatus?: DesktopThreadMessageStatus;
 	onOpenSubagentToolCall?: (toolCall: ToolCallActivity) => void;
-	onPreviewImage?: (image: ActivityImagePreview) => void;
+	onPreviewImage?: (image: ToolTaskImagePreview) => void;
 	parts: AgentChainOfThoughtPart[];
 }) {
 	const metadata = useMemo(() => getRunActivityMetadata(messageCustomMetadata), [messageCustomMetadata]);
 	const activityId = messageId;
 	const activityContentId = metadata?.runId ?? messageId;
 	const status = getActivityStatus(messageStatus);
+	const reasoningParts = parts.filter((part): part is AgentReasoningChainOfThoughtPart => part.type === "reasoning");
+	const toolCallParts = parts.filter((part): part is AgentToolCallChainOfThoughtPart => part.type === "tool-call");
+	const toolCalls = toolCallParts.map((part, index) => getToolCallFromPart(part, index, status));
 	const isRunning =
 		messageStatus?.type === "running" ||
 		messageStatus?.type === "requires-action" ||
@@ -769,6 +368,7 @@ export function AgentRunActivity({
 		parts.some((part) => isActivityPartRunning(part, status));
 	const [collapsed, setCollapsed] = useState(!isRunning);
 	const isOpen = !collapsed;
+	const [expandedToolCallIds, setExpandedToolCallIds] = useState<ReadonlySet<string>>(() => new Set());
 	const activityRef = useRef<HTMLDivElement | null>(null);
 	const contentSpacerRef = useRef<HTMLDivElement | null>(null);
 	const pendingPushCompensationRef = useRef<PendingPushCompensation | undefined>(undefined);
@@ -781,7 +381,8 @@ export function AgentRunActivity({
 	const [pushDirection, setPushDirection] = useState<ActivityPushDirection>("down");
 	const [shouldRenderActivityContent, setShouldRenderActivityContent] = useState(isOpen);
 	const activeStartedAt = getReasonableTimestamp(metadata?.startedAt) ?? activeStartedAtRef.current;
-	const toolCallCount = parts.filter((part) => part.type === "tool-call").length;
+	const toolCallCount = toolCalls.length;
+	const failedToolCallCount = toolCalls.filter((toolCall) => toolCall.status === "error").length;
 	const durationMs = getRunActivityDurationMs({
 		activeStartedAt,
 		isRunning,
@@ -792,8 +393,25 @@ export function AgentRunActivity({
 	const activityLabels = getActivityLabels(isRunning, metadata?.phase);
 	const activityTitle = activityLabels.title;
 	const activityStatusLabel = activityLabels.statusLabel;
+	const toolCountLabel = formatToolCountLabel(toolCallCount);
+	const failedToolCountLabel = formatFailedToolCountLabel(failedToolCallCount);
+	const activityAriaLabel = [activityTitle, activityStatusLabel, duration, toolCountLabel, failedToolCountLabel]
+		.filter((label): label is string => label !== undefined)
+		.join(" ");
 	const contentMotionOrigin = pushDirection === "up" ? "bottom" : "top";
 	const shouldShowActivityContent = isOpen || shouldRenderActivityContent;
+
+	function toggleToolCall(toolCallId: string): void {
+		setExpandedToolCallIds((currentIds) => {
+			const nextIds = new Set(currentIds);
+			if (nextIds.has(toolCallId)) {
+				nextIds.delete(toolCallId);
+			} else {
+				nextIds.add(toolCallId);
+			}
+			return nextIds;
+		});
+	}
 
 	useEffect(() => {
 		if (previousActivityIdRef.current !== activityId) {
@@ -915,76 +533,96 @@ export function AgentRunActivity({
 			data-slot="assistant-run-activity"
 			ref={activityRef}
 		>
-			<ChainOfThought
-				data-slot="assistant-run-activity-chain-of-thought"
-				onOpenChange={handleOpenChange}
-				open={isOpen}
-			>
-				<ChainOfThoughtHeader
-					aria-expanded={isOpen}
-					aria-label={`${activityTitle} ${activityStatusLabel} ${duration}`}
-					data-slot="assistant-run-activity-trigger"
-				>
-					<span className="flex min-w-0 items-center justify-between gap-3">
-						<span className="truncate">{activityTitle}</span>
-						<span className="shrink-0 tabular-nums text-muted-foreground text-xs">
-							{activityStatusLabel} {duration}
-						</span>
-					</span>
-				</ChainOfThoughtHeader>
-				<MotionConfig reducedMotion="never">
-					<motion.div
-						animate={{ height: isOpen ? "auto" : 0 }}
-						className="overflow-hidden"
-						data-motion="structural-drawer"
-						data-motion-engine="motion"
-						data-motion-mode="drawer"
-						data-motion-origin={contentMotionOrigin}
-						data-motion-owner="spacer"
-						data-motion-scope="structural"
-						data-push-direction={pushDirection}
-						data-slot="assistant-run-activity-content-spacer"
-						data-state={isOpen ? "open" : "closed"}
-						data-structural-layout-driver="height"
-						initial={false}
-						ref={contentSpacerRef}
-						transition={activityDrawerTransition}
-					>
-						{shouldShowActivityContent ? (
-							<div
-								aria-busy={isRunning}
-								aria-hidden={!isOpen}
-								className="mt-2 space-y-3 text-popover-foreground outline-none"
-								data-motion="structural-drawer"
-								data-motion-engine="motion"
-								data-motion-mode="drawer"
-								data-motion-origin={contentMotionOrigin}
-								data-motion-owner="fixed-content"
-								data-motion-scope="structural"
-								data-push-direction={pushDirection}
-								data-slot="assistant-run-activity-content"
-								key={`${activityContentId}-content`}
-							>
-								{parts.map((part, index) => {
-									const autoCollapseIndex = parts
-										.slice(0, index)
-										.filter((previousPart) => previousPart.type === "tool-call").length;
-									return renderActivityPart({
-										autoCollapseIndex,
-										index,
-										isAutoCollapsing,
-										onBeforeToolToggle: () => undefined,
-										onOpenSubagentToolCall,
-										onPreviewImage,
-										part,
-										status,
-									});
-								})}
-							</div>
-						) : null}
-					</motion.div>
-				</MotionConfig>
-			</ChainOfThought>
+			<div className="not-prose w-full space-y-4" data-slot="assistant-run-activity-chain-of-thought">
+				<Task data-slot="assistant-run-activity-task" onOpenChange={handleOpenChange} open={isOpen}>
+					<TaskTrigger title={activityTitle}>
+						<button
+							aria-expanded={isOpen}
+							aria-label={activityAriaLabel}
+							className="flex w-full items-center gap-2 text-muted-foreground text-sm transition-colors hover:text-foreground"
+							data-slot="assistant-run-activity-trigger"
+							type="button"
+						>
+							<BrainIcon className="size-4" />
+							<span className="flex min-w-0 flex-1 items-center justify-between gap-3 text-left">
+								<span className="truncate">{activityTitle}</span>
+								<span className="flex shrink-0 items-center gap-2 tabular-nums text-muted-foreground text-xs">
+									{toolCountLabel ? <span>{toolCountLabel}</span> : null}
+									{failedToolCountLabel ? (
+										<span className="text-[color:var(--destructive)]">{failedToolCountLabel}</span>
+									) : null}
+									<span>
+										{activityStatusLabel} {duration}
+									</span>
+								</span>
+							</span>
+							<ChevronDownIcon
+								className={cn("size-4 transition-transform", isOpen ? "rotate-180" : "rotate-0")}
+							/>
+						</button>
+					</TaskTrigger>
+					<MotionConfig reducedMotion="never">
+						<motion.div
+							animate={{ height: isOpen ? "auto" : 0 }}
+							className="overflow-hidden"
+							data-motion="structural-drawer"
+							data-motion-engine="motion"
+							data-motion-mode="drawer"
+							data-motion-origin={contentMotionOrigin}
+							data-motion-owner="spacer"
+							data-motion-scope="structural"
+							data-push-direction={pushDirection}
+							data-slot="assistant-run-activity-content-spacer"
+							data-state={isOpen ? "open" : "closed"}
+							data-structural-layout-driver="height"
+							initial={false}
+							ref={contentSpacerRef}
+							transition={activityDrawerTransition}
+						>
+							{shouldShowActivityContent ? (
+								<div
+									aria-busy={isRunning}
+									aria-hidden={!isOpen}
+									className="mt-2 space-y-3 text-popover-foreground outline-none"
+									data-motion="structural-drawer"
+									data-motion-engine="motion"
+									data-motion-mode="drawer"
+									data-motion-origin={contentMotionOrigin}
+									data-motion-owner="fixed-content"
+									data-motion-scope="structural"
+									data-push-direction={pushDirection}
+									data-slot="assistant-run-activity-content"
+									key={`${activityContentId}-content`}
+								>
+									{reasoningParts.map((part) => (
+										<AgentReasoningPart
+											key={`${activityContentId}-reasoning-${part.text.slice(0, 120)}`}
+											part={part}
+											status={status}
+										/>
+									))}
+									<ToolTaskActivity
+										className="max-h-none overflow-visible pr-0 [scrollbar-gutter:auto]"
+										detailsMode="animated"
+										detailsSlot="assistant-tool-call-details"
+										detailsSpacerSlot="assistant-tool-call-details-spacer"
+										expandedToolCallIds={expandedToolCallIds}
+										isAutoCollapsing={isAutoCollapsing}
+										itemSlot="assistant-tool-call-step"
+										onBeforeToolToggle={() => undefined}
+										onOpenSubagentToolCall={onOpenSubagentToolCall}
+										onPreviewImage={onPreviewImage}
+										onToggleToolCall={toggleToolCall}
+										preserveOrder
+										statusLocale="en"
+										toolCalls={toolCalls}
+									/>
+								</div>
+							) : null}
+						</motion.div>
+					</MotionConfig>
+				</Task>
+			</div>
 		</div>
 	);
 }

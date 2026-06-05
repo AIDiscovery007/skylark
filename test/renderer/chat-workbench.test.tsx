@@ -1127,7 +1127,7 @@ describe("ChatWorkbench", () => {
 		);
 
 		await user.click(screen.getByRole("button", { name: /Agent activity Completed 0s/i }));
-		await user.click(screen.getByRole("button", { name: /subagent Inspect auth flow Completed/i }));
+		await user.click(screen.getByRole("button", { name: /Inspect auth flow subagent Completed/i }));
 
 		expect(onOpenSubagent).toHaveBeenCalledTimes(1);
 		expect(onOpenSubagent).toHaveBeenCalledWith({
@@ -2599,9 +2599,11 @@ describe("ChatWorkbench", () => {
 		expect(activityTrigger.getAttribute("data-slot")).toBe("assistant-run-activity-trigger");
 		expect(activityTrigger.getAttribute("aria-expanded")).toBe("false");
 		const activityRoot = activityTrigger.closest("[data-slot='assistant-run-activity']");
+		expect(activityRoot?.querySelector("[data-slot='assistant-run-activity-task']")).not.toBeNull();
 		expect(activityRoot?.querySelector("[data-slot='assistant-run-activity-chain-of-thought']")).not.toBeNull();
 		expect(screen.getByText("Agent activity")).toBeTruthy();
 		expect(screen.getByText(/Completed 0s/)).toBeTruthy();
+		expect(screen.getByText("1 tool")).toBeTruthy();
 		expect(screen.queryByText("Reasoning")).toBeNull();
 		expect(screen.queryByText("Tool calls")).toBeNull();
 		expect(screen.queryByText("Working")).toBeNull();
@@ -3051,6 +3053,7 @@ describe("ChatWorkbench", () => {
 
 		const activityTrigger = screen.getByRole("button", { name: /Agent activity Completed 1s/i });
 		expect(activityTrigger).toBeTruthy();
+		expect(screen.getByText("1 failed")).toBeTruthy();
 		expect(screen.queryByText("处理失败")).toBeNull();
 		expect(activityTrigger.querySelector("[data-slot='assistant-run-activity-status-icon']")).toBeNull();
 	});
