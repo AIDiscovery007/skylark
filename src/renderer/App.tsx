@@ -937,7 +937,6 @@ function DesktopApp({ desktopAgent }: { desktopAgent: DesktopAgentBridge }) {
 														onExecutePlan={handleExecutePlan}
 														onOpenEnvironmentResource={handleOpenEnvironmentResource}
 														onOpenSettings={openSettingsWindow}
-														onOpenSubagent={openSubagentDetail}
 														onOpenWorkspacePreviewFile={openWorkspacePreviewFile}
 														onRequestCapabilities={requestCapabilitiesCatalog}
 														onSetSessionMode={setSessionMode}

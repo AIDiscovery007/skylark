@@ -4,16 +4,24 @@ import { AlertTriangle, ArrowDown, Sparkles } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { softRevealTransition, subtleReveal } from "@/lib/motion";
 import { cn } from "@/lib/utils";
+import type { DesktopThreadMessageStatus } from "../../lib/assistant-runtime-adapter.ts";
 import { getMessageToolCalls, type ToolCallActivity } from "../../lib/conversation-timeline-projection.ts";
+import { MessageResponse } from "../ai-elements/message.tsx";
 import { Task } from "../ai-elements/task.tsx";
 import { PiMarkIcon } from "../ui/Icons.tsx";
 import { ToolActivityRows, ToolRunSummary } from "./InlineToolRail.tsx";
+import { stripStandaloneReasoningHeadings } from "./reasoning-content.ts";
+import {
+	getToolCallImagePreviewItems,
+	type ThreadImagePreview,
+	ThreadImagePreviewGrid,
+} from "./ThreadImagePreviewGrid.tsx";
+import { ThreadRunStatusTask } from "./ThreadRunStatusTask.tsx";
 
 interface MessageListProps {
 	messages: AgentMessage[];
@@ -30,8 +38,8 @@ interface MessageListProps {
 	};
 	onEmptyAction?: () => void;
 	defaultExpandedToolRailMessageIndex?: number;
-	defaultExpandedToolCallId?: string;
 	isStreaming?: boolean;
+	onPreviewImage?: (image: ThreadImagePreview) => void;
 	bottomInset?: number;
 }
 
@@ -135,6 +143,11 @@ function renderThinkingBlock(block: ThinkingContent, index: number, showThinking
 		return null;
 	}
 
+	const thinkingText = stripStandaloneReasoningHeadings(block.thinking);
+	if (thinkingText.length === 0) {
+		return null;
+	}
+
 	return (
 		<div
 			key={contentKey(block.type, index)}
@@ -144,7 +157,9 @@ function renderThinkingBlock(block: ThinkingContent, index: number, showThinking
 				<Sparkles className="size-3.5" />
 				<span>Thinking</span>
 			</div>
-			<p className="whitespace-pre-wrap break-words">{block.thinking}</p>
+			<MessageResponse className="min-w-0 break-words text-[13px] leading-6 [&_p]:m-0">
+				{thinkingText}
+			</MessageResponse>
 		</div>
 	);
 }
@@ -318,11 +333,14 @@ function getAssistantRunEndedAt(run: AssistantRunTranscriptItem, toolCalls: Tool
 	return allTimestamps.length > 0 ? Math.max(...allTimestamps) : undefined;
 }
 
-function getAssistantRunErrorMessage(run: AssistantRunTranscriptItem): string | undefined {
+function getAssistantRunStatus(run: AssistantRunTranscriptItem): DesktopThreadMessageStatus | undefined {
 	for (let index = run.messages.length - 1; index >= 0; index -= 1) {
 		const message = run.messages[index];
 		if (message?.errorMessage) {
-			return message.errorMessage;
+			return { type: "incomplete", reason: "error", error: message.errorMessage };
+		}
+		if (message?.stopReason === "aborted") {
+			return { type: "incomplete", reason: "cancelled" };
 		}
 	}
 
@@ -336,8 +354,8 @@ interface AssistantRunViewProps {
 	messages: AgentMessage[];
 	showThinkingBlocks: boolean;
 	defaultExpandedToolRailMessageIndex?: number;
-	defaultExpandedToolCallId?: string;
 	isRunActive: boolean;
+	onPreviewImage?: (image: ThreadImagePreview) => void;
 }
 
 function AssistantRunView({
@@ -347,8 +365,8 @@ function AssistantRunView({
 	messages,
 	showThinkingBlocks,
 	defaultExpandedToolRailMessageIndex,
-	defaultExpandedToolCallId,
 	isRunActive,
+	onPreviewImage,
 }: AssistantRunViewProps) {
 	const runToolCalls = getAssistantRunToolCalls(run, toolCalls, messages);
 	const [isRunToolsExpanded, setIsRunToolsExpanded] = useState(() =>
@@ -356,26 +374,11 @@ function AssistantRunView({
 			? true
 			: run.messageIndexes.includes(defaultExpandedToolRailMessageIndex),
 	);
-	const [expandedToolCallIds, setExpandedToolCallIds] = useState<ReadonlySet<string>>(
-		() => new Set(defaultExpandedToolCallId ? [defaultExpandedToolCallId] : []),
-	);
 	const runStartedAt = getAssistantRunStartedAt(run);
 	const runEndedAt = getAssistantRunEndedAt(run, runToolCalls);
 	const runHasToolCallBlocks = hasToolCallBlocks(run.messages);
-	const runErrorMessage = getAssistantRunErrorMessage(run);
+	const runStatus = getAssistantRunStatus(run);
 	let didRenderToolSummary = false;
-
-	function toggleToolCall(toolCallId: string): void {
-		setExpandedToolCallIds((currentIds) => {
-			const nextIds = new Set(currentIds);
-			if (nextIds.has(toolCallId)) {
-				nextIds.delete(toolCallId);
-			} else {
-				nextIds.add(toolCallId);
-			}
-			return nextIds;
-		});
-	}
 
 	function renderToolSummary(): ReactNode {
 		didRenderToolSummary = true;
@@ -414,9 +417,14 @@ function AssistantRunView({
 				>
 					<ToolActivityRows
 						className="max-h-none overflow-visible pr-0 [scrollbar-gutter:auto]"
-						expandedToolCallIds={expandedToolCallIds}
-						onToggleToolCall={toggleToolCall}
+						isRunActive={isRunActive}
 						toolCalls={messageToolCalls}
+					/>
+					<ThreadImagePreviewGrid
+						className="mt-3"
+						isRunActive={isRunActive}
+						items={getToolCallImagePreviewItems(messageToolCalls)}
+						onPreviewImage={onPreviewImage}
 					/>
 				</div>,
 			);
@@ -447,9 +455,14 @@ function AssistantRunView({
 				<div className="border-l border-border/70 pl-3 [overflow-anchor:none]" key="assistant-run-tool-fallback">
 					<ToolActivityRows
 						className="max-h-none overflow-visible pr-0 [scrollbar-gutter:auto]"
-						expandedToolCallIds={expandedToolCallIds}
-						onToggleToolCall={toggleToolCall}
+						isRunActive={isRunActive}
 						toolCalls={runToolCalls}
+					/>
+					<ThreadImagePreviewGrid
+						className="mt-3"
+						isRunActive={isRunActive}
+						items={getToolCallImagePreviewItems(runToolCalls)}
+						onPreviewImage={onPreviewImage}
 					/>
 				</div>,
 			);
@@ -487,13 +500,7 @@ function AssistantRunView({
 	return (
 		<motion.article className="w-full" key={getAssistantRunKey(run, itemIndex)} layout {...subtleReveal}>
 			<div className="min-w-0 space-y-3">
-				{runErrorMessage ? (
-					<div className="flex min-h-5 flex-wrap items-center gap-2">
-						<Badge className="rounded-full" variant="destructive">
-							Error
-						</Badge>
-					</div>
-				) : null}
+				<ThreadRunStatusTask status={runStatus} />
 				{runContent}
 			</div>
 		</motion.article>
@@ -556,8 +563,8 @@ export function MessageList({
 	emptyState,
 	onEmptyAction,
 	defaultExpandedToolRailMessageIndex,
-	defaultExpandedToolCallId,
 	isStreaming = false,
+	onPreviewImage,
 	bottomInset = 24,
 }: MessageListProps) {
 	const scrollAreaRef = useRef<HTMLDivElement | null>(null);
@@ -681,12 +688,12 @@ export function MessageList({
 
 							return (
 								<AssistantRunView
-									defaultExpandedToolCallId={defaultExpandedToolCallId}
 									defaultExpandedToolRailMessageIndex={defaultExpandedToolRailMessageIndex}
 									isRunActive={isRunActive}
 									itemIndex={index}
 									key={getAssistantRunKey(item, index)}
 									messages={messages}
+									onPreviewImage={onPreviewImage}
 									run={item}
 									showThinkingBlocks={showThinkingBlocks}
 									toolCalls={toolCalls}

@@ -14,6 +14,7 @@ export const TaskItemFile = ({ children, className, ...props }: TaskItemFileProp
 			className,
 		)}
 		{...props}
+		data-slot="task-item-file"
 	>
 		{children}
 	</div>

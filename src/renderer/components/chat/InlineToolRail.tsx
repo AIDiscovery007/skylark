@@ -2,6 +2,11 @@ import { useState } from "react";
 import type { ToolCallActivity } from "../../lib/conversation-timeline-projection.ts";
 import { Task, TaskContent } from "../ai-elements/task.tsx";
 import {
+	getToolCallImagePreviewItems,
+	type ThreadImagePreview,
+	ThreadImagePreviewGrid,
+} from "./ThreadImagePreviewGrid.tsx";
+import {
 	ToolTaskActivity,
 	type ToolTaskActivityProps,
 	ToolTaskSummary,
@@ -11,18 +16,15 @@ import {
 export interface InlineToolRailProps {
 	toolCalls: ToolCallActivity[];
 	defaultExpanded?: boolean;
-	defaultExpandedToolCallId?: string;
 	isRunActive?: boolean;
+	onPreviewImage?: (image: ThreadImagePreview) => void;
 	runEndedAt?: number;
 	runStartedAt?: number;
 }
 
 export type ToolRunSummaryProps = ToolTaskSummaryProps;
 
-export type ToolActivityRowsProps = Pick<
-	ToolTaskActivityProps,
-	"className" | "expandedToolCallIds" | "onToggleToolCall" | "toolCalls"
->;
+export type ToolActivityRowsProps = Pick<ToolTaskActivityProps, "className" | "isRunActive" | "toolCalls">;
 
 export function ToolRunSummary(props: ToolRunSummaryProps) {
 	return <ToolTaskSummary {...props} />;
@@ -35,30 +37,16 @@ export function ToolActivityRows(props: ToolActivityRowsProps) {
 export function InlineToolRail({
 	toolCalls,
 	defaultExpanded = true,
-	defaultExpandedToolCallId,
 	isRunActive = false,
+	onPreviewImage,
 	runEndedAt,
 	runStartedAt,
 }: InlineToolRailProps) {
 	const [isRailExpanded, setIsRailExpanded] = useState(defaultExpanded);
-	const [expandedToolCallIds, setExpandedToolCallIds] = useState<ReadonlySet<string>>(
-		() => new Set(defaultExpandedToolCallId ? [defaultExpandedToolCallId] : []),
-	);
+	const imagePreviewItems = getToolCallImagePreviewItems(toolCalls);
 
 	if (toolCalls.length === 0) {
 		return null;
-	}
-
-	function toggleToolCall(toolCallId: string): void {
-		setExpandedToolCallIds((currentIds) => {
-			const nextIds = new Set(currentIds);
-			if (nextIds.has(toolCallId)) {
-				nextIds.delete(toolCallId);
-			} else {
-				nextIds.add(toolCallId);
-			}
-			return nextIds;
-		});
 	}
 
 	return (
@@ -78,10 +66,12 @@ export function InlineToolRail({
 			/>
 
 			<TaskContent className="pl-3 [overflow-anchor:none]">
-				<ToolActivityRows
-					expandedToolCallIds={expandedToolCallIds}
-					onToggleToolCall={toggleToolCall}
-					toolCalls={toolCalls}
+				<ToolActivityRows isRunActive={isRunActive} toolCalls={toolCalls} />
+				<ThreadImagePreviewGrid
+					className="mt-3"
+					isRunActive={isRunActive}
+					items={imagePreviewItems}
+					onPreviewImage={onPreviewImage}
 				/>
 			</TaskContent>
 		</Task>

@@ -128,13 +128,12 @@ describe("tool activity rendering", () => {
 		expect(html).toContain("README.md");
 	});
 
-	it("renders expanded rail rows with status summaries and inline details", () => {
+	it("renders expanded rail rows as lightweight task items without inline details", () => {
 		const timestamp = Date.parse("2025-05-05T10:31:00Z");
 
 		const html = renderToStaticMarkup(
 			createElement(InlineToolRail, {
 				defaultExpanded: true,
-				defaultExpandedToolCallId: "bash-1",
 				toolCalls: [
 					{
 						toolCallId: "bash-1",
@@ -152,15 +151,16 @@ describe("tool activity rendering", () => {
 		expect(html).toContain("正在运行 0s");
 		expect(html).toContain("Ran command");
 		expect(html).toContain("运行中");
-		expect(html).toContain("printf &#x27;desktop-ai-agent\\n&#x27;");
-		expect(html).toContain("desktop-ai-agent");
+		expect(html).not.toContain("printf &#x27;desktop-ai-agent\\n&#x27;");
+		expect(html).not.toContain("desktop-ai-agent");
+		expect(html).not.toContain("Command");
+		expect(html).not.toContain("tool-activity-details");
 	});
 
-	it("renders expanded details directly under the selected tool row", () => {
+	it("renders expanded rail rows as task items in call order", () => {
 		const html = renderToStaticMarkup(
 			createElement(InlineToolRail, {
 				defaultExpanded: true,
-				defaultExpandedToolCallId: "read-1",
 				toolCalls: [
 					{
 						toolCallId: "read-1",
@@ -185,13 +185,16 @@ describe("tool activity rendering", () => {
 				],
 			}),
 		);
-		const readRowIndex = html.indexOf("Read README.md");
-		const readDetailIndex = html.indexOf("Preview");
+		const readRowIndex = html.indexOf("Read");
+		const readFileIndex = html.indexOf("README.md");
 		const bashRowIndex = html.indexOf("Ran command");
 
 		expect(readRowIndex).toBeGreaterThan(-1);
-		expect(readDetailIndex).toBeGreaterThan(readRowIndex);
-		expect(bashRowIndex).toBeGreaterThan(readDetailIndex);
+		expect(readFileIndex).toBeGreaterThan(readRowIndex);
+		expect(bashRowIndex).toBeGreaterThan(readFileIndex);
+		expect(html).not.toContain("Preview");
+		expect(html).not.toContain("Command");
+		expect(html).not.toContain("tool-activity-details");
 	});
 
 	it("renders an error summary for failed tool activity", () => {

@@ -1078,9 +1078,8 @@ describe("ChatWorkbench", () => {
 		);
 	});
 
-	it("opens a persisted subagent activity row from the thread", async () => {
+	it("renders a persisted subagent activity row as a noninteractive task item", async () => {
 		const user = userEvent.setup();
-		const onOpenSubagent = vi.fn();
 		installEnvironmentBridge([]);
 		agentStore.setState({
 			messages: [
@@ -1119,7 +1118,6 @@ describe("ChatWorkbench", () => {
 		render(
 			<ChatWorkbench
 				onAbort={vi.fn(async () => undefined)}
-				onOpenSubagent={onOpenSubagent}
 				onSubmitPrompt={vi.fn(async () => undefined)}
 				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
 				showThinkingBlocks={false}
@@ -1127,14 +1125,9 @@ describe("ChatWorkbench", () => {
 		);
 
 		await user.click(screen.getByRole("button", { name: /Agent activity Completed 0s/i }));
-		await user.click(screen.getByRole("button", { name: /Inspect auth flow subagent Completed/i }));
-
-		expect(onOpenSubagent).toHaveBeenCalledTimes(1);
-		expect(onOpenSubagent).toHaveBeenCalledWith({
-			parentSessionId: "session-1",
-			subagentId: "subagent-session-1",
-			title: "Inspect auth flow",
-		});
+		expect(screen.getByText("Ran subagent").closest("[data-slot='assistant-tool-call-step']")).not.toBeNull();
+		expect(screen.getByText("Inspect auth flow")).toBeTruthy();
+		expect(screen.queryByRole("button", { name: /Inspect auth flow subagent/i })).toBeNull();
 		expect(document.querySelector("[data-slot='assistant-tool-call-details']")).toBeNull();
 	});
 
@@ -1853,6 +1846,100 @@ describe("ChatWorkbench", () => {
 		expect(openExternalUrl).toHaveBeenCalledWith("https://example.com");
 	});
 
+	it("renders assistant markdown local images through the workspace preview bridge", async () => {
+		const user = userEvent.setup();
+		const openWorkspacePreviewFile = vi.fn(async (request: { path: string; sessionId?: string }) => ({
+			path: `/workspace/project/${request.path.replace(/^file:\/\/\/workspace\/project\//, "")}`,
+			name: request.path.includes("diagram") ? "diagram.png" : "panel.png",
+			mimeType: "image/png",
+			size: 42,
+			kind: "image" as const,
+			updatedAt: "2026-06-05T00:00:00.000Z",
+			dataUrl: request.path.includes("diagram")
+				? "data:image/png;base64,ZGlhZ3JhbQ=="
+				: "data:image/png;base64,cGFuZWw=",
+		}));
+		Object.defineProperty(window, "desktopAgent", {
+			configurable: true,
+			value: { openWorkspacePreviewFile },
+		});
+		agentStore.setState({
+			messages: [
+				assistantMessage(
+					[
+						{
+							type: "text",
+							text: "下面是根目录这几张图：\n\n![panel](panel.png)\n\n![diagram](file:///workspace/project/diagram.png)",
+						},
+					],
+					1,
+				),
+			],
+		});
+
+		render(
+			<ChatWorkbench
+				onAbort={vi.fn(async () => undefined)}
+				onSubmitPrompt={vi.fn(async () => undefined)}
+				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
+				showThinkingBlocks={false}
+			/>,
+		);
+
+		await waitFor(() => {
+			expect(screen.getByAltText("panel")).toBeTruthy();
+			expect(screen.getByAltText("diagram")).toBeTruthy();
+		});
+		expect(openWorkspacePreviewFile).toHaveBeenCalledWith({ path: "panel.png", sessionId: "session-1" });
+		expect(openWorkspacePreviewFile).toHaveBeenCalledWith({
+			path: "file:///workspace/project/diagram.png",
+			sessionId: "session-1",
+		});
+		expect(openWorkspacePreviewFile).toHaveBeenCalledTimes(2);
+		expect(document.querySelectorAll("[data-slot='thread-image-preview-grid']")).toHaveLength(1);
+		expect(screen.queryByText("Image not available")).toBeNull();
+
+		await user.click(screen.getByRole("button", { name: "Open image preview for panel" }));
+		expect(screen.getByRole("dialog", { name: "Image preview" }).querySelector("img")?.getAttribute("src")).toBe(
+			"data:image/png;base64,cGFuZWw=",
+		);
+	});
+
+	it("shows a lightweight placeholder for markdown images outside the workspace", async () => {
+		const openWorkspacePreviewFile = vi.fn(async () => ({
+			path: "/Users/qiaochao/.ssh/secret.png",
+			name: "secret.png",
+			mimeType: "application/octet-stream",
+			size: 0,
+			kind: "unsupported" as const,
+			updatedAt: "1970-01-01T00:00:00.000Z",
+			errorMessage: "只能预览当前 workspace 内的文件。",
+		}));
+		Object.defineProperty(window, "desktopAgent", {
+			configurable: true,
+			value: { openWorkspacePreviewFile },
+		});
+		agentStore.setState({
+			messages: [assistantMessage([{ type: "text", text: "![secret](/Users/qiaochao/.ssh/secret.png)" }], 1)],
+		});
+
+		render(
+			<ChatWorkbench
+				onAbort={vi.fn(async () => undefined)}
+				onSubmitPrompt={vi.fn(async () => undefined)}
+				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
+				showThinkingBlocks={false}
+			/>,
+		);
+
+		await waitFor(() => {
+			expect(screen.getByText("Image not available")).toBeTruthy();
+		});
+		expect(screen.queryByAltText("secret")).toBeNull();
+		expect(screen.queryByRole("button", { name: "Open image preview for secret" })).toBeNull();
+		expect(screen.queryByText("/Users/qiaochao/.ssh/secret.png")).toBeNull();
+	});
+
 	it("renders completed tool file references and opens them in workspace preview", async () => {
 		const user = userEvent.setup();
 		const onOpenWorkspacePreviewFile = vi.fn();
@@ -2561,7 +2648,8 @@ describe("ChatWorkbench", () => {
 							type: "text",
 							text: '| File | Status |\n| --- | --- |\n| README.md | read |\n\n```ts\nconst status = "ok";\n```',
 						},
-						{ type: "thinking", thinking: "Check the file before summarizing." },
+						{ type: "thinking", thinking: "**Check the file before summarizing**\n\nRead before summarizing." },
+						{ type: "thinking", thinking: "**Standalone reasoning heading**" },
 						{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "README.md" } },
 					],
 					1,
@@ -2609,12 +2697,14 @@ describe("ChatWorkbench", () => {
 		expect(screen.queryByText("Working")).toBeNull();
 		expect(screen.queryByText("README.md contents")).toBeNull();
 		expect(screen.queryByText("Check the file before summarizing.")).toBeNull();
+		expect(screen.queryByText("Read before summarizing.")).toBeNull();
+		expect(screen.queryByText("Standalone reasoning heading")).toBeNull();
 
 		await user.click(activityTrigger);
-		expect(screen.getByText("Check the file before summarizing.")).toBeTruthy();
-		const activityContent = screen
-			.getByText("Check the file before summarizing.")
-			.closest("[data-slot='assistant-run-activity-content']");
+		const reasoningText = screen.getByText("Read before summarizing.");
+		expect(screen.queryByText("Check the file before summarizing")).toBeNull();
+		expect(screen.queryByText("Standalone reasoning heading")).toBeNull();
+		const activityContent = reasoningText.closest("[data-slot='assistant-run-activity-content']");
 		expect(activityContent?.className).not.toContain("border-l");
 		const activityDrawer = activityContent?.closest("[data-slot='assistant-run-activity-content-spacer']");
 		expect(activityDrawer?.getAttribute("data-motion")).toBe("structural-drawer");
@@ -2624,47 +2714,24 @@ describe("ChatWorkbench", () => {
 		expect(activityDrawer?.getAttribute("data-state")).toBe("open");
 		expect(activityDrawerTransition.duration).toBeGreaterThanOrEqual(0.3);
 		expect(activityDrawerTransition.duration).toBeLessThanOrEqual(0.5);
-		const reasoningStep = screen
-			.getByText("Check the file before summarizing.")
-			.closest("[data-slot='assistant-reasoning-part']");
+		const reasoningStep = reasoningText.closest("[data-slot='assistant-reasoning-part']");
+		expect(reasoningStep?.textContent).toContain("Read before summarizing.");
+		expect(reasoningStep?.textContent).not.toContain("Check the file before summarizing");
+		expect(reasoningStep?.textContent).not.toContain("**");
 		expect(reasoningStep?.className).toContain("animate-in");
-		expect(screen.getAllByText("read").length).toBeGreaterThan(0);
+		expect(screen.getByText("Read").closest("[data-slot='assistant-tool-call-step']")).not.toBeNull();
+		expect(screen.getAllByText("README.md").some((element) => element.closest("[data-slot='task-item-file']"))).toBe(
+			true,
+		);
 		expect(screen.queryByText("call-1")).toBeNull();
 		expect(screen.queryByText("README.md contents")).toBeNull();
-
-		const toolRow = screen.getByRole("button", { name: /read README\.md/i });
-		expect(toolRow.closest("[data-slot='assistant-tool-call-step']")).not.toBeNull();
-		const toolChevron = toolRow.querySelector("[data-slot='assistant-tool-call-chevron']");
-		expect(toolChevron?.getAttribute("class")).not.toContain("rotate-90");
-
-		await user.click(toolRow);
-		expect(toolChevron?.getAttribute("class")).toContain("rotate-90");
-		const readContents = screen.getByText(
-			(_content, element) =>
-				element?.tagName.toLowerCase() === "code" && element.textContent === "README.md contents",
-		);
-		expect(readContents).toBeTruthy();
-		const toolDetails = readContents.closest("[data-slot='assistant-tool-call-details']");
-		expect(toolDetails).not.toBeNull();
-		if (!toolDetails) {
-			throw new Error("Expected tool call details to render after expanding the tool row.");
-		}
-		expect(toolDetails.className).toContain("block");
-		expect(toolDetails.getAttribute("style")).toBeNull();
-		expect(toolDetails?.className).not.toContain("border-l");
-		expect(toolRow.compareDocumentPosition(toolDetails) & globalThis.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-
-		await user.click(toolRow);
-		expect(toolChevron?.getAttribute("class")).not.toContain("rotate-90");
-		const closingToolDetailsSpacer = document.querySelector("[data-slot='assistant-tool-call-details-spacer']");
-		expect(closingToolDetailsSpacer?.getAttribute("data-state")).toBe("closed");
-		expect(document.querySelector("[data-slot='assistant-tool-call-details']")).not.toBeNull();
-		await waitFor(() => {
-			expect(document.querySelector("[data-slot='assistant-tool-call-details']")).toBeNull();
-		});
+		expect(screen.queryByRole("button", { name: /read README\.md/i })).toBeNull();
+		expect(document.querySelector("[data-slot='assistant-tool-call-chevron']")).toBeNull();
+		expect(document.querySelector("[data-slot='assistant-tool-call-details']")).toBeNull();
+		expect(document.querySelector("[data-slot='assistant-tool-call-details-spacer']")).toBeNull();
 	});
 
-	it("renders tool result images natively in the matching agent activity tool step", async () => {
+	it("renders tool result images as a separate activity preview grid", async () => {
 		const user = userEvent.setup();
 		agentStore.setState({
 			messages: [
@@ -2708,31 +2775,79 @@ describe("ChatWorkbench", () => {
 		);
 
 		await user.click(screen.getByRole("button", { name: /Agent activity Completed 0s/i }));
-		const toolStepImage = screen.getByAltText("panel_003.jpg");
-		expect(toolStepImage).toBeTruthy();
-		expect(toolStepImage.closest("[data-slot='assistant-tool-call-step']")).not.toBeNull();
-		expect(toolStepImage.closest("[data-slot='assistant-tool-call-cot-image']")).not.toBeNull();
-
+		expect(screen.getByText("Read").closest("[data-slot='assistant-tool-call-step']")).not.toBeNull();
+		expect(screen.getByText("panel_003.jpg").closest("[data-slot='task-item-file']")).not.toBeNull();
+		expect(screen.getByAltText("panel_003.jpg").closest("[data-slot='thread-image-preview-grid']")).not.toBeNull();
 		await user.click(screen.getByRole("button", { name: "Open image preview for panel_003.jpg" }));
-		const previewDialog = screen.getByRole("dialog", { name: "Image preview" });
-		expect(previewDialog.querySelector("img")?.getAttribute("src")).toBe("data:image/png;base64,iVBORw0KGgo=");
-		await user.click(screen.getByRole("button", { name: "Close image preview" }));
-
-		await user.click(screen.getByRole("button", { name: /read .*panel_003\.jpg Completed/i }));
-
-		const toolDetails = document.querySelector("[data-slot='assistant-tool-call-details']");
-		expect(toolDetails).not.toBeNull();
-		expect(toolDetails?.querySelector("img")).toBeNull();
-		expect(toolDetails?.querySelector("[data-slot='tool-activity-image']")).toBeNull();
-		expect(toolDetails?.textContent).toContain("/workspace/panel_003.jpg");
-		expect(toolDetails?.textContent).toContain("Read image file [image/png]");
+		expect(screen.getByRole("dialog", { name: "Image preview" }).querySelector("img")?.getAttribute("src")).toBe(
+			"data:image/png;base64,iVBORw0KGgo=",
+		);
+		expect(screen.queryByText("Read image file [image/png]")).toBeNull();
+		expect(document.querySelector("[data-slot='assistant-tool-call-cot-image']")).toBeNull();
+		expect(document.querySelector("[data-slot='assistant-tool-call-details']")).toBeNull();
 	});
 
-	it("renders assistant run errors as timeline notices instead of normal markdown text", async () => {
+	it("summarizes batched image reads in agent activity without hiding preview images", async () => {
+		const user = userEvent.setup();
+		agentStore.setState({
+			messages: [
+				assistantMessage(
+					Array.from({ length: 7 }, (_, index) => ({
+						type: "toolCall",
+						id: `image-tool-${index}`,
+						name: "read",
+						arguments: { path: `/workspace/panel_${index}.png` },
+					})),
+					1,
+					{ stopReason: "toolUse" },
+				),
+				...Array.from({ length: 7 }, (_, index) => ({
+					role: "toolResult" as const,
+					content: [
+						{ type: "text" as const, text: "Read image file [image/png]" },
+						{
+							type: "image" as const,
+							mimeType: "image/png",
+							name: `panel_${index}.png`,
+							data: `iVBORw0KGgo${index}`,
+						},
+					],
+					isError: false,
+					timestamp: 2 + index,
+					toolCallId: `image-tool-${index}`,
+					toolName: "read",
+				})),
+			],
+		});
+
+		render(
+			<ChatWorkbench
+				onAbort={vi.fn(async () => undefined)}
+				onSubmitPrompt={vi.fn(async () => undefined)}
+				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
+				showThinkingBlocks
+			/>,
+		);
+
+		await user.click(screen.getByRole("button", { name: /Agent activity Completed 0s/i }));
+		expect(screen.getByText("Read 7 images").closest("[data-slot='assistant-tool-call-step']")).not.toBeNull();
+		expect(screen.queryByLabelText("Read panel_0.png")).toBeNull();
+		expect(screen.getByAltText("panel_0.png").closest("[data-slot='thread-image-preview-grid']")).not.toBeNull();
+		expect(screen.getByAltText("panel_6.png").closest("[data-slot='thread-image-preview-grid']")).not.toBeNull();
+		await user.click(screen.getByRole("button", { name: "Open image preview for panel_0.png" }));
+		expect(screen.getByRole("dialog", { name: "Image preview" }).querySelector("img")?.getAttribute("src")).toBe(
+			"data:image/png;base64,iVBORw0KGgo0",
+		);
+		expect(screen.queryByText("Read image file [image/png]")).toBeNull();
+		expect(document.querySelector("[data-slot='assistant-tool-call-details']")).toBeNull();
+	});
+
+	it("renders assistant run errors as a collapsed task instead of a red notice", async () => {
+		const user = userEvent.setup();
 		agentStore.setState({
 			messages: [
 				assistantMessage([{ type: "text", text: "I started the request." }], 1, {
-					errorMessage: "Provider key missing.",
+					errorMessage: "Error: Provider key missing.\nstack frame should stay compact.",
 					stopReason: "error",
 				}),
 			],
@@ -2748,10 +2863,93 @@ describe("ChatWorkbench", () => {
 		);
 
 		expect(await screen.findByText("I started the request.")).toBeTruthy();
-		const notice = screen.getByText("Provider key missing.").closest("[data-slot='error-notice']");
+		expect(screen.getByRole("button", { name: "Authentication required" })).toBeTruthy();
+		expect(container.querySelector("[data-slot='error-notice']")).toBeNull();
+		expect(screen.queryByText(/Provider key missing/u)).toBeNull();
 
-		expect(notice).toBeTruthy();
-		expect(container.textContent).not.toContain("Error: Provider key missing.");
+		await user.click(screen.getByRole("button", { name: "Authentication required" }));
+		const detail = screen.getByText(/Provider key missing/u).closest("[data-slot='thread-run-status-detail']");
+
+		expect(detail).toBeTruthy();
+		expect(detail?.textContent).not.toContain("Error:");
+		expect(detail?.textContent).not.toContain("\n");
+		expect(detail?.textContent).not.toContain("stack frame");
+	});
+
+	it("extracts a compact detail from JSON-shaped provider errors", async () => {
+		const user = userEvent.setup();
+		agentStore.setState({
+			messages: [
+				assistantMessage([{ type: "text", text: "I started the request." }], 1, {
+					errorMessage: '{"error":{"message":"quota exceeded for this provider"}}',
+					stopReason: "error",
+				}),
+			],
+		});
+
+		const { container } = render(
+			<ChatWorkbench
+				onAbort={vi.fn(async () => undefined)}
+				onSubmitPrompt={vi.fn(async () => undefined)}
+				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
+				showThinkingBlocks={false}
+			/>,
+		);
+
+		await user.click(await screen.findByRole("button", { name: "Provider limit reached" }));
+		const detail = screen
+			.getByText("quota exceeded for this provider")
+			.closest("[data-slot='thread-run-status-detail']");
+
+		expect(detail).toBeTruthy();
+		expect(container.textContent).not.toContain('{"error"');
+	});
+
+	it.each([
+		{
+			errorMessage: "Rate limit exceeded for this provider.",
+			stopReason: "error" as const,
+			summary: "Provider limit reached",
+		},
+		{
+			errorMessage:
+				"stream disconnected before completion: error sending request for url (https://chatgpt.com/backend-api/codex/responses)",
+			stopReason: "error" as const,
+			summary: "Network interrupted",
+		},
+		{
+			errorMessage: "Unexpected provider failure.",
+			stopReason: "error" as const,
+			summary: "Agent run failed",
+		},
+		{
+			errorMessage: undefined,
+			stopReason: "aborted" as const,
+			summary: "Run cancelled",
+		},
+	])("classifies common run status as $summary", async ({ errorMessage, stopReason, summary }) => {
+		agentStore.setState({
+			messages: [
+				assistantMessage([{ type: "text", text: "I started the request." }], 1, {
+					errorMessage,
+					stopReason,
+				}),
+			],
+		});
+
+		const { container } = render(
+			<ChatWorkbench
+				onAbort={vi.fn(async () => undefined)}
+				onSubmitPrompt={vi.fn(async () => undefined)}
+				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
+				showThinkingBlocks={false}
+			/>,
+		);
+
+		expect(await screen.findByRole("button", { name: summary })).toBeTruthy();
+		expect(container.querySelector("[data-slot='thread-run-status-task']")).toBeTruthy();
+		expect(container.querySelector("[data-slot='error-notice']")).toBeNull();
+		expect(container.textContent).not.toContain("https://chatgpt.com/backend-api/codex/responses");
 	});
 
 	it("renders long markdown code blocks through AI Elements code containment", async () => {
@@ -2985,7 +3183,7 @@ describe("ChatWorkbench", () => {
 		expect(screen.getByText("Opened reasoning should remain visible.")).toBeTruthy();
 	});
 
-	it("hides completed reasoning when disabled while keeping tool activity expandable", async () => {
+	it("hides completed reasoning when disabled while keeping lightweight tool activity visible", async () => {
 		const user = userEvent.setup();
 		agentStore.setState({
 			messages: [
@@ -3016,7 +3214,9 @@ describe("ChatWorkbench", () => {
 
 		await user.click(screen.getByRole("button", { name: /Agent activity Completed 0s/i }));
 		expect(screen.queryByText("Hidden reasoning.")).toBeNull();
-		expect(screen.getByRole("button", { name: /read README\.md/i })).toBeTruthy();
+		expect(screen.getByText("Read").closest("[data-slot='assistant-tool-call-step']")).not.toBeNull();
+		expect(screen.getByText("README.md").closest("[data-slot='task-item-file']")).not.toBeNull();
+		expect(screen.queryByRole("button", { name: /read README\.md/i })).toBeNull();
 	});
 
 	it("summarizes completed errored tool activity as processed", () => {
@@ -3508,8 +3708,7 @@ describe("ChatWorkbench", () => {
 		expect(screen.queryByText("Scanning context.")).toBeNull();
 	});
 
-	it("keeps running tool activity open while tool details stay collapsed", async () => {
-		const user = userEvent.setup();
+	it("keeps running tool activity open as a lightweight task list", async () => {
 		agentStore.setState({
 			isStreaming: true,
 			messages: [
@@ -3545,21 +3744,67 @@ describe("ChatWorkbench", () => {
 		});
 		expect(activityTrigger.textContent).toContain("Working");
 		expect(screen.queryByText("Tool calls")).toBeNull();
-		expect(screen.getByRole("button", { name: /read README\.md/i })).toBeTruthy();
-		expect(screen.queryByText("reading README.md")).toBeNull();
-
-		const toolRow = screen.getByRole("button", { name: /read README\.md/i });
-		expect(toolRow).toBeTruthy();
+		expect((await screen.findByText("Read")).closest("[data-slot='assistant-tool-call-step']")).not.toBeNull();
+		expect(screen.getByText("README.md").closest("[data-slot='task-item-file']")).not.toBeNull();
+		expect(screen.queryByRole("button", { name: /read README\.md/i })).toBeNull();
 		expect(screen.queryByText("run-1")).toBeNull();
 		expect(screen.queryByText("reading README.md")).toBeNull();
+		expect(document.querySelector("[data-slot='assistant-tool-call-details']")).toBeNull();
+	});
 
-		await user.click(toolRow);
-		expect(
-			screen.getByText(
-				(_content, element) =>
-					element?.tagName.toLowerCase() === "code" && element.textContent === "reading README.md",
-			),
-		).toBeTruthy();
+	it("keeps active tool activity content available after collapsing and reopening during streaming", async () => {
+		vi.useFakeTimers();
+		agentStore.setState({
+			isStreaming: true,
+			messages: [
+				assistantMessage(
+					[{ type: "toolCall", id: "run-reopen-1", name: "read", arguments: { path: "README.md" } }],
+					1,
+					{
+						stopReason: "toolUse",
+					},
+				),
+			],
+			toolCalls: [
+				{
+					toolCallId: "run-reopen-1",
+					toolName: "read",
+					args: { path: "README.md" },
+					status: "running",
+					startedAt: 1,
+					updatedAt: 1,
+					partialResult: { content: [{ type: "text", text: "reading README.md" }] },
+				},
+			],
+		});
+
+		render(
+			<ChatWorkbench
+				onAbort={vi.fn(async () => undefined)}
+				onSubmitPrompt={vi.fn(async () => undefined)}
+				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
+				showThinkingBlocks={false}
+			/>,
+		);
+
+		const activityTrigger = screen.getByRole("button", { name: /Working Running \d+s/i });
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(220);
+		});
+		expect(screen.getByText("Read").closest("[data-slot='assistant-tool-call-step']")).not.toBeNull();
+
+		fireEvent.click(activityTrigger);
+		expect(activityTrigger.getAttribute("aria-expanded")).toBe("false");
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(410);
+		});
+
+		fireEvent.click(activityTrigger);
+		expect(activityTrigger.getAttribute("aria-expanded")).toBe("true");
+		expect(screen.getByText("Read").closest("[data-slot='assistant-tool-call-step']")).not.toBeNull();
+		expect(screen.getByText("README.md").closest("[data-slot='task-item-file']")).not.toBeNull();
+		expect(screen.queryByText("reading README.md")).toBeNull();
+		expect(document.querySelector("[data-slot='assistant-tool-call-details']")).toBeNull();
 	});
 
 	it("pushes agent activity upward when the final answer dominates the visible viewport", async () => {
@@ -3819,8 +4064,7 @@ describe("ChatWorkbench", () => {
 		expect(screen.getByText("Final answer is ready.")).toBeTruthy();
 	});
 
-	it("contains long tool output inside bounded scroll containers", async () => {
-		const user = userEvent.setup();
+	it("keeps raw tool output out of lightweight task items", async () => {
 		const longOutput = "desktop-ai-agent-".repeat(32);
 		agentStore.setState({
 			isStreaming: true,
@@ -3864,29 +4108,15 @@ describe("ChatWorkbench", () => {
 		await waitFor(() => {
 			expect(activityTrigger.getAttribute("aria-expanded")).toBe("true");
 		});
-		await user.click(await screen.findByRole("button", { name: /bash printf long-output/i }));
-		const code = await screen.findByText(longOutput);
-		const pre = code.closest("pre");
-		const codeScroll = pre?.parentElement;
-		const codeBlock = code.closest("[data-slot='tool-activity-code-block']");
-		const output = code.closest("[data-slot='tool-activity-output']");
-		const sections = code.closest("[data-slot='tool-activity-output-sections']");
-		const details = code.closest("[data-slot='tool-activity-details']");
-
-		expect(codeBlock?.getAttribute("data-language")).toBe("log");
-		expect(codeBlock?.className).toContain("max-w-full");
-		expect(codeBlock?.className).toContain("overflow-hidden");
-		expect(pre?.className).toContain("text-sm");
-		expect(pre?.className).toContain("p-4");
-		expect(codeScroll?.className).toContain("overflow-auto");
-		expect(output?.className).toContain("space-y-2");
-		expect(sections?.className).toContain("max-w-full");
-		expect(sections?.className).toContain("gap-3");
-		expect(details?.className).toContain("not-prose");
-		expect(details?.className).toContain("w-full");
+		expect((await screen.findByText("Ran command")).closest("[data-slot='assistant-tool-call-step']")).not.toBeNull();
+		expect(screen.queryByText(longOutput)).toBeNull();
+		expect(screen.queryByText("Command")).toBeNull();
+		expect(screen.queryByRole("button", { name: /bash printf long-output/i })).toBeNull();
+		expect(document.querySelector("[data-slot='assistant-tool-call-details']")).toBeNull();
+		expect(document.querySelector("[data-slot='tool-activity-detail-viewport']")).toBeNull();
 	});
 
-	it("streams running tool expansion in timeline flow while keeping local detail viewports bounded", async () => {
+	it("keeps running and completed tool activity in lightweight timeline flow", async () => {
 		const user = userEvent.setup();
 		agentStore.setState({
 			isStreaming: true,
@@ -3919,28 +4149,11 @@ describe("ChatWorkbench", () => {
 		});
 		const runningContent = document.querySelector("[data-slot='assistant-run-activity-content']");
 		expect(runningContent?.className).not.toContain("runtime-activity-scrollport");
-		await user.click(await screen.findByRole("button", { name: /bash find ./i }));
-		const runningDetails = document.querySelector("[data-slot='assistant-tool-call-details']");
-		expect(runningDetails?.getAttribute("data-layout")).toBe("timeline-flow");
-		expect(runningDetails?.className).not.toContain("runtime-tool-detail-scrollport");
-		const runningDetailsSpacer = runningDetails?.closest("[data-slot='assistant-tool-call-details-spacer']");
-		expect(runningDetailsSpacer?.getAttribute("data-motion")).toBe("structural-drawer");
-		expect(runningDetailsSpacer?.getAttribute("data-motion-mode")).toBe("drawer");
-		expect(runningDetailsSpacer?.getAttribute("data-motion-origin")).toBe("top");
-		expect(runningDetailsSpacer?.getAttribute("data-structural-layout-driver")).toBe("height");
-		expect(runningDetailsSpacer?.getAttribute("data-state")).toBe("open");
+		expect((await screen.findByText("Ran command")).closest("[data-slot='assistant-tool-call-step']")).not.toBeNull();
+		expect(screen.queryByRole("button", { name: /bash find ./i })).toBeNull();
+		expect(document.querySelector("[data-slot='assistant-tool-call-details']")).toBeNull();
+		expect(document.querySelector("[data-slot='assistant-tool-call-details-spacer']")).toBeNull();
 		expect(activityDrawerTransition.duration).toBe(0.4);
-		const runningDetailViewports = document.querySelectorAll("[data-slot='tool-activity-detail-viewport']");
-		expect(runningDetailViewports.length).toBeGreaterThan(0);
-		for (const viewport of runningDetailViewports) {
-			expect(viewport.className).toContain("runtime-tool-section-scrollport");
-		}
-		await user.click(await screen.findByRole("button", { name: /bash find ./i }));
-		expect(runningDetailsSpacer?.getAttribute("data-state")).toBe("closed");
-		expect(document.querySelector("[data-slot='assistant-tool-call-details']")).not.toBeNull();
-		await waitFor(() => {
-			expect(document.querySelector("[data-slot='assistant-tool-call-details']")).toBeNull();
-		});
 
 		cleanup();
 		agentStore.setState({
@@ -3976,147 +4189,8 @@ describe("ChatWorkbench", () => {
 		await user.click(completedActivityTrigger);
 		const completedContent = document.querySelector("[data-slot='assistant-run-activity-content']");
 		expect(completedContent?.className).not.toContain("runtime-activity-scrollport");
-		await user.click(await screen.findByRole("button", { name: /bash find ./i }));
-		const completedDetails = document.querySelector("[data-slot='assistant-tool-call-details']");
-		expect(completedDetails?.getAttribute("data-layout")).toBe("timeline-flow");
-		expect(completedDetails?.className).not.toContain("runtime-tool-detail-scrollport");
-	});
-
-	it("starts tool call expansion from a mounted closed drawer before opening on the next frame", async () => {
-		const user = userEvent.setup();
-		agentStore.setState({
-			isStreaming: true,
-			streamingMessage: assistantMessage(
-				[
-					{
-						type: "toolCall",
-						id: "bash-opening-detail",
-						name: "bash",
-						arguments: { command: "find ." },
-					},
-				],
-				1,
-				{ stopReason: "toolUse" },
-			),
-		});
-
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["bash"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
-
-		await waitFor(() => {
-			expect(screen.getByRole("button", { name: /Working Running \d+s/i }).getAttribute("aria-expanded")).toBe(
-				"true",
-			);
-		});
-
-		const animationFrameCallbacks: FrameRequestCallback[] = [];
-		const requestAnimationFrame = vi
-			.spyOn(window, "requestAnimationFrame")
-			.mockImplementation((callback: FrameRequestCallback) => {
-				animationFrameCallbacks.push(callback);
-				return animationFrameCallbacks.length;
-			});
-		const cancelAnimationFrame = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
-
-		try {
-			await user.click(await screen.findByRole("button", { name: /bash find ./i }));
-
-			const details = document.querySelector("[data-slot='assistant-tool-call-details']");
-			const detailsSpacer = document.querySelector("[data-slot='assistant-tool-call-details-spacer']");
-			expect(details).not.toBeNull();
-			expect(detailsSpacer?.getAttribute("data-state")).toBe("open");
-			expect(detailsSpacer?.getAttribute("data-motion-phase")).toBe("opening");
-			expect(animationFrameCallbacks.length).toBeGreaterThan(0);
-
-			await act(async () => {
-				for (const callback of animationFrameCallbacks.splice(0)) {
-					callback(16);
-				}
-			});
-
-			await waitFor(() => {
-				expect(detailsSpacer?.getAttribute("data-motion-phase")).toBe("open");
-			});
-		} finally {
-			cancelAnimationFrame.mockRestore();
-			requestAnimationFrame.mockRestore();
-		}
-	});
-
-	it("measures tool call expansion from visual layout height instead of oversized scroll height", async () => {
-		const user = userEvent.setup();
-		agentStore.setState({
-			isStreaming: true,
-			streamingMessage: assistantMessage(
-				[
-					{
-						type: "toolCall",
-						id: "bash-oversized-scroll-height",
-						name: "bash",
-						arguments: { command: "find ." },
-					},
-				],
-				1,
-				{ stopReason: "toolUse" },
-			),
-		});
-
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["bash"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
-
-		await waitFor(() => {
-			expect(screen.getByRole("button", { name: /Working Running \d+s/i }).getAttribute("aria-expanded")).toBe(
-				"true",
-			);
-		});
-
-		const animationFrameCallbacks: FrameRequestCallback[] = [];
-		const requestAnimationFrame = vi
-			.spyOn(window, "requestAnimationFrame")
-			.mockImplementation((callback: FrameRequestCallback) => {
-				animationFrameCallbacks.push(callback);
-				return animationFrameCallbacks.length;
-			});
-		const cancelAnimationFrame = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
-
-		try {
-			await user.click(await screen.findByRole("button", { name: /bash find ./i }));
-
-			const details = document.querySelector("[data-slot='assistant-tool-call-details']");
-			const detailsSpacer = document.querySelector("[data-slot='assistant-tool-call-details-spacer']");
-			expect(details).not.toBeNull();
-			expect(detailsSpacer?.getAttribute("data-motion-phase")).toBe("opening");
-			if (!details) {
-				throw new Error("Expected tool call details to be mounted before opening measurement.");
-			}
-			setElementRect(details, { bottom: 240, height: 240, top: 0 });
-			setReadOnlyElementNumber(details, "scrollHeight", 1200);
-
-			await act(async () => {
-				for (const callback of animationFrameCallbacks.splice(0)) {
-					callback(16);
-				}
-			});
-
-			await waitFor(() => {
-				expect(detailsSpacer?.getAttribute("data-motion-target-height")).toBe("240");
-				expect(detailsSpacer?.getAttribute("data-motion-target-height")).not.toBe("1200");
-			});
-		} finally {
-			cancelAnimationFrame.mockRestore();
-			requestAnimationFrame.mockRestore();
-		}
+		expect(screen.getByText("Ran command").closest("[data-slot='assistant-tool-call-step']")).not.toBeNull();
+		expect(screen.queryByRole("button", { name: /bash find ./i })).toBeNull();
+		expect(document.querySelector("[data-slot='assistant-tool-call-details']")).toBeNull();
 	});
 });

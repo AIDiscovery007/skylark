@@ -520,7 +520,7 @@ describe("ChatShell empty states", () => {
 		expect(html).not.toContain("size-8 shrink-0");
 	});
 
-	it("reconstructs historical tool activity from persisted tool call and tool result messages", () => {
+	it("reconstructs historical tool activity as lightweight task items", () => {
 		const html = renderToStaticMarkup(
 			createElement(MessageList, {
 				messages: [
@@ -553,13 +553,15 @@ describe("ChatShell empty states", () => {
 				showThinkingBlocks: false,
 				toolCalls: [],
 				defaultExpandedToolRailMessageIndex: 0,
-				defaultExpandedToolCallId: "call-1",
 			}),
 		);
 
 		expect(html).toContain("已处理 0s");
 		expect(html).toContain("Read README.md");
-		expect(html).toContain("README.md contents");
+		expect(html).toContain('data-slot="task-item-file"');
+		expect(html).not.toContain("README.md contents");
+		expect(html).not.toContain("Preview");
+		expect(html).not.toContain("tool-activity-details");
 		expect(html).not.toContain("No visible assistant text was emitted for this step.");
 		expect(html).not.toContain("Pi is working on the next step.");
 	});

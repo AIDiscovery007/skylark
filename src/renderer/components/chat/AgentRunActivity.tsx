@@ -12,8 +12,15 @@ import type { ToolCallActivity } from "../../lib/conversation-timeline-projectio
 import { activityDrawerTransition } from "../../lib/motion.ts";
 import { cn } from "../../lib/utils.ts";
 import { ChainOfThoughtStep } from "../ai-elements/chain-of-thought.tsx";
+import { MessageResponse } from "../ai-elements/message.tsx";
 import { Task, TaskTrigger } from "../ai-elements/task.tsx";
-import { ToolTaskActivity, type ToolTaskImagePreview } from "./ToolTaskActivity.tsx";
+import { stripStandaloneReasoningHeadings } from "./reasoning-content.ts";
+import {
+	getToolCallImagePreviewItems,
+	type ThreadImagePreview,
+	ThreadImagePreviewGrid,
+} from "./ThreadImagePreviewGrid.tsx";
+import { ToolTaskActivity } from "./ToolTaskActivity.tsx";
 
 const ACTIVITY_DRAWER_ANIMATION_MS = 400;
 const FINAL_ANSWER_DOMINANT_VIEWPORT_RATIO = 0.4;
@@ -248,11 +255,20 @@ function getStepStatus(status: AgentActivityStatus): "active" | "complete" {
 }
 
 function AgentReasoningPart({ part, status }: { part: AgentReasoningChainOfThoughtPart; status: AgentActivityStatus }) {
+	const text = stripStandaloneReasoningHeadings(part.text);
+	if (text.length === 0) {
+		return null;
+	}
+
 	return (
 		<ChainOfThoughtStep
 			className="min-w-0 max-w-full overflow-hidden text-[13px] leading-6"
 			data-slot="assistant-reasoning-part"
-			label={<span className="whitespace-pre-wrap break-words">{part.text}</span>}
+			label={
+				<MessageResponse className="inline min-w-0 max-w-full break-words text-[13px] leading-6 [&_p]:m-0 [&_p]:inline">
+					{text}
+				</MessageResponse>
+			}
 			status={getStepStatus(status)}
 		>
 			{null}
@@ -342,15 +358,13 @@ export function AgentRunActivity({
 	messageCustomMetadata,
 	messageId,
 	messageStatus,
-	onOpenSubagentToolCall,
 	onPreviewImage,
 	parts,
 }: {
 	messageCustomMetadata: unknown;
 	messageId: string;
 	messageStatus?: DesktopThreadMessageStatus;
-	onOpenSubagentToolCall?: (toolCall: ToolCallActivity) => void;
-	onPreviewImage?: (image: ToolTaskImagePreview) => void;
+	onPreviewImage?: (image: ThreadImagePreview) => void;
 	parts: AgentChainOfThoughtPart[];
 }) {
 	const metadata = useMemo(() => getRunActivityMetadata(messageCustomMetadata), [messageCustomMetadata]);
@@ -360,6 +374,7 @@ export function AgentRunActivity({
 	const reasoningParts = parts.filter((part): part is AgentReasoningChainOfThoughtPart => part.type === "reasoning");
 	const toolCallParts = parts.filter((part): part is AgentToolCallChainOfThoughtPart => part.type === "tool-call");
 	const toolCalls = toolCallParts.map((part, index) => getToolCallFromPart(part, index, status));
+	const imagePreviewItems = useMemo(() => getToolCallImagePreviewItems(toolCalls), [toolCalls]);
 	const isRunning =
 		messageStatus?.type === "running" ||
 		messageStatus?.type === "requires-action" ||
@@ -368,7 +383,6 @@ export function AgentRunActivity({
 		parts.some((part) => isActivityPartRunning(part, status));
 	const [collapsed, setCollapsed] = useState(!isRunning);
 	const isOpen = !collapsed;
-	const [expandedToolCallIds, setExpandedToolCallIds] = useState<ReadonlySet<string>>(() => new Set());
 	const activityRef = useRef<HTMLDivElement | null>(null);
 	const contentSpacerRef = useRef<HTMLDivElement | null>(null);
 	const pendingPushCompensationRef = useRef<PendingPushCompensation | undefined>(undefined);
@@ -400,18 +414,6 @@ export function AgentRunActivity({
 		.join(" ");
 	const contentMotionOrigin = pushDirection === "up" ? "bottom" : "top";
 	const shouldShowActivityContent = isOpen || shouldRenderActivityContent;
-
-	function toggleToolCall(toolCallId: string): void {
-		setExpandedToolCallIds((currentIds) => {
-			const nextIds = new Set(currentIds);
-			if (nextIds.has(toolCallId)) {
-				nextIds.delete(toolCallId);
-			} else {
-				nextIds.add(toolCallId);
-			}
-			return nextIds;
-		});
-	}
 
 	useEffect(() => {
 		if (previousActivityIdRef.current !== activityId) {
@@ -479,6 +481,11 @@ export function AgentRunActivity({
 	}, [isRunning]);
 
 	useEffect(() => {
+		if (isRunning) {
+			setShouldRenderActivityContent(true);
+			return;
+		}
+
 		if (isOpen) {
 			setShouldRenderActivityContent(true);
 			return;
@@ -492,7 +499,7 @@ export function AgentRunActivity({
 			setShouldRenderActivityContent(false);
 		}, ACTIVITY_DRAWER_ANIMATION_MS);
 		return () => window.clearTimeout(timeoutId);
-	}, [isOpen, shouldRenderActivityContent]);
+	}, [isOpen, isRunning, shouldRenderActivityContent]);
 
 	useLayoutEffect(() => {
 		const pendingPush = pendingPushCompensationRef.current;
@@ -603,19 +610,17 @@ export function AgentRunActivity({
 									))}
 									<ToolTaskActivity
 										className="max-h-none overflow-visible pr-0 [scrollbar-gutter:auto]"
-										detailsMode="animated"
-										detailsSlot="assistant-tool-call-details"
-										detailsSpacerSlot="assistant-tool-call-details-spacer"
-										expandedToolCallIds={expandedToolCallIds}
 										isAutoCollapsing={isAutoCollapsing}
+										isRunActive={isRunning}
 										itemSlot="assistant-tool-call-step"
-										onBeforeToolToggle={() => undefined}
-										onOpenSubagentToolCall={onOpenSubagentToolCall}
-										onPreviewImage={onPreviewImage}
-										onToggleToolCall={toggleToolCall}
 										preserveOrder
 										statusLocale="en"
 										toolCalls={toolCalls}
+									/>
+									<ThreadImagePreviewGrid
+										isRunActive={isRunning}
+										items={imagePreviewItems}
+										onPreviewImage={onPreviewImage}
 									/>
 								</div>
 							) : null}

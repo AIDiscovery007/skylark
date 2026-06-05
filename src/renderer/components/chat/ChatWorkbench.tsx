@@ -66,6 +66,7 @@ import type {
 	DesktopEnvironmentResourceStatus,
 	DesktopOAuthProviderStatus,
 	DesktopPreparedPromptAttachment,
+	DesktopPreviewFile,
 	DesktopPromptAttachmentCandidate,
 	DesktopPromptAttachmentDisplay,
 	DesktopPromptAttachmentError,
@@ -76,7 +77,6 @@ import type {
 	DesktopSessionProfileUpdateInput,
 	DesktopSettingsOpenRequest,
 	DesktopSlashCommandSummary,
-	DesktopSubagentOpenRequest,
 	DesktopTaskProgress,
 	DesktopTaskProgressStatus,
 } from "../../../shared/types.ts";
@@ -95,7 +95,6 @@ import {
 	type DesktopThreadMessageStatus,
 	getUserPromptAttachments,
 } from "../../lib/assistant-runtime-adapter.ts";
-import type { ToolCallActivity } from "../../lib/conversation-timeline-projection.ts";
 import { cn } from "../../lib/utils.ts";
 import { useAgentStore } from "../../stores/agent-store.ts";
 import {
@@ -121,6 +120,14 @@ import {
 	resolveContextWindowUsage,
 	resolveModelContextWindow,
 } from "./chat-helpers.ts";
+import {
+	type ResolvedThreadImagePreview,
+	type ThreadImagePreview,
+	ThreadImagePreviewGrid,
+	type ThreadImagePreviewGridItem,
+	type WorkspaceImagePreviewResolver,
+} from "./ThreadImagePreviewGrid.tsx";
+import { ThreadRunStatusTask } from "./ThreadRunStatusTask.tsx";
 
 const DEFAULT_COMPOSER_INSET_PX = 172;
 const COMPOSER_SCROLL_GAP_PX = 24;
@@ -144,11 +151,6 @@ type DesktopAttachmentFilePart = FileUIPart & {
 type ThreadImageAttachmentFilePart = FileUIPart & {
 	id: string;
 };
-interface ThreadImagePreview {
-	alt: string;
-	src: string;
-	title?: string;
-}
 
 function getThreadContentParts(message: DesktopThreadMessage): DesktopThreadContentPart[] {
 	if (typeof message.content === "string") {
@@ -295,7 +297,6 @@ interface ChatWorkbenchProps {
 	oauthProviders?: DesktopOAuthProviderStatus[];
 	onOpenSettings?: (request?: DesktopSettingsOpenRequest) => void;
 	onOpenEnvironmentResource?: (resource: DesktopEnvironmentResource) => void;
-	onOpenSubagent?: (request: Omit<DesktopSubagentOpenRequest, "nonce">) => void;
 	onOpenWorkspacePreviewFile?: (path: string) => void;
 	onRequestCapabilities?: () => Promise<void> | void;
 	onSetSessionMode?: (agentMode: DesktopAgentMode) => Promise<void>;
@@ -307,44 +308,6 @@ interface ChatWorkbenchProps {
 	capabilityCatalog?: DesktopCapabilityCatalog;
 	isWorkspacePanelOpen?: boolean;
 	workspaceStatus?: WorkspaceStatusState;
-}
-
-function getRecord(value: unknown): Record<string, unknown> | undefined {
-	return typeof value === "object" && value !== null && !Array.isArray(value)
-		? (value as Record<string, unknown>)
-		: undefined;
-}
-
-function getDetailsRecord(value: unknown): Record<string, unknown> | undefined {
-	const details = getRecord(value)?.details;
-	return getRecord(details);
-}
-
-function getStringProperty(value: unknown, key: string): string | undefined {
-	const property = getRecord(value)?.[key];
-	return typeof property === "string" && property.trim().length > 0 ? property.trim() : undefined;
-}
-
-function resolveSubagentOpenRequest(
-	toolCall: ToolCallActivity,
-	parentSessionId: string | undefined,
-): Omit<DesktopSubagentOpenRequest, "nonce"> | undefined {
-	if (!parentSessionId || toolCall.toolName !== "subagent") {
-		return undefined;
-	}
-	const details = getDetailsRecord(toolCall.result) ?? getDetailsRecord(toolCall.partialResult);
-	const subagentId = getStringProperty(details, "subagentId");
-	if (!subagentId) {
-		return undefined;
-	}
-	return {
-		parentSessionId,
-		subagentId,
-		title:
-			getStringProperty(details, "title") ??
-			getStringProperty(toolCall.args, "title") ??
-			getStringProperty(toolCall.args, "task"),
-	};
 }
 
 interface AssistantComposerProps {
@@ -1443,6 +1406,156 @@ function isWorkspacePreviewHref(href: string): boolean {
 	return schemeMatch[0].toLowerCase() === "file:";
 }
 
+type AssistantMarkdownSegment =
+	| {
+			key: string;
+			text: string;
+			type: "markdown";
+	  }
+	| {
+			items: ThreadImagePreviewGridItem[];
+			key: string;
+			type: "images";
+	  };
+
+const MARKDOWN_IMAGE_PATTERN = /!\[([^\]\n]*)\]\(([^)\s]+)(?:\s+(?:"[^"]*"|'[^']*'))?\)/g;
+
+function normalizeMarkdownImageAlt(alt: string | undefined, src: string): string {
+	const trimmedAlt = alt?.trim();
+	if (trimmedAlt) {
+		return trimmedAlt;
+	}
+	return (
+		src
+			.split(/[\\/]+/)
+			.filter(Boolean)
+			.at(-1) ?? "Image"
+	);
+}
+
+function createMarkdownImagePreviewItem(src: string | undefined, alt: string | undefined, indexKey: string) {
+	const trimmedSrc = src?.trim();
+	if (!trimmedSrc) {
+		return undefined;
+	}
+
+	const label = normalizeMarkdownImageAlt(alt, trimmedSrc);
+	if (/^data:image\//i.test(trimmedSrc) || /^blob:/i.test(trimmedSrc)) {
+		return {
+			alt: label,
+			id: `markdown-image:${indexKey}:${trimmedSrc.slice(0, 96)}`,
+			kind: "direct" as const,
+			src: trimmedSrc,
+			title: label,
+		};
+	}
+
+	if (/^https?:\/\//i.test(trimmedSrc)) {
+		return {
+			alt: label,
+			href: trimmedSrc,
+			id: `markdown-image:${indexKey}:${trimmedSrc}`,
+			kind: "external" as const,
+			title: label,
+		};
+	}
+
+	if (isWorkspacePreviewHref(trimmedSrc)) {
+		return {
+			alt: label,
+			id: `markdown-image:${indexKey}:${trimmedSrc}`,
+			kind: "workspace" as const,
+			path: trimmedSrc,
+			title: label,
+		};
+	}
+
+	return {
+		alt: label,
+		href: trimmedSrc,
+		id: `markdown-image:${indexKey}:${trimmedSrc}`,
+		kind: "external" as const,
+		title: label,
+	};
+}
+
+function parseImageOnlyMarkdownBlock(block: string, blockIndex: number): ThreadImagePreviewGridItem[] | undefined {
+	const trimmedBlock = block.trim();
+	if (!trimmedBlock.includes("![")) {
+		return undefined;
+	}
+
+	MARKDOWN_IMAGE_PATTERN.lastIndex = 0;
+	const items: ThreadImagePreviewGridItem[] = [];
+	let cursor = 0;
+	for (const match of trimmedBlock.matchAll(MARKDOWN_IMAGE_PATTERN)) {
+		const matchIndex = match.index ?? 0;
+		if (trimmedBlock.slice(cursor, matchIndex).trim().length > 0) {
+			return undefined;
+		}
+
+		const item = createMarkdownImagePreviewItem(match[2], match[1], `${blockIndex}:${items.length}`);
+		if (!item) {
+			return undefined;
+		}
+		items.push(item);
+		cursor = matchIndex + match[0].length;
+	}
+
+	if (items.length === 0 || trimmedBlock.slice(cursor).trim().length > 0) {
+		return undefined;
+	}
+	return items;
+}
+
+function splitAssistantMarkdownImageBlocks(text: string): AssistantMarkdownSegment[] {
+	const blocks = text.split(/\r?\n\s*\r?\n/);
+	const segments: AssistantMarkdownSegment[] = [];
+	let pendingMarkdown: string[] = [];
+	let pendingImages: ThreadImagePreviewGridItem[] = [];
+
+	function flushMarkdown(): void {
+		if (pendingMarkdown.length === 0) {
+			return;
+		}
+		const segmentText = pendingMarkdown.join("\n\n");
+		segments.push({
+			key: `markdown:${segments.length}:${segmentText.slice(0, 80)}`,
+			text: segmentText,
+			type: "markdown",
+		});
+		pendingMarkdown = [];
+	}
+
+	function flushImages(): void {
+		if (pendingImages.length === 0) {
+			return;
+		}
+		segments.push({
+			items: pendingImages,
+			key: `images:${segments.length}:${pendingImages.map((item) => item.id).join("|")}`,
+			type: "images",
+		});
+		pendingImages = [];
+	}
+
+	for (const [blockIndex, block] of blocks.entries()) {
+		const imageItems = parseImageOnlyMarkdownBlock(block, blockIndex);
+		if (imageItems) {
+			flushMarkdown();
+			pendingImages.push(...imageItems);
+			continue;
+		}
+
+		flushImages();
+		pendingMarkdown.push(block);
+	}
+
+	flushMarkdown();
+	flushImages();
+	return segments;
+}
+
 const ASSISTANT_MARKDOWN_COMPONENTS = {
 	a: SafeMarkdownAnchor as NonNullable<MessageResponseProps["components"]>["a"],
 } satisfies NonNullable<MessageResponseProps["components"]>;
@@ -1454,12 +1567,40 @@ const ASSISTANT_MARKDOWN_REMARK_PLUGINS = [
 function AssistantMarkdownResponse({
 	className,
 	isStreaming = false,
+	onPreviewImage,
+	resolveWorkspaceImage,
 	text,
 }: {
 	className?: string;
 	isStreaming?: boolean;
+	onPreviewImage?: (image: ThreadImagePreview) => void;
+	resolveWorkspaceImage?: WorkspaceImagePreviewResolver;
 	text: string;
 }) {
+	const segments = useMemo(() => splitAssistantMarkdownImageBlocks(text), [text]);
+	const hasImageSegments = segments.some((segment) => segment.type === "images");
+	const components = useMemo(() => {
+		function SafeMarkdownImage({ alt, src }: ComponentPropsWithoutRef<"img">) {
+			const item = createMarkdownImagePreviewItem(src, alt, "inline");
+			if (!item) {
+				return <span className="italic text-muted-foreground">Image not available</span>;
+			}
+			return (
+				<ThreadImagePreviewGrid
+					className="my-2"
+					items={[item]}
+					onPreviewImage={onPreviewImage}
+					resolveWorkspaceImage={resolveWorkspaceImage}
+				/>
+			);
+		}
+
+		return {
+			...ASSISTANT_MARKDOWN_COMPONENTS,
+			img: SafeMarkdownImage as NonNullable<MessageResponseProps["components"]>["img"],
+		} satisfies NonNullable<MessageResponseProps["components"]>;
+	}, [onPreviewImage, resolveWorkspaceImage]);
+
 	return (
 		<div
 			className="select-text"
@@ -1467,21 +1608,64 @@ function AssistantMarkdownResponse({
 			data-slot="assistant-markdown-content"
 			data-streaming={isStreaming ? "true" : undefined}
 		>
-			<MessageResponse
-				className={cn(ASSISTANT_MARKDOWN_CLASSNAME, className)}
-				components={ASSISTANT_MARKDOWN_COMPONENTS}
-				isAnimating={isStreaming}
-				mode={isStreaming ? "streaming" : "static"}
-				remarkPlugins={ASSISTANT_MARKDOWN_REMARK_PLUGINS}
-			>
-				{text}
-			</MessageResponse>
+			{hasImageSegments ? (
+				<div className={cn(ASSISTANT_MARKDOWN_CLASSNAME, className)}>
+					{segments.map((segment) =>
+						segment.type === "images" ? (
+							<ThreadImagePreviewGrid
+								items={segment.items}
+								key={segment.key}
+								onPreviewImage={onPreviewImage}
+								resolveWorkspaceImage={resolveWorkspaceImage}
+							/>
+						) : (
+							<MessageResponse
+								className="contents"
+								components={components}
+								isAnimating={isStreaming}
+								key={segment.key}
+								mode={isStreaming ? "streaming" : "static"}
+								remarkPlugins={ASSISTANT_MARKDOWN_REMARK_PLUGINS}
+							>
+								{segment.text}
+							</MessageResponse>
+						),
+					)}
+				</div>
+			) : (
+				<MessageResponse
+					className={cn(ASSISTANT_MARKDOWN_CLASSNAME, className)}
+					components={components}
+					isAnimating={isStreaming}
+					mode={isStreaming ? "streaming" : "static"}
+					remarkPlugins={ASSISTANT_MARKDOWN_REMARK_PLUGINS}
+				>
+					{text}
+				</MessageResponse>
+			)}
 		</div>
 	);
 }
 
-function AssistantMarkdownPart({ status, text }: { status?: DesktopThreadMessageStatus; text: string }) {
-	return <AssistantMarkdownResponse isStreaming={status?.type === "running"} text={text} />;
+function AssistantMarkdownPart({
+	onPreviewImage,
+	resolveWorkspaceImage,
+	status,
+	text,
+}: {
+	onPreviewImage?: (image: ThreadImagePreview) => void;
+	resolveWorkspaceImage?: WorkspaceImagePreviewResolver;
+	status?: DesktopThreadMessageStatus;
+	text: string;
+}) {
+	return (
+		<AssistantMarkdownResponse
+			isStreaming={status?.type === "running"}
+			onPreviewImage={onPreviewImage}
+			resolveWorkspaceImage={resolveWorkspaceImage}
+			text={text}
+		/>
+	);
 }
 
 function UserTextPart({ text }: { text: string }) {
@@ -1704,16 +1888,8 @@ function UserThreadAttachments({ attachments }: { attachments: readonly DesktopP
 	);
 }
 
-function AssistantMessageErrorNotice({ messageStatus }: { messageStatus?: DesktopThreadMessageStatus }) {
-	if (messageStatus?.type !== "incomplete" || messageStatus.reason !== "error") {
-		return null;
-	}
-	const description =
-		typeof messageStatus.error === "string" && messageStatus.error.trim().length > 0
-			? messageStatus.error
-			: "The agent run did not complete.";
-
-	return <ErrorNotice className="mt-3 text-[13px] leading-5" description={description} title="Agent run failed" />;
+function AssistantMessageRunStatusTask({ messageStatus }: { messageStatus?: DesktopThreadMessageStatus }) {
+	return <ThreadRunStatusTask className="mt-3" status={messageStatus} />;
 }
 
 function AssistantFileReferences({
@@ -2002,12 +2178,12 @@ function AssistantProposedPlanActions({
 
 function AssistantMessage({
 	message,
-	onOpenSubagentToolCall,
 	onPreviewImage,
+	resolveWorkspaceImage,
 }: {
 	message: DesktopThreadMessage;
-	onOpenSubagentToolCall?: (toolCall: ToolCallActivity) => void;
 	onPreviewImage?: (image: ThreadImagePreview) => void;
+	resolveWorkspaceImage?: WorkspaceImagePreviewResolver;
 }) {
 	const messageId = message.id ?? `assistant-${message.createdAt?.getTime() ?? "message"}`;
 	const messageStatus = message.status;
@@ -2032,7 +2208,6 @@ function AssistantMessage({
 							messageCustomMetadata={messageCustomMetadata}
 							messageId={messageId}
 							messageStatus={messageStatus}
-							onOpenSubagentToolCall={onOpenSubagentToolCall}
 							onPreviewImage={onPreviewImage}
 							parts={activityParts}
 						/>
@@ -2041,6 +2216,8 @@ function AssistantMessage({
 						textParts.map((part, partIndex) => (
 							<AssistantMarkdownPart
 								key={`${messageId}-text-${part.parentId ?? partIndex}`}
+								onPreviewImage={onPreviewImage}
+								resolveWorkspaceImage={resolveWorkspaceImage}
 								status={messageStatus}
 								text={part.text}
 							/>
@@ -2062,7 +2239,7 @@ function AssistantMessage({
 						messageStatus={messageStatus}
 					/>
 					<AssistantFileReferences messageCustomMetadata={messageCustomMetadata} messageStatus={messageStatus} />
-					<AssistantMessageErrorNotice messageStatus={messageStatus} />
+					<AssistantMessageRunStatusTask messageStatus={messageStatus} />
 				</AiMessageContent>
 			</div>
 		</AiMessage>
@@ -2856,7 +3033,6 @@ export function ChatWorkbench({
 	onOpenEnvironmentResource,
 	oauthProviders,
 	onOpenSettings,
-	onOpenSubagent,
 	onOpenWorkspacePreviewFile,
 	onRequestCapabilities,
 	onSetSessionMode,
@@ -2906,10 +3082,12 @@ export function ChatWorkbench({
 	const [attachmentErrors, setAttachmentErrors] = useState<DesktopPromptAttachmentError[]>([]);
 	const [composerInset, setComposerInset] = useState(DEFAULT_COMPOSER_INSET_PX);
 	const [previewImage, setPreviewImage] = useState<ThreadImagePreview | undefined>(undefined);
+	const workspaceImagePreviewCacheRef = useRef<Map<string, Promise<ResolvedThreadImagePreview>>>(new Map());
 	const previousAttachmentSessionIdRef = useRef<typeof activeAgentSessionId>(undefined);
 	useEffect(() => {
 		if (previousAttachmentSessionIdRef.current === activeAgentSessionId) return;
 		previousAttachmentSessionIdRef.current = activeAgentSessionId;
+		workspaceImagePreviewCacheRef.current.clear();
 		setSelectedPromptAttachments([]);
 		setAttachmentErrors([]);
 	}, [activeAgentSessionId]);
@@ -2926,22 +3104,48 @@ export function ChatWorkbench({
 		[isStreaming, messages, runActivityTiming, showThinkingBlocks, visibleStreamingMessage, toolCalls],
 	);
 	const isCompactionRunning = compactionActivity !== undefined;
-	const handleOpenSubagentToolCall = useCallback(
-		(toolCall: ToolCallActivity): void => {
-			const request = resolveSubagentOpenRequest(toolCall, activeAgentSessionId);
-			if (!request) {
-				return;
-			}
-			onOpenSubagent?.(request);
-		},
-		[activeAgentSessionId, onOpenSubagent],
-	);
 	const handleOpenImagePreview = useCallback((image: ThreadImagePreview): void => {
 		setPreviewImage(image);
 	}, []);
 	const handleCloseImagePreview = useCallback((): void => {
 		setPreviewImage(undefined);
 	}, []);
+	const resolveWorkspaceImagePreview = useCallback<WorkspaceImagePreviewResolver>(
+		async (path: string) => {
+			if (!activeAgentSessionId) {
+				throw new Error("Image not available");
+			}
+			const desktopBridge = (window as Partial<Window>).desktopAgent as Partial<DesktopAgentBridge> | undefined;
+			if (typeof desktopBridge?.openWorkspacePreviewFile !== "function") {
+				throw new Error("Image not available");
+			}
+
+			const cacheKey = `${activeAgentSessionId}:${path}`;
+			const cachedPreview = workspaceImagePreviewCacheRef.current.get(cacheKey);
+			if (cachedPreview) {
+				return cachedPreview;
+			}
+
+			const previewPromise = desktopBridge
+				.openWorkspacePreviewFile({ path, sessionId: activeAgentSessionId })
+				.then((file: DesktopPreviewFile) => {
+					if (file.kind !== "image" || !file.dataUrl?.startsWith("data:image/")) {
+						throw new Error(file.errorMessage ?? "Image not available");
+					}
+					return {
+						src: file.dataUrl,
+						title: file.name,
+					};
+				})
+				.catch((error: unknown) => {
+					workspaceImagePreviewCacheRef.current.delete(cacheKey);
+					throw error;
+				});
+			workspaceImagePreviewCacheRef.current.set(cacheKey, previewPromise);
+			return previewPromise;
+		},
+		[activeAgentSessionId],
+	);
 	const latestPlanMessageId = useMemo(
 		() => findLatestCompletedProposedPlanMessageId(assistantMessages),
 		[assistantMessages],
@@ -3160,8 +3364,8 @@ export function ChatWorkbench({
 													<AssistantMessage
 														key={messageKey}
 														message={message}
-														onOpenSubagentToolCall={handleOpenSubagentToolCall}
 														onPreviewImage={handleOpenImagePreview}
+														resolveWorkspaceImage={resolveWorkspaceImagePreview}
 													/>
 												);
 											}

@@ -1,44 +1,20 @@
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, FileTextIcon } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import type { CSSProperties, UIEvent } from "react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties, ReactNode, UIEvent } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { StatusDot, type StatusDotStatus } from "@/components/ui/status-dot";
+import { useStreamingPresentationFrame } from "@/hooks/use-streaming-presentation-frame";
 import { subtleReveal } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import type { ToolCallActivity } from "../../lib/conversation-timeline-projection.ts";
-import { activityDrawerTransition } from "../../lib/motion.ts";
-import { ChainOfThoughtImage } from "../ai-elements/chain-of-thought.tsx";
 import { TaskItem, TaskItemFile } from "../ai-elements/task.tsx";
-import { ToolActivityDetails } from "./ToolCallCard.tsx";
-
-const ACTIVITY_DRAWER_ANIMATION_MS = 400;
-
-export interface ToolTaskImagePreview {
-	alt: string;
-	src: string;
-	title?: string;
-}
-
-interface ToolResultImage {
-	alt: string;
-	caption?: string;
-	src: string;
-}
 
 export interface ToolTaskActivityProps {
 	toolCalls: ToolCallActivity[];
-	expandedToolCallIds: ReadonlySet<string>;
-	onToggleToolCall: (toolCallId: string) => void;
 	className?: string;
-	detailsMode?: "animated" | "static";
-	detailsSlot?: string;
-	detailsSpacerSlot?: string;
 	isAutoCollapsing?: boolean;
+	isRunActive?: boolean;
 	itemSlot?: string;
-	onBeforeToolToggle?: () => void;
-	onOpenSubagentToolCall?: (toolCall: ToolCallActivity) => void;
-	onPreviewImage?: (image: ToolTaskImagePreview) => void;
 	preserveOrder?: boolean;
 	statusLocale?: "en" | "zh";
 }
@@ -51,6 +27,29 @@ export interface ToolTaskSummaryProps {
 	runEndedAt?: number;
 	runStartedAt?: number;
 }
+
+interface RipgrepSummary {
+	pattern: string;
+	target?: string;
+}
+
+type ToolTaskGroupKind = "read-file" | "read-image" | "search";
+
+type ToolTaskDisplayItem =
+	| {
+			kind: "single";
+			key: string;
+			toolCall: ToolCallActivity;
+	  }
+	| {
+			kind: "group";
+			groupKind: ToolTaskGroupKind;
+			key: string;
+			toolCalls: ToolCallActivity[];
+	  };
+
+const TOOL_TASK_GROUP_MINIMUM = 3;
+const IMAGE_FILE_EXTENSION_PATTERN = /\.(?:png|jpe?g|gif|webp|bmp|tiff?|avif|heic|heif)$/i;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
@@ -84,10 +83,8 @@ function getPathLabel(path: string): string {
 	return segments[segments.length - 1] ?? path;
 }
 
-function getPathBasename(value: string): string {
-	const normalized = value.replace(/\\/g, "/");
-	const lastSegment = normalized.split("/").filter(Boolean).pop();
-	return lastSegment ?? value;
+function isImagePath(path: string | undefined): boolean {
+	return path ? IMAGE_FILE_EXTENSION_PATTERN.test(path) : false;
 }
 
 function truncateInline(value: string, maxLength: number): string {
@@ -104,7 +101,7 @@ function tokenizeCommand(command: string): string[] {
 	);
 }
 
-function getRipgrepActivityLabel(command: string): string | undefined {
+function getRipgrepSummary(command: string): RipgrepSummary | undefined {
 	const tokens = tokenizeCommand(command);
 	const rgIndex = tokens.findIndex((token) => token === "rg" || token.endsWith("/rg"));
 	if (rgIndex === -1) {
@@ -160,61 +157,223 @@ function getRipgrepActivityLabel(command: string): string | undefined {
 		return undefined;
 	}
 
-	const target = positionalArgs[1];
-	return target ? `Searched for ${pattern} in ${getPathLabel(target)}` : `Searched for ${pattern}`;
+	return { pattern, target: positionalArgs[1] };
 }
 
 function getSubagentSummary(toolCall: ToolCallActivity): string | undefined {
 	return getStringProperty(toolCall.args, ["title"]) ?? getStringProperty(toolCall.args, ["task"]);
 }
 
-export function getToolTaskActionLabel(toolCall: ToolCallActivity): string {
+function getMcpToolLabel(toolName: string): string | undefined {
+	if (!toolName.startsWith("mcp__")) {
+		return undefined;
+	}
+
+	const [serverId, ...toolNameParts] = toolName.slice("mcp__".length).split("__");
+	const mcpToolName = toolNameParts.join("__");
+	return serverId && mcpToolName ? `${serverId} / ${mcpToolName}` : toolName;
+}
+
+function TaskFilePill({ label }: { label: string }) {
+	return (
+		<TaskItemFile className="max-w-full text-[12px]">
+			<FileTextIcon className="size-3.5 text-muted-foreground" />
+			<span className="truncate">{label}</span>
+		</TaskItemFile>
+	);
+}
+
+function InlineCode({ children }: { children: ReactNode }) {
+	return <span className="rounded bg-muted/50 px-1 py-0.5 font-mono text-[12px] text-foreground">{children}</span>;
+}
+
+function getBashTaskLabel(command: string | undefined): ReactNode {
+	if (!command) {
+		return <span>Ran command</span>;
+	}
+
+	const ripgrepSummary = getRipgrepSummary(command);
+	if (ripgrepSummary) {
+		return (
+			<>
+				<span>Searching</span>
+				<InlineCode>"{truncateInline(ripgrepSummary.pattern, 48)}"</InlineCode>
+				{ripgrepSummary.target ? <TaskFilePill label={getPathLabel(ripgrepSummary.target)} /> : null}
+			</>
+		);
+	}
+
+	return <span>Ran command</span>;
+}
+
+function getToolTaskGroupKind(toolCall: ToolCallActivity): ToolTaskGroupKind | undefined {
 	const path = getToolArgsPath(toolCall.args);
 	const command = getToolArgsCommand(toolCall.args);
 
-	if (toolCall.toolName.startsWith("mcp__")) {
-		const [serverId, ...toolNameParts] = toolCall.toolName.slice("mcp__".length).split("__");
-		const toolName = toolNameParts.join("__");
-		return serverId && toolName ? `Used ${serverId} / ${toolName}` : `Used ${toolCall.toolName}`;
+	switch (toolCall.toolName) {
+		case "read":
+			return isImagePath(path) ? "read-image" : "read-file";
+		case "bash":
+			return command && getRipgrepSummary(command) ? "search" : undefined;
+		case "find":
+		case "grep":
+			return "search";
+		default:
+			return undefined;
+	}
+}
+
+function createSingleDisplayItem(toolCall: ToolCallActivity): ToolTaskDisplayItem {
+	return { kind: "single", key: toolCall.toolCallId, toolCall };
+}
+
+function flushToolTaskGroup(
+	items: ToolTaskDisplayItem[],
+	pendingToolCalls: ToolCallActivity[],
+	pendingGroupKind: ToolTaskGroupKind | undefined,
+): void {
+	if (pendingToolCalls.length === 0) {
+		return;
+	}
+
+	if (pendingGroupKind && pendingToolCalls.length >= TOOL_TASK_GROUP_MINIMUM) {
+		const firstToolCall = pendingToolCalls[0];
+		items.push({
+			kind: "group",
+			groupKind: pendingGroupKind,
+			key: `group:${pendingGroupKind}:${firstToolCall?.toolCallId}`,
+			toolCalls: pendingToolCalls,
+		});
+		return;
+	}
+
+	for (const toolCall of pendingToolCalls) {
+		items.push(createSingleDisplayItem(toolCall));
+	}
+}
+
+function getToolTaskDisplayItems(toolCalls: ToolCallActivity[]): ToolTaskDisplayItem[] {
+	const items: ToolTaskDisplayItem[] = [];
+	let pendingToolCalls: ToolCallActivity[] = [];
+	let pendingGroupKey: string | undefined;
+	let pendingGroupKind: ToolTaskGroupKind | undefined;
+
+	for (const toolCall of toolCalls) {
+		const groupKind = getToolTaskGroupKind(toolCall);
+		const groupKey = groupKind;
+		if (!groupKey || groupKey !== pendingGroupKey) {
+			flushToolTaskGroup(items, pendingToolCalls, pendingGroupKind);
+			pendingToolCalls = [];
+			pendingGroupKey = groupKey;
+			pendingGroupKind = groupKind;
+		}
+
+		if (!groupKey) {
+			items.push(createSingleDisplayItem(toolCall));
+			pendingGroupKey = undefined;
+			pendingGroupKind = undefined;
+			continue;
+		}
+
+		pendingToolCalls.push(toolCall);
+	}
+
+	flushToolTaskGroup(items, pendingToolCalls, pendingGroupKind);
+	return items;
+}
+
+export function getToolTaskActionLabel(toolCall: ToolCallActivity): string {
+	const path = getToolArgsPath(toolCall.args);
+	const command = getToolArgsCommand(toolCall.args);
+	const mcpToolLabel = getMcpToolLabel(toolCall.toolName);
+
+	if (mcpToolLabel) {
+		return `Used ${mcpToolLabel}`;
 	}
 
 	switch (toolCall.toolName) {
 		case "read":
 			return path ? `Read ${getPathLabel(path)}` : "Read file";
-		case "bash":
-			return command ? (getRipgrepActivityLabel(command) ?? "Ran command") : "Ran command";
+		case "bash": {
+			const ripgrepSummary = command ? getRipgrepSummary(command) : undefined;
+			if (ripgrepSummary) {
+				return ripgrepSummary.target
+					? `Searching "${ripgrepSummary.pattern}" in ${getPathLabel(ripgrepSummary.target)}`
+					: `Searching "${ripgrepSummary.pattern}"`;
+			}
+			return "Ran command";
+		}
 		case "edit":
 			return path ? `Edited ${getPathLabel(path)}` : "Edited file";
 		case "write":
 			return path ? `Wrote ${getPathLabel(path)}` : "Wrote file";
-		case "subagent":
-			return truncateInline(getSubagentSummary(toolCall) ?? "Run subagent", 96);
+		case "subagent": {
+			const subagentSummary = getSubagentSummary(toolCall);
+			return subagentSummary ? `Ran subagent ${truncateInline(subagentSummary, 80)}` : "Ran subagent";
+		}
 		default:
 			return `Used ${toolCall.toolName}`;
 	}
 }
 
-function getToolTaskDetailLabel(toolCall: ToolCallActivity): string {
-	const command = getToolArgsCommand(toolCall.args);
-	if (command) {
-		return truncateInline(command, 96);
-	}
-
+function getToolTaskContent(toolCall: ToolCallActivity): ReactNode {
 	const path = getToolArgsPath(toolCall.args);
-	if (path) {
-		return truncateInline(path, 96);
+	const command = getToolArgsCommand(toolCall.args);
+	const mcpToolLabel = getMcpToolLabel(toolCall.toolName);
+
+	if (mcpToolLabel) {
+		return (
+			<>
+				<span>Used</span>
+				<TaskFilePill label={mcpToolLabel} />
+			</>
+		);
 	}
 
-	const subagentSummary = getSubagentSummary(toolCall);
-	if (subagentSummary) {
-		return truncateInline(subagentSummary, 96);
+	switch (toolCall.toolName) {
+		case "read":
+			return path ? (
+				<>
+					<span>Read</span>
+					<TaskFilePill label={getPathLabel(path)} />
+				</>
+			) : (
+				<span>Read file</span>
+			);
+		case "bash":
+			return getBashTaskLabel(command);
+		case "edit":
+			return path ? (
+				<>
+					<span>Edited</span>
+					<TaskFilePill label={getPathLabel(path)} />
+				</>
+			) : (
+				<span>Edited file</span>
+			);
+		case "write":
+			return path ? (
+				<>
+					<span>Wrote</span>
+					<TaskFilePill label={getPathLabel(path)} />
+				</>
+			) : (
+				<span>Wrote file</span>
+			);
+		case "subagent": {
+			const subagentSummary = getSubagentSummary(toolCall);
+			return subagentSummary ? (
+				<>
+					<span>Ran subagent</span>
+					<InlineCode>{truncateInline(subagentSummary, 64)}</InlineCode>
+				</>
+			) : (
+				<span>Ran subagent</span>
+			);
+		}
+		default:
+			return <span>{getToolTaskActionLabel(toolCall)}</span>;
 	}
-
-	if (toolCall.toolName.startsWith("mcp__")) {
-		return toolCall.toolName.replace(/^mcp__/, "").replace(/__/g, " / ");
-	}
-
-	return toolCall.toolName;
 }
 
 export function formatToolTaskDuration(durationMs: number): string {
@@ -303,114 +462,15 @@ export function useToolTaskDurationMs(
 	return frozenDurationMsRef.current ?? timestampDurationMs;
 }
 
-function getRowStatusLabel(status: ToolCallActivity["status"], locale: "en" | "zh"): string {
-	if (locale === "zh") {
-		switch (status) {
-			case "completed":
-				return "完成";
-			case "error":
-				return "错误";
-			case "running":
-				return "运行中";
-		}
-	}
-
+function getTaskStatusLabel(status: ToolCallActivity["status"], locale: "en" | "zh"): string | undefined {
 	switch (status) {
 		case "completed":
-			return "Completed";
+			return undefined;
 		case "error":
-			return "Error";
+			return locale === "zh" ? "错误" : "Error";
 		case "running":
-			return "Running";
+			return locale === "zh" ? "运行中" : "Running";
 	}
-}
-
-function getStatusDotStatus(status: ToolCallActivity["status"]): StatusDotStatus {
-	switch (status) {
-		case "completed":
-			return "success";
-		case "error":
-			return "error";
-		case "running":
-			return "running";
-	}
-}
-
-function getToolResultContent(value: unknown): unknown[] {
-	if (!isRecord(value) || !Array.isArray(value.content)) {
-		return [];
-	}
-
-	return value.content;
-}
-
-function getImageMimeType(record: Record<string, unknown>): string | undefined {
-	return getStringProperty(record, ["mimeType", "mime_type", "mediaType", "media_type"]);
-}
-
-function getDataUrlImageSource(record: Record<string, unknown>): string | undefined {
-	const source = getStringProperty(record, ["image", "url"]);
-	return source?.startsWith("data:image/") ? source : undefined;
-}
-
-function getBase64ImageSource(record: Record<string, unknown>): string | undefined {
-	const mimeType = getImageMimeType(record);
-	if (!mimeType?.toLowerCase().startsWith("image/")) {
-		return undefined;
-	}
-
-	const data = getStringProperty(record, ["data", "base64"]);
-	return data ? `data:${mimeType};base64,${data}` : undefined;
-}
-
-function getToolResultImage(record: unknown, fallbackName: string | undefined): ToolResultImage | undefined {
-	if (!isRecord(record)) {
-		return undefined;
-	}
-
-	const source = getDataUrlImageSource(record) ?? getBase64ImageSource(record);
-	if (!source) {
-		return undefined;
-	}
-
-	const caption = getStringProperty(record, ["caption", "name", "filename", "fileName"]) ?? fallbackName;
-	return {
-		alt: caption ?? "Tool result image",
-		caption,
-		src: source,
-	};
-}
-
-function getToolResultImages(toolCall: ToolCallActivity): ToolResultImage[] {
-	const fallbackPath = getStringProperty(toolCall.args, ["path", "filePath", "file_path"]);
-	const fallbackName = fallbackPath ? getPathBasename(fallbackPath) : undefined;
-	const resultImages = getToolResultContent(toolCall.result)
-		.map((part) => getToolResultImage(part, fallbackName))
-		.filter((image): image is ToolResultImage => image !== undefined);
-
-	if (resultImages.length > 0) {
-		return resultImages;
-	}
-
-	return getToolResultContent(toolCall.partialResult)
-		.map((part) => getToolResultImage(part, fallbackName))
-		.filter((image): image is ToolResultImage => image !== undefined);
-}
-
-function getElementVisualHeight(element: HTMLElement | null): number {
-	if (!element) {
-		return 0;
-	}
-
-	const rectHeight = element.getBoundingClientRect().height;
-	const styles = window.getComputedStyle(element);
-	const marginTop = Number.parseFloat(styles.marginTop);
-	const marginBottom = Number.parseFloat(styles.marginBottom);
-	const marginHeight =
-		(Number.isFinite(marginTop) ? marginTop : 0) + (Number.isFinite(marginBottom) ? marginBottom : 0);
-	const measuredHeight =
-		(rectHeight || element.offsetHeight || element.clientHeight || element.scrollHeight) + marginHeight;
-	return Number.isFinite(measuredHeight) ? Math.max(0, Math.ceil(measuredHeight)) : 0;
 }
 
 export function sortToolCalls(toolCalls: ToolCallActivity[]): ToolCallActivity[] {
@@ -423,214 +483,55 @@ export function sortToolCalls(toolCalls: ToolCallActivity[]): ToolCallActivity[]
 	});
 }
 
-function ToolTaskImages({
-	images,
-	onPreviewImage,
-}: {
-	images: ToolResultImage[];
-	onPreviewImage?: (image: ToolTaskImagePreview) => void;
-}) {
-	if (images.length === 0) {
-		return null;
-	}
+function getToolTaskGroupActionLabel(displayItem: Extract<ToolTaskDisplayItem, { kind: "group" }>): string {
+	const totalCount = displayItem.toolCalls.length;
+	const failedCount = displayItem.toolCalls.filter((toolCall) => toolCall.status === "error").length;
+	const suffix = failedCount > 0 ? `, ${failedCount} failed` : "";
 
-	return (
-		<div className="grid max-w-full gap-2" data-slot="assistant-tool-call-cot-images">
-			{images.map((image, index) => (
-				<ChainOfThoughtImage
-					caption={image.caption}
-					className="max-w-[min(100%,20rem)]"
-					data-slot="assistant-tool-call-cot-image"
-					key={`${image.src.slice(0, 96)}-${index}`}
-					title={image.caption}
-				>
-					<button
-						aria-label={`Open image preview for ${image.alt}`}
-						className="block max-w-full cursor-zoom-in rounded-[calc(var(--radius-md)-2px)] text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
-						onClick={() => onPreviewImage?.({ alt: image.alt, src: image.src, title: image.caption })}
-						type="button"
-					>
-						<img
-							alt={image.alt}
-							className="max-h-56 max-w-full rounded-[calc(var(--radius-md)-2px)] object-contain"
-							src={image.src}
-						/>
-					</button>
-				</ChainOfThoughtImage>
-			))}
-		</div>
-	);
+	switch (displayItem.groupKind) {
+		case "read-image":
+			return `Read ${totalCount} images${suffix}`;
+		case "read-file":
+			return `Read ${totalCount} files${suffix}`;
+		case "search":
+			return `Searched ${totalCount} times${suffix}`;
+	}
 }
 
-function ToolTaskDetails({
-	detailsMode,
-	detailsSlot,
-	detailsSpacerSlot,
-	isOpen,
-	toolCall,
-}: {
-	detailsMode: "animated" | "static";
-	detailsSlot: string;
-	detailsSpacerSlot: string;
-	isOpen: boolean;
-	toolCall: ToolCallActivity;
-}) {
-	const [shouldRenderDetails, setShouldRenderDetails] = useState(isOpen);
-	const [isDrawerOpen, setIsDrawerOpen] = useState(isOpen);
-	const [drawerHeight, setDrawerHeight] = useState(0);
-	const detailsRef = useRef<HTMLDivElement | null>(null);
-	const drawerMotionPhase = isOpen ? (isDrawerOpen ? "open" : "opening") : "closed";
-
-	useLayoutEffect(() => {
-		if (detailsMode !== "animated") {
-			return undefined;
-		}
-
-		if (isOpen) {
-			setShouldRenderDetails(true);
-			setIsDrawerOpen(false);
-			setDrawerHeight(0);
-			const animationFrameId = window.requestAnimationFrame(() => {
-				setDrawerHeight(getElementVisualHeight(detailsRef.current));
-				setIsDrawerOpen(true);
-			});
-			return () => window.cancelAnimationFrame(animationFrameId);
-		}
-
-		setIsDrawerOpen(false);
-		return undefined;
-	}, [detailsMode, isOpen]);
-
-	useLayoutEffect(() => {
-		if (detailsMode !== "animated" || !isOpen || !shouldRenderDetails) {
-			return undefined;
-		}
-
-		const updateDrawerHeight = (): void => {
-			setDrawerHeight(getElementVisualHeight(detailsRef.current));
-		};
-
-		updateDrawerHeight();
-		const detailsElement = detailsRef.current;
-		if (!detailsElement || typeof ResizeObserver === "undefined") {
-			return undefined;
-		}
-
-		const resizeObserver = new ResizeObserver(updateDrawerHeight);
-		resizeObserver.observe(detailsElement);
-		return () => resizeObserver.disconnect();
-	}, [detailsMode, isOpen, shouldRenderDetails]);
-
-	useEffect(() => {
-		if (detailsMode !== "animated" || isOpen || !shouldRenderDetails) {
-			return;
-		}
-
-		const timeoutId = window.setTimeout(() => {
-			setShouldRenderDetails(false);
-		}, ACTIVITY_DRAWER_ANIMATION_MS);
-		return () => window.clearTimeout(timeoutId);
-	}, [detailsMode, isOpen, shouldRenderDetails]);
-
-	if (detailsMode === "static") {
-		if (!isOpen) {
-			return null;
-		}
-		return (
-			<div className="overflow-hidden [overflow-anchor:none]" data-slot="tool-activity-row-details">
-				<div className="ml-4 overflow-hidden rounded-lg border border-border/70 bg-[color:var(--surface-1)] px-3 py-3 shadow-none">
-					<ToolActivityDetails toolCall={toolCall} />
-				</div>
-			</div>
-		);
+function getToolTaskGroupStatus(toolCalls: ToolCallActivity[]): ToolCallActivity["status"] {
+	if (toolCalls.some((toolCall) => toolCall.status === "running")) {
+		return "running";
 	}
-
-	return (
-		<motion.div
-			animate={{ height: isDrawerOpen ? drawerHeight : 0 }}
-			className="overflow-hidden"
-			data-motion="structural-drawer"
-			data-motion-engine="motion"
-			data-motion-mode="drawer"
-			data-motion-origin="top"
-			data-motion-owner="spacer"
-			data-motion-phase={drawerMotionPhase}
-			data-motion-scope="structural"
-			data-motion-target-height={isOpen ? drawerHeight : 0}
-			data-slot={detailsSpacerSlot}
-			data-state={isOpen ? "open" : "closed"}
-			data-structural-layout-driver="height"
-			initial={false}
-			transition={activityDrawerTransition}
-		>
-			{shouldRenderDetails ? (
-				<div
-					aria-hidden={!isOpen}
-					className="mt-1 block min-w-0 max-w-full overflow-x-hidden px-2 pb-1 [overflow-anchor:none]"
-					data-layout="timeline-flow"
-					data-motion="structural-drawer"
-					data-motion-engine="motion"
-					data-motion-mode="drawer"
-					data-motion-origin="top"
-					data-motion-owner="fixed-content"
-					data-motion-scope="structural"
-					data-slot={detailsSlot}
-					ref={detailsRef}
-				>
-					<ToolActivityDetails toolCall={toolCall} />
-				</div>
-			) : null}
-		</motion.div>
-	);
+	if (toolCalls.some((toolCall) => toolCall.status === "error")) {
+		return "error";
+	}
+	return "completed";
 }
 
-function ToolTaskActivityItem({
+function ToolTaskGroupItem({
 	autoCollapseIndex,
-	detailsMode,
-	detailsSlot,
-	detailsSpacerSlot,
+	displayItem,
 	isAutoCollapsing,
-	isOpen,
 	itemSlot,
-	onBeforeToolToggle,
-	onOpenSubagentToolCall,
-	onPreviewImage,
-	onToggleToolCall,
 	statusLocale,
-	toolCall,
 }: {
 	autoCollapseIndex: number;
-	detailsMode: "animated" | "static";
-	detailsSlot: string;
-	detailsSpacerSlot: string;
+	displayItem: Extract<ToolTaskDisplayItem, { kind: "group" }>;
 	isAutoCollapsing: boolean;
-	isOpen: boolean;
 	itemSlot: string;
-	onBeforeToolToggle?: () => void;
-	onOpenSubagentToolCall?: (toolCall: ToolCallActivity) => void;
-	onPreviewImage?: (image: ToolTaskImagePreview) => void;
-	onToggleToolCall: (toolCallId: string) => void;
 	statusLocale: "en" | "zh";
-	toolCall: ToolCallActivity;
 }) {
-	const actionLabel = getToolTaskActionLabel(toolCall);
-	const detailLabel = getToolTaskDetailLabel(toolCall);
-	const visibleDetailLabel = detailLabel === actionLabel ? undefined : detailLabel;
-	const statusLabel = getRowStatusLabel(toolCall.status, statusLocale);
-	const images = getToolResultImages(toolCall);
-
-	function handleToolCallToggle(): void {
-		onBeforeToolToggle?.();
-		if (toolCall.toolName === "subagent" && onOpenSubagentToolCall) {
-			onOpenSubagentToolCall(toolCall);
-			return;
-		}
-		onToggleToolCall(toolCall.toolCallId);
-	}
+	const groupStatus = getToolTaskGroupStatus(displayItem.toolCalls);
+	const statusLabel = getTaskStatusLabel(groupStatus, statusLocale);
+	const actionLabel = getToolTaskGroupActionLabel(displayItem);
 
 	return (
 		<TaskItem
-			className={cn("grid min-w-0 max-w-full gap-2 overflow-x-hidden [overflow-anchor:none]")}
+			aria-label={[actionLabel, statusLabel].filter(Boolean).join(" ")}
+			className={cn(
+				"flex min-w-0 max-w-full flex-wrap items-center gap-x-1.5 gap-y-1 overflow-x-hidden [overflow-anchor:none]",
+				groupStatus === "error" && "text-[color:var(--destructive)]",
+			)}
 			data-auto-collapse={isAutoCollapsing ? "closing" : undefined}
 			data-auto-collapse-index={isAutoCollapsing ? autoCollapseIndex : undefined}
 			data-slot={itemSlot}
@@ -638,50 +539,82 @@ function ToolTaskActivityItem({
 				isAutoCollapsing ? ({ "--runtime-tool-collapse-index": autoCollapseIndex } as CSSProperties) : undefined
 			}
 		>
-			<Button
-				aria-expanded={isOpen}
-				aria-label={[actionLabel, toolCall.toolName, visibleDetailLabel, statusLabel]
-					.filter((label): label is string => label !== undefined)
-					.join(" ")}
-				className={cn(
-					"group/tool-row h-auto w-full justify-start gap-0 rounded-lg px-1.5 py-1.5 text-left transition-[background-color,color] duration-[var(--duration-fast)] ease-[var(--ease-standard)] hover:bg-muted/35 hover:text-foreground",
-					isOpen && "bg-muted/30 text-foreground",
-				)}
-				onClick={handleToolCallToggle}
-				type="button"
-				variant="ghost"
-			>
-				<span className="grid w-full grid-cols-[auto_minmax(0,1fr)_auto_auto_auto] items-center gap-2">
-					<StatusDot className="size-2" label={statusLabel} status={getStatusDotStatus(toolCall.status)} />
-					<span className="grid min-w-0 gap-0.5">
-						<span className="min-w-0 truncate text-sm text-[color:var(--color-workbench-ink)] transition-colors duration-150 group-hover/tool-row:text-foreground">
-							{actionLabel}
-						</span>
-						{visibleDetailLabel ? (
-							<span className="min-w-0 truncate text-muted-foreground text-xs transition-colors duration-150 group-hover/tool-row:text-foreground">
-								{visibleDetailLabel}
-							</span>
-						) : null}
-					</span>
-					<TaskItemFile className="max-w-28 truncate font-mono text-[11px]">{toolCall.toolName}</TaskItemFile>
-					<span className="shrink-0 text-right text-[13px] text-muted-foreground transition-colors duration-150 group-hover/tool-row:text-foreground">
-						{statusLabel}
-					</span>
-					<ChevronRight
-						className={cn("size-4 shrink-0 text-muted-foreground transition-transform", isOpen && "rotate-90")}
-						data-slot="assistant-tool-call-chevron"
-					/>
-				</span>
-			</Button>
-			<ToolTaskImages images={images} onPreviewImage={onPreviewImage} />
-			<ToolTaskDetails
-				detailsMode={detailsMode}
-				detailsSlot={detailsSlot}
-				detailsSpacerSlot={detailsSpacerSlot}
-				isOpen={isOpen}
-				toolCall={toolCall}
-			/>
+			<span className="inline-flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">{actionLabel}</span>
+			{statusLabel ? <span className="text-muted-foreground text-xs">{statusLabel}</span> : null}
 		</TaskItem>
+	);
+}
+
+function ToolTaskActivityItem({
+	autoCollapseIndex,
+	isAutoCollapsing,
+	itemSlot,
+	statusLocale,
+	toolCall,
+}: {
+	autoCollapseIndex: number;
+	isAutoCollapsing: boolean;
+	itemSlot: string;
+	statusLocale: "en" | "zh";
+	toolCall: ToolCallActivity;
+}) {
+	const statusLabel = getTaskStatusLabel(toolCall.status, statusLocale);
+
+	return (
+		<TaskItem
+			aria-label={[getToolTaskActionLabel(toolCall), statusLabel].filter(Boolean).join(" ")}
+			className={cn(
+				"flex min-w-0 max-w-full flex-wrap items-center gap-x-1.5 gap-y-1 overflow-x-hidden [overflow-anchor:none]",
+				toolCall.status === "error" && "text-[color:var(--destructive)]",
+			)}
+			data-auto-collapse={isAutoCollapsing ? "closing" : undefined}
+			data-auto-collapse-index={isAutoCollapsing ? autoCollapseIndex : undefined}
+			data-slot={itemSlot}
+			style={
+				isAutoCollapsing ? ({ "--runtime-tool-collapse-index": autoCollapseIndex } as CSSProperties) : undefined
+			}
+		>
+			<span className="inline-flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
+				{getToolTaskContent(toolCall)}
+			</span>
+			{statusLabel ? <span className="text-muted-foreground text-xs">{statusLabel}</span> : null}
+		</TaskItem>
+	);
+}
+
+function ToolTaskDisplayItemView({
+	autoCollapseIndex,
+	displayItem,
+	isAutoCollapsing,
+	itemSlot,
+	statusLocale,
+}: {
+	autoCollapseIndex: number;
+	displayItem: ToolTaskDisplayItem;
+	isAutoCollapsing: boolean;
+	itemSlot: string;
+	statusLocale: "en" | "zh";
+}) {
+	if (displayItem.kind === "group") {
+		return (
+			<ToolTaskGroupItem
+				autoCollapseIndex={autoCollapseIndex}
+				displayItem={displayItem}
+				isAutoCollapsing={isAutoCollapsing}
+				itemSlot={itemSlot}
+				statusLocale={statusLocale}
+			/>
+		);
+	}
+
+	return (
+		<ToolTaskActivityItem
+			autoCollapseIndex={autoCollapseIndex}
+			isAutoCollapsing={isAutoCollapsing}
+			itemSlot={itemSlot}
+			statusLocale={statusLocale}
+			toolCall={displayItem.toolCall}
+		/>
 	);
 }
 
@@ -722,17 +655,10 @@ export function ToolTaskSummary({
 
 export function ToolTaskActivity({
 	toolCalls,
-	expandedToolCallIds,
-	onToggleToolCall,
 	className,
-	detailsMode = "static",
-	detailsSlot = "tool-activity-row-details",
-	detailsSpacerSlot = "tool-activity-row-details-spacer",
 	isAutoCollapsing = false,
+	isRunActive = false,
 	itemSlot = "tool-task-item",
-	onBeforeToolToggle,
-	onOpenSubagentToolCall,
-	onPreviewImage,
 	preserveOrder = false,
 	statusLocale = "zh",
 }: ToolTaskActivityProps) {
@@ -742,6 +668,8 @@ export function ToolTaskActivity({
 		() => (preserveOrder ? [...toolCalls] : sortToolCalls(toolCalls)),
 		[preserveOrder, toolCalls],
 	);
+	const displayItems = useMemo(() => getToolTaskDisplayItems(sortedToolCalls), [sortedToolCalls]);
+	const presentedDisplayItems = useStreamingPresentationFrame(displayItems, isRunActive);
 
 	useEffect(() => {
 		const activityList = activityListRef.current;
@@ -752,7 +680,7 @@ export function ToolTaskActivity({
 		activityList.scrollTop = activityList.scrollHeight;
 	});
 
-	if (sortedToolCalls.length === 0) {
+	if (presentedDisplayItems.length === 0) {
 		return null;
 	}
 
@@ -766,33 +694,39 @@ export function ToolTaskActivity({
 		<ul
 			aria-label="Tool activity"
 			className={cn(
-				"native-scrollbar grid max-h-[min(48vh,32rem)] list-none gap-1.5 overflow-y-auto overscroll-contain pr-1 [overflow-anchor:none]",
+				"native-scrollbar grid max-h-[min(48vh,32rem)] list-none gap-2 overflow-y-auto overscroll-contain pr-1 [overflow-anchor:none]",
 				className,
 			)}
 			onScroll={handleActivityScroll}
 			ref={activityListRef}
 		>
-			<AnimatePresence initial={false}>
-				{sortedToolCalls.map((toolCall, index) => (
-					<motion.li className="grid gap-2" key={toolCall.toolCallId} {...subtleReveal}>
-						<ToolTaskActivityItem
+			{isRunActive ? (
+				presentedDisplayItems.map((displayItem, index) => (
+					<li className="grid gap-2" key={displayItem.key}>
+						<ToolTaskDisplayItemView
 							autoCollapseIndex={index}
-							detailsMode={detailsMode}
-							detailsSlot={detailsSlot}
-							detailsSpacerSlot={detailsSpacerSlot}
+							displayItem={displayItem}
 							isAutoCollapsing={isAutoCollapsing}
-							isOpen={expandedToolCallIds.has(toolCall.toolCallId)}
 							itemSlot={itemSlot}
-							onBeforeToolToggle={onBeforeToolToggle}
-							onOpenSubagentToolCall={onOpenSubagentToolCall}
-							onPreviewImage={onPreviewImage}
-							onToggleToolCall={onToggleToolCall}
 							statusLocale={statusLocale}
-							toolCall={toolCall}
 						/>
-					</motion.li>
-				))}
-			</AnimatePresence>
+					</li>
+				))
+			) : (
+				<AnimatePresence initial={false}>
+					{presentedDisplayItems.map((displayItem, index) => (
+						<motion.li className="grid gap-2" key={displayItem.key} {...subtleReveal}>
+							<ToolTaskDisplayItemView
+								autoCollapseIndex={index}
+								displayItem={displayItem}
+								isAutoCollapsing={isAutoCollapsing}
+								itemSlot={itemSlot}
+								statusLocale={statusLocale}
+							/>
+						</motion.li>
+					))}
+				</AnimatePresence>
+			)}
 		</ul>
 	);
 }
