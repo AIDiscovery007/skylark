@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
@@ -66,6 +69,12 @@ describe("mode-aware runtime policy", () => {
 			"create_events",
 			DESKTOP_SUBAGENT_TOOL_NAME,
 		]);
+		expect(policy.builtInTools.find((tool) => tool.name === "read")?.promptGuidelines?.join("\n")).toContain(
+			"Do not write Python scripts or use image libraries to visually inspect images",
+		);
+		expect(policy.builtInTools.find((tool) => tool.name === "bash")?.promptGuidelines?.join("\n")).toContain(
+			"Use sips only for image dimensions",
+		);
 	});
 
 	it("allows only conservative read-only bash commands in plan mode", () => {
@@ -122,6 +131,30 @@ describe("mode-aware runtime policy", () => {
 		);
 		expect(policy.getToolBlockReason("read", {})).toBeUndefined();
 		expect(policy.getToolBlockReason("bash", { command: "git status --short" })).toBeUndefined();
+	});
+
+	it("keeps image read fallback out of the upstream inline size limit path", async () => {
+		const tempDir = await mkdtemp(join(tmpdir(), "skylark-read-image-"));
+		try {
+			await writeFile(join(tempDir, "panel_003.jpg"), Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00]));
+			const policy = createModeAwareRuntimePolicy({
+				...runtimePolicySupport,
+				agentMode: "execute",
+				cwd: tempDir,
+				desktopSessionId: "session-1",
+			});
+			const readTool = policy.builtInTools.find((tool) => tool.name === "read");
+
+			const result = await readTool?.execute("read-image-1", { path: "panel_003.jpg" }, undefined, undefined, {
+				model: desktopTestModel,
+			} as never);
+			const text = result?.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
+
+			expect(text).toContain("Image could not be prepared as model image content");
+			expect(text).not.toContain("Image omitted: could not be resized below the inline image size limit");
+		} finally {
+			await rm(tempDir, { force: true, recursive: true });
+		}
 	});
 
 	it("resolves active tools for initial creation and runtime refresh", () => {

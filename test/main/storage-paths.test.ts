@@ -17,6 +17,7 @@ describe("createDesktopStoragePaths", () => {
 		expect(paths.providerKeysFilePath).toBe(join("/Users/test", ".skylark", "provider-keys.json"));
 		expect(paths.sessionIndexFilePath).toBe(join("/Users/test", ".skylark", "session_index.jsonl"));
 		expect(paths.eventManagementCriteriaFilePath).toBe(join("/Users/test", ".skylark", "events", "EVENTS.md"));
+		expect(paths.promptAttachmentsDir).toBe(join("/Users/test", ".skylark", "prompt-attachments"));
 		expect(paths.sessionsDir).toBe(join("/Users/test", ".skylark", "sessions"));
 		expect(paths.archivedSessionsDir).toBe(join("/Users/test", ".skylark", "archived_sessions"));
 		expect(paths.platformStateFilePath).toBe(

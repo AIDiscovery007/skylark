@@ -94,6 +94,16 @@ function getLastUserText(context: Context): string {
 				.join("\n");
 }
 
+function getLastUserImages(context: Context): Array<{ type: "image"; mimeType: string; data: string }> {
+	const message = [...context.messages].reverse().find((item) => item.role === "user");
+	if (!message || typeof message.content === "string") {
+		return [];
+	}
+	return message.content.filter(
+		(part): part is { type: "image"; mimeType: string; data: string } => part.type === "image",
+	);
+}
+
 function getToolText(result: { content: Array<{ type: string; text?: string }> }): string {
 	const [content] = result.content;
 	if (!content || content.type !== "text" || typeof content.text !== "string") {
@@ -1091,6 +1101,59 @@ describe("createDesktopAgentRuntime", () => {
 				},
 			],
 		});
+	});
+
+	it("sends prompt attachment images as multimodal user content", async () => {
+		const faux = createFauxRegistration();
+		let observedPrompt = "";
+		let observedImages: Array<{ type: "image"; mimeType: string; data: string }> = [];
+		faux.setResponses([
+			(context) => {
+				observedPrompt = getLastUserText(context);
+				observedImages = getLastUserImages(context);
+				return fauxAssistantMessage("ok");
+			},
+		]);
+		const runtime = await createDesktopAgentRuntime({
+			cwd: "/workspace/project",
+			getApiKey: () => "secret",
+			model: {
+				id: "desktop-runtime-model",
+				name: "Desktop Runtime Model",
+				api: "faux",
+				provider: "desktop-runtime-faux",
+				baseUrl: "https://faux.local",
+				reasoning: false,
+				input: ["text", "image"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 128000,
+				maxTokens: 4096,
+			} satisfies Model<"faux">,
+		});
+
+		await runtime.prompt({
+			text: "Describe this image",
+			attachments: [
+				{
+					id: "attachment-1",
+					kind: "image",
+					name: "panel.png",
+					mimeType: "image/png",
+					size: 42,
+					promptText: '<file name="panel.png"></file>',
+					images: [{ type: "image", mimeType: "image/png", data: "iVBORw0KGgo=" }],
+				},
+			],
+		});
+		await runtime.waitForIdle();
+
+		expect(observedPrompt).toContain("Describe this image");
+		expect(observedImages).toEqual([{ type: "image", mimeType: "image/png", data: "iVBORw0KGgo=" }]);
+		const userMessage = runtime.getState().messages.find((message) => message.role === "user");
+		expect(userMessage?.content).toEqual([
+			expect.objectContaining({ type: "text", text: expect.stringContaining("Describe this image") }),
+			{ type: "image", mimeType: "image/png", data: "iVBORw0KGgo=" },
+		]);
 	});
 
 	it("attaches prompt attachment metadata before the agent response completes", async () => {

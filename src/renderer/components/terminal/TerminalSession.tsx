@@ -5,6 +5,8 @@ import type { DesktopTerminalSource } from "../../../shared/types.ts";
 import { markRendererPerformance, measureRendererPerformance } from "../../lib/performance-marks.ts";
 
 const FALLBACK_TERMINAL_SIZE = { cols: 80, rows: 24 };
+const FALLBACK_TERMINAL_FONT_FAMILY =
+	'"SFMono-Regular", "SF Mono", ui-monospace, Menlo, Consolas, "JetBrains Mono", "Jetbrains Mono", "Liberation Mono", "Courier New", monospace';
 const FALLBACK_TERMINAL_FONT_SIZE = 12;
 
 type TerminalThemeColorKey =
@@ -135,6 +137,56 @@ function getTerminalFontSize(container: HTMLElement): number {
 	return Number.isFinite(fontSize) && fontSize > 0 ? fontSize : FALLBACK_TERMINAL_FONT_SIZE;
 }
 
+function normalizeCssValue(value: string): string {
+	return value.replace(/\s+/g, " ").trim();
+}
+
+function getRootCssProperty(container: HTMLElement, variableName: string): string | undefined {
+	const root = container.ownerDocument.documentElement;
+	const value = container.ownerDocument.defaultView?.getComputedStyle(root).getPropertyValue(variableName);
+	const normalizedValue = normalizeCssValue(value ?? "");
+	return normalizedValue.length > 0 ? normalizedValue : undefined;
+}
+
+function resolveRootCssValue(
+	container: HTMLElement,
+	rawValue: string | undefined,
+	visitedVariables = new Set<string>(),
+): string | undefined {
+	const value = normalizeCssValue(rawValue ?? "");
+	if (value.length === 0) {
+		return undefined;
+	}
+
+	const variableMatch = /^var\(\s*(--[\w-]+)\s*(?:,\s*(.*))?\)$/.exec(value);
+	if (!variableMatch) {
+		return value;
+	}
+
+	const [, variableName, fallbackValue] = variableMatch;
+	if (!visitedVariables.has(variableName)) {
+		visitedVariables.add(variableName);
+		const resolvedVariableValue = resolveRootCssValue(
+			container,
+			getRootCssProperty(container, variableName),
+			visitedVariables,
+		);
+		if (resolvedVariableValue) {
+			return resolvedVariableValue;
+		}
+	}
+
+	return resolveRootCssValue(container, fallbackValue, visitedVariables);
+}
+
+function getTerminalFontFamily(container: HTMLElement): string {
+	return (
+		resolveRootCssValue(container, getRootCssProperty(container, "--desktop-code-font-family")) ??
+		resolveRootCssValue(container, getRootCssProperty(container, "--font-mono")) ??
+		FALLBACK_TERMINAL_FONT_FAMILY
+	);
+}
+
 export function TerminalSession({
 	isActive,
 	isPanelOpen,
@@ -173,7 +225,7 @@ export function TerminalSession({
 		}
 
 		terminal.options.theme = getTerminalTheme(container);
-		terminal.options.fontFamily = "var(--desktop-code-font-family, var(--font-mono))";
+		terminal.options.fontFamily = getTerminalFontFamily(container);
 		terminal.options.fontSize = getTerminalFontSize(container);
 	}, []);
 
@@ -225,7 +277,7 @@ export function TerminalSession({
 		const terminal = new Terminal({
 			convertEol: true,
 			cursorBlink: true,
-			fontFamily: "var(--desktop-code-font-family, var(--font-mono))",
+			fontFamily: getTerminalFontFamily(container),
 			fontSize: getTerminalFontSize(container),
 			lineHeight: 1.25,
 			scrollback: 4000,

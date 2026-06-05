@@ -23,6 +23,7 @@ export interface DesktopStoragePaths {
 	archivedSessionsDir: string;
 	eventsDir: string;
 	eventAttachmentsDir: string;
+	promptAttachmentsDir: string;
 	platformStateFilePath: string;
 }
 
@@ -70,6 +71,7 @@ export function createDesktopStoragePaths(
 		archivedSessionsDir: join(rootDir, "archived_sessions"),
 		eventsDir: join(rootDir, "events", "data"),
 		eventAttachmentsDir: join(rootDir, "events", "attachments"),
+		promptAttachmentsDir: join(rootDir, "prompt-attachments"),
 		platformStateFilePath: join(platformRootDir, "platform-state.json"),
 	};
 }

@@ -339,7 +339,9 @@ function installBridge() {
 
 afterEach(() => {
 	cleanup();
+	document.documentElement.style.removeProperty("--desktop-code-font-family");
 	document.documentElement.style.removeProperty("--desktop-code-font-size");
+	document.documentElement.style.removeProperty("--font-mono");
 	terminalMocks.MockTerminal.instances.length = 0;
 	Reflect.deleteProperty(window, "desktopAgent");
 });
@@ -469,6 +471,24 @@ describe("TerminalPanel", () => {
 		await waitFor(() => {
 			expect(terminal.options.fontSize).toBe(18);
 		});
+	});
+
+	it("passes a resolved monospace font family to xterm", async () => {
+		const { bridge } = installBridge();
+		document.documentElement.style.setProperty("--desktop-code-font-family", "var(--font-mono)");
+		document.documentElement.style.setProperty("--font-mono", '"Skylark Mono", Menlo, monospace');
+
+		render(<ControlledTerminalPanel initialOpen />);
+
+		await waitFor(() => {
+			expect(bridge.createTerminal).toHaveBeenCalledWith(
+				expect.objectContaining({ sessionId: "session-1", terminalId: "terminal-1" }),
+			);
+		});
+
+		const terminal = terminalMocks.MockTerminal.instances[0];
+		expect(terminal.options.fontFamily).toBe('"Skylark Mono", Menlo, monospace');
+		expect(terminal.options.fontFamily).not.toContain("var(");
 	});
 
 	it("adds, routes, switches, and closes terminal tabs independently", async () => {

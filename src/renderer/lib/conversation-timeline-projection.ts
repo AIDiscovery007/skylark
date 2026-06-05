@@ -184,6 +184,12 @@ function messageFingerprint(message: AgentMessage): string {
 	return JSON.stringify(message);
 }
 
+function messageAgentEndOverlapFingerprint(message: AgentMessage): string {
+	const identity = { ...(message as unknown as Record<string, unknown>) };
+	delete identity.metadata;
+	return JSON.stringify(identity);
+}
+
 function isCompactionSummaryMessage(message: AgentMessage): boolean {
 	return (message as { role?: string }).role === "compactionSummary";
 }
@@ -244,15 +250,15 @@ function appendMissingAgentEndMessages(messages: AgentMessage[], newMessages: Ag
 		return messages;
 	}
 
-	const existingFingerprints = messages.map(messageFingerprint);
-	const incomingFingerprints = newMessages.map(messageFingerprint);
+	const existingFingerprints = messages.map(messageAgentEndOverlapFingerprint);
+	const incomingFingerprints = newMessages.map(messageAgentEndOverlapFingerprint);
 	const maxOverlap = Math.min(existingFingerprints.length, incomingFingerprints.length);
 
 	for (let overlap = maxOverlap; overlap > 0; overlap -= 1) {
 		const existingSuffix = existingFingerprints.slice(existingFingerprints.length - overlap);
 		const incomingPrefix = incomingFingerprints.slice(0, overlap);
 		if (existingSuffix.join("\u0000") === incomingPrefix.join("\u0000")) {
-			return [...messages, ...newMessages.slice(overlap)];
+			return [...messages.slice(0, messages.length - overlap), ...newMessages];
 		}
 	}
 

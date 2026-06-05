@@ -408,6 +408,42 @@ describe("assistant runtime adapter", () => {
 		]);
 	});
 
+	it("keeps user image content when prompt attachment metadata hides injected file content", () => {
+		const [converted] = createAssistantUiRuntimeMessages({
+			messages: [
+				{
+					role: "user",
+					content: [
+						{ type: "text", text: 'Please inspect this\n\n<file name="panel.png"></file>' },
+						{ type: "image", mimeType: "image/png", data: "iVBORw0KGgo=" },
+					],
+					timestamp: 1,
+					metadata: {
+						custom: {
+							desktopPromptVisibleText: "Please inspect this",
+							desktopPromptAttachments: [
+								{
+									id: "attachment-1",
+									kind: "image",
+									name: "panel.png",
+									mimeType: "image/png",
+									size: 42,
+								},
+							],
+						},
+					},
+				} as Extract<AgentMessage, { role: "user" }>,
+			],
+			showThinkingBlocks: true,
+		});
+
+		expect(converted.role).toBe("user");
+		expect(getParts(converted)).toEqual([
+			{ type: "text", text: "Please inspect this" },
+			{ type: "image", image: "data:image/png;base64,iVBORw0KGgo=" },
+		]);
+	});
+
 	it("strips injected prompt file blocks from user messages before attachment metadata hydrates", () => {
 		const [converted] = createAssistantUiRuntimeMessages({
 			messages: [

@@ -16,6 +16,7 @@ import {
 	validateMcpServerUpsertRequest,
 	validateOpenEventAttachmentsRequest,
 	validatePrepareEventAttachmentsRequest,
+	validatePreparePromptAttachmentsRequest,
 	validatePreviewFileRequest,
 	validatePromptRequest,
 	validatePromptTemplateDeleteRequest,
@@ -39,6 +40,7 @@ import { DEFAULT_DESKTOP_APPEARANCE_SETTINGS } from "../../src/shared/types.ts";
 
 describe("validate-ipc", () => {
 	it("accepts well-formed prompt requests and rejects malformed payloads", () => {
+		const inlineImageData = "a".repeat(600_000);
 		expect(validatePromptRequest({ sessionId: "session-1", text: "hello" })).toEqual({
 			sessionId: "session-1",
 			text: "hello",
@@ -82,6 +84,60 @@ describe("validate-ipc", () => {
 					size: 12,
 					promptText: '<file name="notes.md">hello</file>',
 					images: [],
+				},
+			],
+		});
+		expect(
+			validatePromptRequest({
+				sessionId: "session-1",
+				text: "",
+				attachments: [
+					{
+						id: "attachment-1",
+						kind: "image",
+						name: "panel_003.jpg",
+						mimeType: "image/jpeg",
+						size: 450_000,
+						promptText: '<file name="panel_003.jpg"></file>',
+						images: [{ type: "image", mimeType: "image/jpeg", data: inlineImageData }],
+					},
+				],
+			}),
+		).toEqual({
+			sessionId: "session-1",
+			text: "",
+			attachments: [
+				{
+					id: "attachment-1",
+					kind: "image",
+					name: "panel_003.jpg",
+					mimeType: "image/jpeg",
+					size: 450_000,
+					promptText: '<file name="panel_003.jpg"></file>',
+					images: [{ type: "image", mimeType: "image/jpeg", data: inlineImageData }],
+				},
+			],
+		});
+		expect(
+			validatePreparePromptAttachmentsRequest({
+				candidates: [
+					{
+						type: "inline_image",
+						name: "pasted-image.png",
+						mimeType: "image/png",
+						data: inlineImageData,
+						size: 450_000,
+					},
+				],
+			}),
+		).toEqual({
+			candidates: [
+				{
+					type: "inline_image",
+					name: "pasted-image.png",
+					mimeType: "image/png",
+					data: inlineImageData,
+					size: 450_000,
 				},
 			],
 		});

@@ -36,6 +36,75 @@ describe("tool activity rendering", () => {
 		expect(html).toContain("@@ -1,1 +1,1 @@");
 	});
 
+	it("keeps image content out of expanded tool result previews", () => {
+		const html = renderToStaticMarkup(
+			createElement(ToolActivityDetails, {
+				toolCall: {
+					toolCallId: "mcp-image-1",
+					toolName: "mcp__browser__screenshot",
+					args: { selector: "#preview" },
+					status: "completed",
+					startedAt: 1,
+					updatedAt: 2,
+					completedAt: 2,
+					result: {
+						content: [
+							{ type: "text", text: "Screenshot captured." },
+							{
+								type: "image",
+								name: "preview.png",
+								mimeType: "image/png",
+								data: "iVBORw0KGgo=",
+							},
+						],
+					},
+				},
+			}),
+		);
+
+		expect(html).not.toContain('data-slot="tool-activity-image"');
+		expect(html).not.toContain('src="data:image/png;base64,iVBORw0KGgo="');
+		expect(html).not.toContain('alt="preview.png"');
+		expect(html).toContain("preview.png");
+		expect(html).toContain("Screenshot captured.");
+	});
+
+	it("omits image previews and raw base64 from generic tool output", () => {
+		const largeBase64 = "a".repeat(128);
+		const html = renderToStaticMarkup(
+			createElement(ToolActivityDetails, {
+				toolCall: {
+					toolCallId: "mcp-image-attachment-1",
+					toolName: "mcp__browser__inspect",
+					args: { target: "preview" },
+					status: "completed",
+					startedAt: 1,
+					updatedAt: 2,
+					completedAt: 2,
+					result: {
+						content: [{ type: "text", text: "Attached image metadata." }],
+						details: {
+							attachments: [
+								{
+									kind: "image",
+									name: "activity-preview.png",
+									mimeType: "image/png",
+									images: [{ data: largeBase64, mimeType: "image/png" }],
+								},
+							],
+						},
+					},
+				},
+			}),
+		);
+
+		expect(html).not.toContain('data-slot="tool-activity-image"');
+		expect(html).not.toContain('src="data:image/png;base64,');
+		expect(html).toContain("activity-preview.png");
+		expect(html).toContain("[base64 image omitted]");
+		expect(html).not.toContain(largeBase64);
+	});
+
 	it("renders a compact inline rail summary with visible activity rows", () => {
 		const html = renderToStaticMarkup(
 			createElement(InlineToolRail, {

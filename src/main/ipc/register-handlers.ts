@@ -115,6 +115,7 @@ interface EventManagementHandlerServices {
 export interface DesktopShellHandlerServices {
 	getNativeAppearance?: () => DesktopNativeAppearance;
 	openExternalUrl?: (url: string) => Promise<void>;
+	promptAttachmentsDir?: string;
 	testProviderKey?: (provider: string) => Promise<DesktopProviderKeyTestResult>;
 	windowManager?: DesktopWindowManager;
 }
@@ -412,7 +413,11 @@ export function registerDesktopAgentHandlers(
 	});
 	ipcMain.handle(IPC_CHANNELS.preparePromptAttachments, async (_event, request: unknown) => {
 		const validatedRequest = validatePreparePromptAttachmentsRequest(request);
-		return prepareDesktopPromptAttachments(validatedRequest.candidates);
+		return prepareDesktopPromptAttachments(validatedRequest.candidates, {
+			...(desktopShellServices.promptAttachmentsDir
+				? { inlineImageAttachmentsDir: desktopShellServices.promptAttachmentsDir }
+				: {}),
+		});
 	});
 	ipcMain.handle(IPC_CHANNELS.openPromptAttachments, async (event, request: unknown) => {
 		const validatedRequest = validateOpenPromptAttachmentsRequest(request);
@@ -428,7 +433,14 @@ export function registerDesktopAgentHandlers(
 		if (result.canceled) {
 			return { attachments: [], errors: [] };
 		}
-		return prepareDesktopPromptAttachments(result.filePaths.map((filePath) => ({ type: "path", path: filePath })));
+		return prepareDesktopPromptAttachments(
+			result.filePaths.map((filePath) => ({ type: "path", path: filePath })),
+			{
+				...(desktopShellServices.promptAttachmentsDir
+					? { inlineImageAttachmentsDir: desktopShellServices.promptAttachmentsDir }
+					: {}),
+			},
+		);
 	});
 	ipcMain.handle(IPC_CHANNELS.listEvents, async (_event, request: unknown) =>
 		stores.eventStore.listEvents(validateEventListRequest(request)),

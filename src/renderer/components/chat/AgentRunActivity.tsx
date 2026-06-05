@@ -12,7 +12,12 @@ import {
 import type { ToolCallActivity } from "../../lib/conversation-timeline-projection.ts";
 import { activityDrawerTransition } from "../../lib/motion.ts";
 import { cn } from "../../lib/utils.ts";
-import { ChainOfThought, ChainOfThoughtHeader, ChainOfThoughtStep } from "../ai-elements/chain-of-thought.tsx";
+import {
+	ChainOfThought,
+	ChainOfThoughtHeader,
+	ChainOfThoughtImage,
+	ChainOfThoughtStep,
+} from "../ai-elements/chain-of-thought.tsx";
 import { getToolActivitySections, ToolActivityDetails } from "./ToolCallCard.tsx";
 
 const ACTIVITY_DRAWER_ANIMATION_MS = 400;
@@ -30,6 +35,18 @@ type AgentChainOfThoughtPart = Extract<DesktopThreadContentPart, { type: "reason
 type AgentReasoningChainOfThoughtPart = Extract<AgentChainOfThoughtPart, { type: "reasoning" }>;
 type AgentToolCallChainOfThoughtPart = Extract<AgentChainOfThoughtPart, { type: "tool-call" }>;
 type AgentActivityStatus = { type: "complete" | "incomplete" | "requires-action" | "running" };
+
+interface ToolResultImage {
+	alt: string;
+	caption?: string;
+	src: string;
+}
+
+interface ActivityImagePreview {
+	alt: string;
+	src: string;
+	title?: string;
+}
 
 interface PendingPushCompensation {
 	direction: ActivityPushDirection;
@@ -242,6 +259,73 @@ function getStringProperty(value: unknown, keys: string[]): string | undefined {
 	return undefined;
 }
 
+function getPathBasename(value: string): string {
+	const normalized = value.replace(/\\/g, "/");
+	const lastSegment = normalized.split("/").filter(Boolean).pop();
+	return lastSegment ?? value;
+}
+
+function getToolResultContent(value: unknown): unknown[] {
+	if (!isRecord(value) || !Array.isArray(value.content)) {
+		return [];
+	}
+
+	return value.content;
+}
+
+function getImageMimeType(record: Record<string, unknown>): string | undefined {
+	return getStringProperty(record, ["mimeType", "mime_type", "mediaType", "media_type"]);
+}
+
+function getDataUrlImageSource(record: Record<string, unknown>): string | undefined {
+	const source = getStringProperty(record, ["image", "url"]);
+	return source?.startsWith("data:image/") ? source : undefined;
+}
+
+function getBase64ImageSource(record: Record<string, unknown>): string | undefined {
+	const mimeType = getImageMimeType(record);
+	if (!mimeType?.toLowerCase().startsWith("image/")) {
+		return undefined;
+	}
+
+	const data = getStringProperty(record, ["data", "base64"]);
+	return data ? `data:${mimeType};base64,${data}` : undefined;
+}
+
+function getToolResultImage(record: unknown, fallbackName: string | undefined): ToolResultImage | undefined {
+	if (!isRecord(record)) {
+		return undefined;
+	}
+
+	const source = getDataUrlImageSource(record) ?? getBase64ImageSource(record);
+	if (!source) {
+		return undefined;
+	}
+
+	const caption = getStringProperty(record, ["caption", "name", "filename", "fileName"]) ?? fallbackName;
+	return {
+		alt: caption ?? "Tool result image",
+		caption,
+		src: source,
+	};
+}
+
+function getToolResultImages(toolCall: ToolCallActivity): ToolResultImage[] {
+	const fallbackPath = getStringProperty(toolCall.args, ["path", "filePath", "file_path"]);
+	const fallbackName = fallbackPath ? getPathBasename(fallbackPath) : undefined;
+	const resultImages = getToolResultContent(toolCall.result)
+		.map((part) => getToolResultImage(part, fallbackName))
+		.filter((image): image is ToolResultImage => image !== undefined);
+
+	if (resultImages.length > 0) {
+		return resultImages;
+	}
+
+	return getToolResultContent(toolCall.partialResult)
+		.map((part) => getToolResultImage(part, fallbackName))
+		.filter((image): image is ToolResultImage => image !== undefined);
+}
+
 function truncateInline(value: string, maxLength: number): string {
 	return value.length <= maxLength ? value : `${value.slice(0, maxLength - 1)}...`;
 }
@@ -330,11 +414,51 @@ function AgentReasoningPart({ part, status }: { part: AgentReasoningChainOfThoug
 	);
 }
 
+function AgentToolCallImages({
+	images,
+	onPreviewImage,
+}: {
+	images: ToolResultImage[];
+	onPreviewImage?: (image: ActivityImagePreview) => void;
+}) {
+	if (images.length === 0) {
+		return null;
+	}
+
+	return (
+		<div className="grid max-w-full gap-2" data-slot="assistant-tool-call-cot-images">
+			{images.map((image, index) => (
+				<ChainOfThoughtImage
+					caption={image.caption}
+					className="max-w-[min(100%,20rem)]"
+					data-slot="assistant-tool-call-cot-image"
+					key={`${image.src.slice(0, 96)}-${index}`}
+					title={image.caption}
+				>
+					<button
+						aria-label={`Open image preview for ${image.alt}`}
+						className="block max-w-full cursor-zoom-in rounded-[calc(var(--radius-md)-2px)] text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+						onClick={() => onPreviewImage?.({ alt: image.alt, src: image.src, title: image.caption })}
+						type="button"
+					>
+						<img
+							alt={image.alt}
+							className="max-h-56 max-w-full rounded-[calc(var(--radius-md)-2px)] object-contain"
+							src={image.src}
+						/>
+					</button>
+				</ChainOfThoughtImage>
+			))}
+		</div>
+	);
+}
+
 function AgentToolCall({
 	autoCollapseIndex,
 	isAutoCollapsing,
 	onBeforeToggle,
 	onOpenSubagentToolCall,
+	onPreviewImage,
 	part,
 	status,
 }: {
@@ -342,6 +466,7 @@ function AgentToolCall({
 	isAutoCollapsing: boolean;
 	onBeforeToggle: () => void;
 	onOpenSubagentToolCall?: (toolCall: ToolCallActivity) => void;
+	onPreviewImage?: (image: ActivityImagePreview) => void;
 	part: AgentToolCallChainOfThoughtPart;
 	status: AgentActivityStatus;
 }) {
@@ -359,6 +484,7 @@ function AgentToolCall({
 		} satisfies ToolCallActivity);
 	const statusLabel = getToolStatusLabel(toolCall.status);
 	const toolSummary = getToolSummary(toolCall);
+	const toolResultImages = getToolResultImages(toolCall);
 	const [isOpen, setIsOpen] = useState(false);
 	const [shouldRenderDetails, setShouldRenderDetails] = useState(isOpen);
 	const [isDrawerOpen, setIsDrawerOpen] = useState(isOpen);
@@ -460,6 +586,7 @@ function AgentToolCall({
 				}
 				status={toolCall.status === "running" ? "active" : "complete"}
 			>
+				<AgentToolCallImages images={toolResultImages} onPreviewImage={onPreviewImage} />
 				<motion.div
 					animate={{ height: isDrawerOpen ? drawerHeight : 0 }}
 					className="overflow-hidden"
@@ -574,6 +701,7 @@ function renderActivityPart({
 	index,
 	onBeforeToolToggle,
 	onOpenSubagentToolCall,
+	onPreviewImage,
 	part,
 	status,
 }: {
@@ -582,6 +710,7 @@ function renderActivityPart({
 	index: number;
 	onBeforeToolToggle: () => void;
 	onOpenSubagentToolCall?: (toolCall: ToolCallActivity) => void;
+	onPreviewImage?: (image: ActivityImagePreview) => void;
 	part: AgentChainOfThoughtPart;
 	status: AgentActivityStatus;
 }) {
@@ -596,6 +725,7 @@ function renderActivityPart({
 			key={part.toolCallId ?? `tool-call-${index}`}
 			onBeforeToggle={onBeforeToolToggle}
 			onOpenSubagentToolCall={onOpenSubagentToolCall}
+			onPreviewImage={onPreviewImage}
 			part={part}
 			status={status}
 		/>
@@ -617,12 +747,14 @@ export function AgentRunActivity({
 	messageId,
 	messageStatus,
 	onOpenSubagentToolCall,
+	onPreviewImage,
 	parts,
 }: {
 	messageCustomMetadata: unknown;
 	messageId: string;
 	messageStatus?: DesktopThreadMessageStatus;
 	onOpenSubagentToolCall?: (toolCall: ToolCallActivity) => void;
+	onPreviewImage?: (image: ActivityImagePreview) => void;
 	parts: AgentChainOfThoughtPart[];
 }) {
 	const metadata = useMemo(() => getRunActivityMetadata(messageCustomMetadata), [messageCustomMetadata]);
@@ -843,6 +975,7 @@ export function AgentRunActivity({
 										isAutoCollapsing,
 										onBeforeToolToggle: () => undefined,
 										onOpenSubagentToolCall,
+										onPreviewImage,
 										part,
 										status,
 									});

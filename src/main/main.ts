@@ -263,6 +263,7 @@ async function bootstrap(): Promise<void> {
 			workspaceStore,
 		},
 		{
+			promptAttachmentsDir: storagePaths.promptAttachmentsDir,
 			windowManager,
 		},
 		{

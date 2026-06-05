@@ -11,7 +11,11 @@ import {
 	CircleAlert,
 	CircleDot,
 	Clock3,
+	FileCode2,
+	FileJson,
+	FileSpreadsheet,
 	FileText,
+	FileType,
 	ImageIcon,
 	Paperclip,
 	Sparkles,
@@ -101,6 +105,7 @@ import {
 	AttachmentRemove,
 	Attachments,
 } from "../ai-elements/attachments.tsx";
+import { ChainOfThoughtImage } from "../ai-elements/chain-of-thought.tsx";
 import { Conversation, ConversationContent } from "../ai-elements/conversation.tsx";
 import {
 	Message as AiMessage,
@@ -122,6 +127,7 @@ const COMPOSER_SCROLL_GAP_PX = 24;
 const COMPOSER_INPUT_MIN_HEIGHT_PX = 80;
 const COMPOSER_INPUT_MAX_HEIGHT_PX = 224;
 const ASSISTANT_AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 96;
+const ASSISTANT_USER_SCROLL_DIRECTION_EPSILON_PX = 1;
 const PROPOSED_PLAN_COLLAPSED_HEIGHT_PX = 360;
 const PROPOSED_PLAN_COLLAPSED_LINES = 12;
 const PROPOSED_PLAN_COLLAPSED_LENGTH = 900;
@@ -135,6 +141,14 @@ type DesktopAttachmentFilePart = FileUIPart & {
 	desktopKind: DesktopPromptAttachmentDisplay["kind"];
 	size: number;
 };
+type ThreadImageAttachmentFilePart = FileUIPart & {
+	id: string;
+};
+interface ThreadImagePreview {
+	alt: string;
+	src: string;
+	title?: string;
+}
 
 function getThreadContentParts(message: DesktopThreadMessage): DesktopThreadContentPart[] {
 	if (typeof message.content === "string") {
@@ -174,6 +188,22 @@ function toPromptAttachmentFilePart(
 				: attachment.mimeType,
 		size: attachment.size,
 		url: canPreviewImage ? `data:${image.mimeType};base64,${image.data}` : `desktop-attachment://${attachment.id}`,
+	};
+}
+
+function getDataUrlMediaType(value: string): string {
+	const match = /^data:([^;,]+)[;,]/i.exec(value);
+	return match?.[1] ?? "image/*";
+}
+
+function toThreadImageAttachmentFilePart(image: DesktopImagePart, id: string): ThreadImageAttachmentFilePart {
+	const filename = image.filename ?? "Attached visual";
+	return {
+		type: "file",
+		filename,
+		id,
+		mediaType: getDataUrlMediaType(image.image),
+		url: image.image,
 	};
 }
 
@@ -739,6 +769,8 @@ function usePinnedAssistantViewportAutoScroll({
 	const animationFrameRef = useRef<number | undefined>(undefined);
 	const lastForcePinnedDependencyRef = useRef<unknown>(undefined);
 	const lastScrollDependencyRef = useRef<unknown>(undefined);
+	const lastScrollTopRef = useRef<number | undefined>(undefined);
+	const userPausedAutoScrollRef = useRef(false);
 
 	const cancelScheduledScroll = useCallback(() => {
 		if (animationFrameRef.current === undefined) {
@@ -751,6 +783,8 @@ function usePinnedAssistantViewportAutoScroll({
 	useLayoutEffect(() => {
 		if (!enabled) {
 			shouldAutoScrollRef.current = true;
+			userPausedAutoScrollRef.current = false;
+			lastScrollTopRef.current = undefined;
 			lastForcePinnedDependencyRef.current = undefined;
 			return;
 		}
@@ -761,16 +795,47 @@ function usePinnedAssistantViewportAutoScroll({
 		}
 		const viewportElement = viewport;
 
+		function pauseAutoScrollForUser(): void {
+			userPausedAutoScrollRef.current = true;
+			shouldAutoScrollRef.current = false;
+			cancelScheduledScroll();
+		}
+
 		function handleScroll(): void {
-			shouldAutoScrollRef.current = isAssistantViewportPinnedToBottom(viewportElement);
+			const currentScrollTop = viewportElement.scrollTop;
+			const previousScrollTop = lastScrollTopRef.current;
+			lastScrollTopRef.current = currentScrollTop;
+
+			if (
+				previousScrollTop !== undefined &&
+				currentScrollTop < previousScrollTop - ASSISTANT_USER_SCROLL_DIRECTION_EPSILON_PX
+			) {
+				pauseAutoScrollForUser();
+				return;
+			}
+
+			const isPinned = isAssistantViewportPinnedToBottom(viewportElement);
+			if (userPausedAutoScrollRef.current) {
+				const didUserMoveTowardBottom =
+					previousScrollTop !== undefined &&
+					currentScrollTop > previousScrollTop + ASSISTANT_USER_SCROLL_DIRECTION_EPSILON_PX;
+				if (didUserMoveTowardBottom && isPinned) {
+					userPausedAutoScrollRef.current = false;
+					shouldAutoScrollRef.current = true;
+				} else {
+					shouldAutoScrollRef.current = false;
+				}
+				return;
+			}
+
+			shouldAutoScrollRef.current = isPinned;
 		}
 
 		function handleWheel(event: WheelEvent): void {
 			if (event.deltaY >= 0) {
 				return;
 			}
-			shouldAutoScrollRef.current = false;
-			cancelScheduledScroll();
+			pauseAutoScrollForUser();
 		}
 
 		handleScroll();
@@ -799,6 +864,7 @@ function usePinnedAssistantViewportAutoScroll({
 
 		let didForcePin = false;
 		if (forcePinned && lastForcePinnedDependencyRef.current !== forcePinnedDependency) {
+			userPausedAutoScrollRef.current = false;
 			shouldAutoScrollRef.current = true;
 			lastForcePinnedDependencyRef.current = forcePinnedDependency;
 			didForcePin = true;
@@ -1078,20 +1144,51 @@ function formatAttachmentSize(size: number): string {
 	return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function getAttachmentExtension(attachment: DesktopPromptAttachmentDisplay | DesktopPreparedPromptAttachment): string {
+	const match = /\.[^.\\/]+$/.exec(attachment.name.toLowerCase());
+	return match?.[0] ?? "";
+}
+
+function getAttachmentDisplayMeta(attachment: DesktopPromptAttachmentDisplay | DesktopPreparedPromptAttachment): {
+	Icon: typeof FileText;
+	label: string;
+} {
+	const mimeType = attachment.mimeType.toLowerCase();
+	const extension = getAttachmentExtension(attachment);
+	if (attachment.kind === "image" || mimeType.startsWith("image/")) {
+		return { Icon: ImageIcon, label: "Image" };
+	}
+	if (
+		mimeType.includes("spreadsheet") ||
+		mimeType.includes("excel") ||
+		extension === ".xlsx" ||
+		extension === ".xls"
+	) {
+		return { Icon: FileSpreadsheet, label: "Spreadsheet" };
+	}
+	if (mimeType === "text/csv" || extension === ".csv") {
+		return { Icon: FileSpreadsheet, label: "CSV" };
+	}
+	if (mimeType.includes("wordprocessingml") || extension === ".docx" || extension === ".doc") {
+		return { Icon: FileText, label: "Word document" };
+	}
+	if (mimeType === "text/markdown" || extension === ".md" || extension === ".markdown") {
+		return { Icon: FileCode2, label: "Markdown" };
+	}
+	if (mimeType.includes("json") || extension === ".json") {
+		return { Icon: FileJson, label: "JSON" };
+	}
+	if (mimeType === "application/pdf" || extension === ".pdf") {
+		return { Icon: FileType, label: "PDF" };
+	}
+	if (mimeType.startsWith("text/")) {
+		return { Icon: FileText, label: "Text" };
+	}
+	return { Icon: FileText, label: "File" };
+}
+
 function formatAttachmentType(attachment: DesktopPromptAttachmentDisplay | DesktopPreparedPromptAttachment): string {
-	if (attachment.kind === "image") {
-		return "Image";
-	}
-	if (attachment.mimeType.includes("spreadsheet")) {
-		return "Spreadsheet";
-	}
-	if (attachment.mimeType.includes("wordprocessingml")) {
-		return "Document";
-	}
-	if (attachment.mimeType.startsWith("text/") || attachment.mimeType.includes("json")) {
-		return "Text";
-	}
-	return "File";
+	return getAttachmentDisplayMeta(attachment).label;
 }
 
 function formatAttachmentSecondaryText(
@@ -1120,6 +1217,7 @@ function PromptAttachmentChips({
 		>
 			{attachments.map((attachment) => {
 				const filePart = toPromptAttachmentFilePart(attachment);
+				const { Icon } = getAttachmentDisplayMeta(attachment);
 				return (
 					<Attachment
 						aria-label={attachment.name}
@@ -1136,13 +1234,7 @@ function PromptAttachmentChips({
 					>
 						<AttachmentPreview
 							className={compact ? "size-6 rounded-[6px] bg-[color:var(--surface-2)]" : undefined}
-							fallbackIcon={
-								attachment.kind === "image" ? (
-									<ImageIcon className={cn("text-muted-foreground", compact ? "size-3.5" : "size-3.5")} />
-								) : (
-									<FileText className={cn("text-muted-foreground", compact ? "size-3.5" : "size-3.5")} />
-								)
-							}
+							fallbackIcon={<Icon className={cn("text-muted-foreground", compact ? "size-3.5" : "size-3.5")} />}
 						/>
 						{compact ? (
 							<div className="min-w-0">
@@ -1408,18 +1500,157 @@ function UserTextPart({ text }: { text: string }) {
 	);
 }
 
-function UserImagePart({ image }: { image: string }) {
+function ThreadImagePreviewDialog({ image, onClose }: { image?: ThreadImagePreview; onClose: () => void }) {
+	useEffect(() => {
+		if (!image) {
+			return undefined;
+		}
+
+		function handleKeyDown(event: globalThis.KeyboardEvent): void {
+			if (event.key === "Escape") {
+				onClose();
+			}
+		}
+
+		document.addEventListener("keydown", handleKeyDown);
+		return () => document.removeEventListener("keydown", handleKeyDown);
+	}, [image, onClose]);
+
+	if (!image) {
+		return null;
+	}
+
 	return (
-		<figure
-			className="overflow-hidden rounded-[var(--radius-md)] border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] p-1 shadow-[var(--shadow-minimal)]"
-			data-slot="user-attachment-card"
+		<div
+			aria-label="Image preview"
+			aria-modal="true"
+			className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-6 backdrop-blur-sm"
+			data-slot="thread-image-preview"
+			onMouseDown={(event) => {
+				if (event.target === event.currentTarget) {
+					onClose();
+				}
+			}}
+			role="dialog"
 		>
+			<Button
+				aria-label="Close image preview"
+				className="absolute right-4 top-4 border-white/15 bg-black/30 text-white shadow-none hover:bg-white/15"
+				onClick={onClose}
+				size="icon-sm"
+				type="button"
+				variant="ghost"
+			>
+				<X className="size-4" />
+			</Button>
 			<img
-				alt="Attached visual"
-				className="max-h-80 rounded-[calc(var(--radius-md)-2px)] object-contain"
-				src={image}
+				alt={image.alt}
+				className="max-h-[calc(100vh-6rem)] max-w-[calc(100vw-6rem)] rounded-lg object-contain shadow-2xl"
+				src={image.src}
+				title={image.title}
 			/>
-		</figure>
+		</div>
+	);
+}
+
+function ThreadImageAttachments({
+	align,
+	images,
+	messageId,
+	onPreviewImage,
+	slot,
+}: {
+	align: "start" | "end";
+	images: DesktopImagePart[];
+	messageId: string;
+	onPreviewImage?: (image: ThreadImagePreview) => void;
+	slot: string;
+}) {
+	if (images.length === 0) {
+		return null;
+	}
+
+	return (
+		<div className={cn("grid max-w-full gap-2", align === "start" ? "justify-items-start" : "justify-items-end")}>
+			{images.map((image, index) => {
+				const attachment = toThreadImageAttachmentFilePart(image, `${messageId}-image-${index}`);
+				return (
+					<ChainOfThoughtImage
+						className="max-w-[min(100%,28rem)]"
+						data-slot={slot}
+						key={attachment.id}
+						title={attachment.filename}
+					>
+						<button
+							aria-label={`Open image preview for ${attachment.filename ?? "Attached visual"}`}
+							className="block max-w-full cursor-zoom-in rounded-[calc(var(--radius-md)-2px)] text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+							onClick={() =>
+								onPreviewImage?.({
+									alt: attachment.filename ?? "Attached visual",
+									src: attachment.url,
+									title: attachment.filename,
+								})
+							}
+							type="button"
+						>
+							<img
+								alt={attachment.filename ?? "Attached visual"}
+								className="max-h-[22rem] max-w-full rounded-[calc(var(--radius-md)-2px)] object-contain"
+								src={attachment.url}
+							/>
+						</button>
+					</ChainOfThoughtImage>
+				);
+			})}
+		</div>
+	);
+}
+
+function UserThreadImages({
+	images,
+	messageId,
+	onPreviewImage,
+	promptAttachments,
+}: {
+	images: DesktopImagePart[];
+	messageId: string;
+	onPreviewImage?: (image: ThreadImagePreview) => void;
+	promptAttachments: readonly DesktopPromptAttachmentDisplay[];
+}) {
+	if (images.length === 0) {
+		return null;
+	}
+
+	const promptImageAttachments = promptAttachments.filter((attachment) => attachment.kind === "image");
+
+	return (
+		<div className="grid max-w-full justify-items-end gap-2" data-slot="user-thread-images">
+			{images.map((image, index) => {
+				const fallbackName = promptImageAttachments[index]?.name;
+				const filename = image.filename ?? fallbackName ?? "Attached visual";
+				return (
+					<div
+						className="max-w-[min(100%,34rem)] overflow-hidden rounded-lg"
+						data-slot="user-thread-image"
+						key={`${messageId}-${filename}-${image.image.slice(0, 160)}`}
+						title={filename}
+					>
+						<button
+							aria-label={`Open image preview for ${filename}`}
+							className="block max-w-full cursor-zoom-in rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+							onClick={() => onPreviewImage?.({ alt: filename, src: image.image, title: filename })}
+							type="button"
+						>
+							<img
+								alt={filename}
+								className="max-h-[min(60vh,28rem)] max-w-full rounded-lg object-contain"
+								src={image.image}
+							/>
+						</button>
+					</div>
+				);
+			})}
+		</div>
 	);
 }
 
@@ -1432,6 +1663,44 @@ function EmptyMessagePart({ status }: { status?: DesktopThreadMessageStatus }) {
 		<div className="text-sm text-muted-foreground" data-slot="assistant-empty-working">
 			<span>Working</span>
 		</div>
+	);
+}
+
+function UserThreadAttachments({ attachments }: { attachments: readonly DesktopPromptAttachmentDisplay[] }) {
+	if (attachments.length === 0) {
+		return null;
+	}
+
+	return (
+		<Attachments className="max-w-full justify-end" data-slot="user-thread-attachments" variant="inline">
+			{attachments.map((attachment) => {
+				const filePart = toPromptAttachmentFilePart(attachment);
+				const { Icon } = getAttachmentDisplayMeta(attachment);
+				return (
+					<Attachment
+						aria-label={attachment.name}
+						className="h-auto min-h-9 max-w-[min(100%,24rem)] gap-2 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 py-2 text-left leading-none shadow-[var(--shadow-minimal)] hover:bg-[color:var(--surface-1)]"
+						data={filePart}
+						data-slot="user-thread-attachment-card"
+						key={attachment.id}
+						title={`${attachment.name} ${formatAttachmentSize(attachment.size)}`}
+					>
+						<AttachmentPreview
+							className="size-7 rounded-md bg-[color:var(--surface-2)]"
+							fallbackIcon={<Icon className="size-3.5 text-muted-foreground" />}
+						/>
+						<div className="min-w-0">
+							<span className="block max-w-[18rem] truncate font-medium text-[13px] text-[color:var(--text-primary)]">
+								{attachment.name}
+							</span>
+							<span className="mt-0.5 block truncate text-[12px] text-muted-foreground">
+								{formatAttachmentSecondaryText(attachment)}
+							</span>
+						</div>
+					</Attachment>
+				);
+			})}
+		</Attachments>
 	);
 }
 
@@ -1734,9 +2003,11 @@ function AssistantProposedPlanActions({
 function AssistantMessage({
 	message,
 	onOpenSubagentToolCall,
+	onPreviewImage,
 }: {
 	message: DesktopThreadMessage;
 	onOpenSubagentToolCall?: (toolCall: ToolCallActivity) => void;
+	onPreviewImage?: (image: ThreadImagePreview) => void;
 }) {
 	const messageId = message.id ?? `assistant-${message.createdAt?.getTime() ?? "message"}`;
 	const messageStatus = message.status;
@@ -1744,6 +2015,7 @@ function AssistantMessage({
 	const isMessageRunning = messageStatus?.type === "running";
 	const activityParts = getThreadActivityParts(message);
 	const textParts = getThreadTextParts(message);
+	const imageParts = getThreadImageParts(message);
 	return (
 		<AiMessage
 			className={cn(
@@ -1761,6 +2033,7 @@ function AssistantMessage({
 							messageId={messageId}
 							messageStatus={messageStatus}
 							onOpenSubagentToolCall={onOpenSubagentToolCall}
+							onPreviewImage={onPreviewImage}
 							parts={activityParts}
 						/>
 					) : null}
@@ -1772,9 +2045,16 @@ function AssistantMessage({
 								text={part.text}
 							/>
 						))
-					) : (
+					) : imageParts.length === 0 ? (
 						<EmptyMessagePart status={messageStatus} />
-					)}
+					) : null}
+					<ThreadImageAttachments
+						align="start"
+						images={imageParts}
+						messageId={messageId}
+						onPreviewImage={onPreviewImage}
+						slot="assistant-attachment-card"
+					/>
 					<AssistantProposedPlanCard messageCustomMetadata={messageCustomMetadata} messageStatus={messageStatus} />
 					<AssistantProposedPlanActions
 						messageCustomMetadata={messageCustomMetadata}
@@ -1789,7 +2069,14 @@ function AssistantMessage({
 	);
 }
 
-function UserMessage({ message }: { message: DesktopThreadMessage }) {
+function UserMessage({
+	message,
+	onPreviewImage,
+}: {
+	message: DesktopThreadMessage;
+	onPreviewImage?: (image: ThreadImagePreview) => void;
+}) {
+	const messageId = message.id ?? `user-${message.createdAt?.getTime() ?? "message"}`;
 	const messageCustomMetadata = message.metadata?.custom;
 	const capabilityInvocations = useMemo(
 		() => getMessageCapabilityInvocations(messageCustomMetadata),
@@ -1798,21 +2085,49 @@ function UserMessage({ message }: { message: DesktopThreadMessage }) {
 	const promptAttachments = useMemo(() => getUserPromptAttachments(messageCustomMetadata), [messageCustomMetadata]);
 	const imageParts = getThreadImageParts(message);
 	const textParts = getThreadTextParts(message);
-	return (
-		<AiMessage className="mx-auto flex w-full max-w-[880px] justify-end px-5 py-4 md:px-7" from="user">
+	const threadPromptAttachments =
+		imageParts.length > 0 ? promptAttachments.filter((attachment) => attachment.kind !== "image") : promptAttachments;
+	const hasThreadAttachmentContent = threadPromptAttachments.length > 0;
+	const hasPromptBubbleContent = capabilityInvocations.length > 0 || textParts.length > 0;
+	const renderPromptBubble = (maxWidthClassName: string) =>
+		hasPromptBubbleContent ? (
 			<AiMessageContent
-				className="grid max-w-[82%] gap-2 rounded-[var(--radius-lg)] border border-[color:var(--border-subtle)] bg-[color:var(--surface-2)] px-4 py-3 shadow-[var(--shadow-minimal)]"
+				className={cn(
+					"grid gap-2 rounded-[var(--radius-lg)] border border-[color:var(--border-subtle)] bg-[color:var(--surface-2)] px-4 py-3 shadow-[var(--shadow-minimal)]",
+					maxWidthClassName,
+				)}
 				data-slot="user-message-bubble"
 			>
 				<SelectedCapabilityChips invocations={capabilityInvocations} />
-				<PromptAttachmentChips attachments={promptAttachments} compact />
-				{imageParts.map((part, index) => (
-					<UserImagePart image={part.image} key={`${message.id}-image-${index}`} />
-				))}
 				{textParts.map((part, index) => (
 					<UserTextPart key={`${message.id}-text-${index}`} text={part.text} />
 				))}
 			</AiMessageContent>
+		) : null;
+
+	if (imageParts.length > 0 || hasThreadAttachmentContent) {
+		return (
+			<AiMessage className="mx-auto flex w-full max-w-[880px] items-end justify-end px-5 py-4 md:px-7" from="user">
+				<div
+					className="grid w-fit max-w-[82%] self-end justify-items-end gap-2"
+					data-slot="user-message-media-stack"
+				>
+					<UserThreadImages
+						images={imageParts}
+						messageId={messageId}
+						onPreviewImage={onPreviewImage}
+						promptAttachments={promptAttachments}
+					/>
+					<UserThreadAttachments attachments={threadPromptAttachments} />
+					{renderPromptBubble("max-w-full")}
+				</div>
+			</AiMessage>
+		);
+	}
+
+	return (
+		<AiMessage className="mx-auto flex w-full max-w-[880px] items-end justify-end px-5 py-4 md:px-7" from="user">
+			{renderPromptBubble("max-w-[82%]")}
 		</AiMessage>
 	);
 }
@@ -2590,6 +2905,7 @@ export function ChatWorkbench({
 	const [selectedPromptAttachments, setSelectedPromptAttachments] = useState<DesktopPreparedPromptAttachment[]>([]);
 	const [attachmentErrors, setAttachmentErrors] = useState<DesktopPromptAttachmentError[]>([]);
 	const [composerInset, setComposerInset] = useState(DEFAULT_COMPOSER_INSET_PX);
+	const [previewImage, setPreviewImage] = useState<ThreadImagePreview | undefined>(undefined);
 	const previousAttachmentSessionIdRef = useRef<typeof activeAgentSessionId>(undefined);
 	useEffect(() => {
 		if (previousAttachmentSessionIdRef.current === activeAgentSessionId) return;
@@ -2620,6 +2936,12 @@ export function ChatWorkbench({
 		},
 		[activeAgentSessionId, onOpenSubagent],
 	);
+	const handleOpenImagePreview = useCallback((image: ThreadImagePreview): void => {
+		setPreviewImage(image);
+	}, []);
+	const handleCloseImagePreview = useCallback((): void => {
+		setPreviewImage(undefined);
+	}, []);
 	const latestPlanMessageId = useMemo(
 		() => findLatestCompletedProposedPlanMessageId(assistantMessages),
 		[assistantMessages],
@@ -2825,7 +3147,13 @@ export function ChatWorkbench({
 										assistantMessages.map((message) => {
 											const messageKey = `${activeAgentSessionId ?? "no-active-session"}:${message.id}`;
 											if (message.role === "user") {
-												return <UserMessage key={messageKey} message={message} />;
+												return (
+													<UserMessage
+														key={messageKey}
+														message={message}
+														onPreviewImage={handleOpenImagePreview}
+													/>
+												);
 											}
 											if (message.role === "assistant") {
 												return (
@@ -2833,6 +3161,7 @@ export function ChatWorkbench({
 														key={messageKey}
 														message={message}
 														onOpenSubagentToolCall={handleOpenSubagentToolCall}
+														onPreviewImage={handleOpenImagePreview}
 													/>
 												);
 											}
@@ -2852,6 +3181,8 @@ export function ChatWorkbench({
 							)}
 						</Conversation>
 					</AssistantTimelineErrorBoundary>
+
+					<ThreadImagePreviewDialog image={previewImage} onClose={handleCloseImagePreview} />
 
 					<div
 						className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex justify-center px-5 pb-5 md:px-7 md:pb-7"

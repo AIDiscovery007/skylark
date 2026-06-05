@@ -13,6 +13,8 @@ import type {
 type PtySpawn = typeof spawn;
 const require = createRequire(import.meta.url);
 const NODE_PTY_PACKAGE_ROOT = dirname(dirname(require.resolve("node-pty")));
+const DEFAULT_TERMINAL_LOCALE = "en_US.UTF-8";
+const DEFAULT_TERMINAL_NAME = "xterm-256color";
 
 interface ActiveTerminal {
 	terminalId: string;
@@ -38,6 +40,34 @@ function getDefaultShell(): string {
 	}
 
 	return process.env.SHELL ?? "/bin/bash";
+}
+
+function isUtf8Locale(value: string | undefined): boolean {
+	return value !== undefined && /utf-?8/i.test(value);
+}
+
+export function createPtyEnvironment(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+	const env: NodeJS.ProcessEnv = { ...baseEnv };
+	const terminalLocale = isUtf8Locale(env.LC_ALL)
+		? env.LC_ALL
+		: isUtf8Locale(env.LANG)
+			? env.LANG
+			: isUtf8Locale(env.LC_CTYPE)
+				? env.LC_CTYPE
+				: DEFAULT_TERMINAL_LOCALE;
+
+	env.TERM = DEFAULT_TERMINAL_NAME;
+	if (env.LC_ALL && !isUtf8Locale(env.LC_ALL)) {
+		env.LC_ALL = terminalLocale;
+	}
+	if (!isUtf8Locale(env.LANG)) {
+		env.LANG = terminalLocale;
+	}
+	if (!isUtf8Locale(env.LC_CTYPE)) {
+		env.LC_CTYPE = terminalLocale;
+	}
+
+	return env;
 }
 
 export function resolvePtySpawnHelperPath(
@@ -144,11 +174,11 @@ export class DesktopPtyManager {
 
 		const spawnInput = await this.resolveSpawnInput(request);
 		const pty = this.spawnPty(spawnInput.command, spawnInput.args, {
-			name: "xterm-256color",
+			name: DEFAULT_TERMINAL_NAME,
 			cols: request.cols,
 			rows: request.rows,
 			cwd: spawnInput.cwd,
-			env: process.env,
+			env: createPtyEnvironment(),
 		});
 
 		const activeTerminal: ActiveTerminal = {

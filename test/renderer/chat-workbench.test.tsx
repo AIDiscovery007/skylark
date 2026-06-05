@@ -565,6 +565,54 @@ describe("ChatWorkbench", () => {
 		});
 	});
 
+	it("prepares pasted images as prompt attachments", async () => {
+		const attachment = {
+			id: "attachment-1",
+			kind: "image" as const,
+			name: "pasted.png",
+			mimeType: "image/png",
+			size: 4,
+			promptText: '<file name="pasted.png"></file>',
+			images: [],
+		};
+		const preparePromptAttachments = vi.fn(async () => ({ attachments: [attachment], errors: [] }));
+		Object.defineProperty(window, "desktopAgent", {
+			configurable: true,
+			value: { preparePromptAttachments },
+		});
+
+		render(
+			<ChatWorkbench
+				onAbort={vi.fn(async () => undefined)}
+				onSubmitPrompt={vi.fn(async () => undefined)}
+				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
+				showThinkingBlocks={false}
+			/>,
+		);
+
+		const file = new File([new Uint8Array([1, 2, 3, 4])], "pasted.png", { type: "image/png" });
+		fireEvent.paste(screen.getByPlaceholderText("Message Skylark"), {
+			clipboardData: {
+				files: [file],
+			},
+		});
+
+		await waitFor(() => {
+			expect(preparePromptAttachments).toHaveBeenCalledWith({
+				candidates: [
+					{
+						type: "inline_image",
+						name: "pasted.png",
+						mimeType: "image/png",
+						data: "AQIDBA==",
+						size: 4,
+					},
+				],
+			});
+		});
+		expect(await screen.findByText("pasted.png")).toBeTruthy();
+	});
+
 	it("clears prompt attachment errors when switching sessions", async () => {
 		const user = userEvent.setup();
 		agentStore.setState({ activeSessionId: "session-1" });
@@ -1631,11 +1679,19 @@ describe("ChatWorkbench", () => {
 		);
 
 		const attachmentCard = screen.getByLabelText("notes.md");
+		const mediaStack = attachmentCard.closest("[data-slot='user-message-media-stack']");
+		const promptBubble = screen.getByText("Summarize this").closest("[data-slot='user-message-bubble']");
 		expect(screen.getByText("notes.md")).toBeTruthy();
-		expect(screen.getByText("Text / 42 B")).toBeTruthy();
+		expect(screen.getByText("Markdown / 42 B")).toBeTruthy();
 		expect(screen.getByText("Summarize this")).toBeTruthy();
 		expect(screen.queryByText(/hidden attachment context/)).toBeNull();
 		expect(attachmentCard.className).toContain("min-h-9");
+		expect(attachmentCard.closest("[data-slot='user-message-bubble']")).toBeNull();
+		expect(mediaStack?.className).toContain("self-end");
+		expect(promptBubble).toBeTruthy();
+		expect(
+			attachmentCard.compareDocumentPosition(promptBubble!) & globalThis.Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
 	});
 
 	it("renders fallback prompt attachment cards before prompt metadata hydrates", () => {
@@ -1663,6 +1719,71 @@ describe("ChatWorkbench", () => {
 		expect(screen.getByText("Spreadsheet")).toBeTruthy();
 		expect(screen.getByText("Summarize this")).toBeTruthy();
 		expect(screen.queryByText(/hidden spreadsheet context/)).toBeNull();
+	});
+
+	it("renders common user file attachments as native thread cards by file type", () => {
+		agentStore.setState({
+			messages: [
+				{
+					role: "user",
+					content: [{ type: "text", text: "Review these files" }],
+					timestamp: 1,
+					metadata: {
+						custom: {
+							desktopPromptVisibleText: "Review these files",
+							desktopPromptAttachments: [
+								{
+									id: "attachment-xlsx",
+									kind: "text",
+									name: "budget.xlsx",
+									mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+									size: 2048,
+								},
+								{
+									id: "attachment-docx",
+									kind: "text",
+									name: "brief.docx",
+									mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+									size: 4096,
+								},
+								{
+									id: "attachment-md",
+									kind: "text",
+									name: "notes.md",
+									mimeType: "text/markdown",
+									size: 512,
+								},
+							],
+						},
+					},
+				} as Extract<AgentMessage, { role: "user" }>,
+			],
+		});
+
+		render(
+			<ChatWorkbench
+				onAbort={vi.fn(async () => undefined)}
+				onSubmitPrompt={vi.fn(async () => undefined)}
+				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
+				showThinkingBlocks={false}
+			/>,
+		);
+
+		const xlsxCard = screen.getByLabelText("budget.xlsx");
+		const docxCard = screen.getByLabelText("brief.docx");
+		const markdownCard = screen.getByLabelText("notes.md");
+		const promptBubble = screen.getByText("Review these files").closest("[data-slot='user-message-bubble']");
+
+		expect(screen.getByText("Spreadsheet / 2 KB")).toBeTruthy();
+		expect(screen.getByText("Word document / 4 KB")).toBeTruthy();
+		expect(screen.getByText("Markdown / 512 B")).toBeTruthy();
+		expect(xlsxCard.closest("[data-slot='user-message-bubble']")).toBeNull();
+		expect(docxCard.closest("[data-slot='user-message-bubble']")).toBeNull();
+		expect(markdownCard.closest("[data-slot='user-message-bubble']")).toBeNull();
+		expect(promptBubble).toBeTruthy();
+		expect(
+			xlsxCard.compareDocumentPosition(promptBubble!) & globalThis.Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
 	});
 
 	it("renders user bubbles with minimal markdown without using a strong brand fill", () => {
@@ -1777,7 +1898,7 @@ describe("ChatWorkbench", () => {
 		expect(onOpenWorkspacePreviewFile).toHaveBeenCalledWith("src/App.tsx");
 	});
 
-	it("renders user image parts as lightweight attachment cards", () => {
+	it("renders user image parts as native thread images above the prompt", () => {
 		agentStore.setState({
 			messages: [
 				{
@@ -1799,11 +1920,93 @@ describe("ChatWorkbench", () => {
 			/>,
 		);
 
-		const attachment = screen.getByAltText("Attached visual").closest("[data-slot='user-attachment-card']");
+		const image = screen.getByAltText("Attached visual");
+		const nativeImage = image.closest("[data-slot='user-thread-image']");
+		const promptBubble = screen.getByText("Inspect this screenshot").closest("[data-slot='user-message-bubble']");
 
-		expect(attachment).toBeTruthy();
-		expect(attachment?.className).toContain("border-[color:var(--border-subtle)]");
-		expect(screen.getByAltText("Attached visual").getAttribute("src")).toBe("data:image/png;base64,iVBORw0KGgo=");
+		expect(nativeImage).toBeTruthy();
+		expect(nativeImage?.closest("[data-slot='user-message-bubble']")).toBeNull();
+		expect(nativeImage?.className).not.toContain("bg-muted");
+		expect(image.className).toContain("object-contain");
+		expect(image.getAttribute("src")).toBe("data:image/png;base64,iVBORw0KGgo=");
+		expect(promptBubble).toBeTruthy();
+		expect(image.compareDocumentPosition(promptBubble!) & globalThis.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+	});
+
+	it("opens a native preview when clicking a user thread image", async () => {
+		const user = userEvent.setup();
+		agentStore.setState({
+			messages: [
+				{
+					...userMessage("Inspect this screenshot", 1),
+					content: [
+						{ type: "text", text: "Inspect this screenshot" },
+						{ type: "image", mimeType: "image/png", data: "iVBORw0KGgo=" },
+					],
+				},
+			],
+		});
+
+		render(
+			<ChatWorkbench
+				onAbort={vi.fn(async () => undefined)}
+				onSubmitPrompt={vi.fn(async () => undefined)}
+				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
+				showThinkingBlocks={false}
+			/>,
+		);
+
+		await user.click(screen.getByRole("button", { name: "Open image preview for Attached visual" }));
+
+		const dialog = screen.getByRole("dialog", { name: "Image preview" });
+		expect(dialog).toBeTruthy();
+		expect(dialog.querySelector("img")?.getAttribute("src")).toBe("data:image/png;base64,iVBORw0KGgo=");
+
+		fireEvent.keyDown(document, { key: "Escape" });
+		expect(screen.queryByRole("dialog", { name: "Image preview" })).toBeNull();
+	});
+
+	it("hides sent image attachment chips when rendering the image natively", () => {
+		agentStore.setState({
+			messages: [
+				{
+					role: "user",
+					content: [
+						{ type: "text", text: 'Inspect this\n\n<file name="panel.png"></file>' },
+						{ type: "image", mimeType: "image/png", data: "iVBORw0KGgo=" },
+					],
+					timestamp: 1,
+					metadata: {
+						custom: {
+							desktopPromptVisibleText: "Inspect this",
+							desktopPromptAttachments: [
+								{
+									id: "attachment-1",
+									kind: "image",
+									name: "panel.png",
+									mimeType: "image/png",
+									size: 42,
+								},
+							],
+						},
+					},
+				} as Extract<AgentMessage, { role: "user" }>,
+			],
+		});
+
+		render(
+			<ChatWorkbench
+				onAbort={vi.fn(async () => undefined)}
+				onSubmitPrompt={vi.fn(async () => undefined)}
+				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
+				showThinkingBlocks={false}
+			/>,
+		);
+
+		expect(screen.getByText("Inspect this")).toBeTruthy();
+		expect(screen.queryByText(/<file name=/)).toBeNull();
+		expect(screen.getByAltText("panel.png").getAttribute("src")).toBe("data:image/png;base64,iVBORw0KGgo=");
+		expect(screen.queryByLabelText("panel.png")).toBeNull();
 	});
 
 	it("recovers composer input when an IME composition is interrupted by input source switching", async () => {
@@ -2058,6 +2261,66 @@ describe("ChatWorkbench", () => {
 
 			expect(scrollTo).not.toHaveBeenCalled();
 			expect(viewport.scrollTop).toBe(200);
+		} finally {
+			cancelAnimationFrame.mockRestore();
+			requestAnimationFrame.mockRestore();
+		}
+	});
+
+	it("does not force streaming back to bottom after a small upward user scroll inside the bottom threshold", async () => {
+		vi.useFakeTimers();
+		const requestAnimationFrame = vi
+			.spyOn(window, "requestAnimationFrame")
+			.mockImplementation((callback: FrameRequestCallback) => {
+				callback(0);
+				return 1;
+			});
+		const cancelAnimationFrame = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
+		try {
+			agentStore.setState({
+				activeSessionId: "session-1",
+				isStreaming: true,
+				messages: [userMessage("Explain the plan", 1)],
+				streamingMessage: assistantMessage([{ type: "text", text: "First chunk" }], 2),
+			});
+
+			const { container } = render(
+				<ChatWorkbench
+					onAbort={vi.fn(async () => undefined)}
+					onSubmitPrompt={vi.fn(async () => undefined)}
+					runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
+					showThinkingBlocks={false}
+				/>,
+			);
+			const viewport = getAssistantViewport(container);
+			const scrollTo = vi.fn();
+			Object.defineProperty(viewport, "scrollTo", {
+				configurable: true,
+				value: scrollTo,
+			});
+			setAssistantViewportMetrics(viewport, { clientHeight: 100, scrollHeight: 1000, scrollTop: 900 });
+			fireEvent.scroll(viewport);
+
+			await act(async () => {
+				viewport.scrollTop = 850;
+				fireEvent.scroll(viewport);
+			});
+			scrollTo.mockClear();
+
+			await act(async () => {
+				agentStore.setState({
+					streamingMessage: assistantMessage(
+						[{ type: "text", text: "First chunk with a second streamed word" }],
+						3,
+					),
+				});
+			});
+			await act(async () => {
+				vi.advanceTimersByTime(160);
+			});
+
+			expect(scrollTo).not.toHaveBeenCalled();
+			expect(viewport.scrollTop).toBe(850);
 		} finally {
 			cancelAnimationFrame.mockRestore();
 			requestAnimationFrame.mockRestore();
@@ -2397,6 +2660,70 @@ describe("ChatWorkbench", () => {
 		await waitFor(() => {
 			expect(document.querySelector("[data-slot='assistant-tool-call-details']")).toBeNull();
 		});
+	});
+
+	it("renders tool result images natively in the matching agent activity tool step", async () => {
+		const user = userEvent.setup();
+		agentStore.setState({
+			messages: [
+				assistantMessage(
+					[
+						{
+							type: "toolCall",
+							id: "image-tool-1",
+							name: "read",
+							arguments: { path: "/workspace/panel_003.jpg" },
+						},
+					],
+					1,
+					{ stopReason: "toolUse" },
+				),
+				{
+					role: "toolResult",
+					content: [
+						{ type: "text", text: "Read image file [image/png]" },
+						{
+							type: "image",
+							mimeType: "image/png",
+							data: "iVBORw0KGgo=",
+						},
+					],
+					isError: false,
+					timestamp: 2,
+					toolCallId: "image-tool-1",
+					toolName: "read",
+				} as Extract<AgentMessage, { role: "toolResult" }>,
+			],
+		});
+
+		render(
+			<ChatWorkbench
+				onAbort={vi.fn(async () => undefined)}
+				onSubmitPrompt={vi.fn(async () => undefined)}
+				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
+				showThinkingBlocks
+			/>,
+		);
+
+		await user.click(screen.getByRole("button", { name: /Agent activity Completed 0s/i }));
+		const toolStepImage = screen.getByAltText("panel_003.jpg");
+		expect(toolStepImage).toBeTruthy();
+		expect(toolStepImage.closest("[data-slot='assistant-tool-call-step']")).not.toBeNull();
+		expect(toolStepImage.closest("[data-slot='assistant-tool-call-cot-image']")).not.toBeNull();
+
+		await user.click(screen.getByRole("button", { name: "Open image preview for panel_003.jpg" }));
+		const previewDialog = screen.getByRole("dialog", { name: "Image preview" });
+		expect(previewDialog.querySelector("img")?.getAttribute("src")).toBe("data:image/png;base64,iVBORw0KGgo=");
+		await user.click(screen.getByRole("button", { name: "Close image preview" }));
+
+		await user.click(screen.getByRole("button", { name: /read .*panel_003\.jpg Completed/i }));
+
+		const toolDetails = document.querySelector("[data-slot='assistant-tool-call-details']");
+		expect(toolDetails).not.toBeNull();
+		expect(toolDetails?.querySelector("img")).toBeNull();
+		expect(toolDetails?.querySelector("[data-slot='tool-activity-image']")).toBeNull();
+		expect(toolDetails?.textContent).toContain("/workspace/panel_003.jpg");
+		expect(toolDetails?.textContent).toContain("Read image file [image/png]");
 	});
 
 	it("renders assistant run errors as timeline notices instead of normal markdown text", async () => {

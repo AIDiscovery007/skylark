@@ -30,6 +30,51 @@ function formatUnknown(value: unknown): string {
 	}
 }
 
+function isImageMimeType(value: unknown): value is string {
+	return typeof value === "string" && value.toLowerCase().startsWith("image/");
+}
+
+function hasImageMarker(record: Record<string, unknown>): boolean {
+	return (
+		isImageMimeType(record.mimeType) ||
+		isImageMimeType(record.mime_type) ||
+		isImageMimeType(record.mediaType) ||
+		isImageMimeType(record.media_type) ||
+		record.type === "image" ||
+		record.kind === "image"
+	);
+}
+
+function sanitizeImageRecord(record: Record<string, unknown>): Record<string, unknown> {
+	const sanitized: Record<string, unknown> = { ...record };
+	if (typeof sanitized.data === "string" && hasImageMarker(sanitized)) {
+		sanitized.data = "[base64 image omitted]";
+	}
+	if (typeof sanitized.image === "string" && sanitized.image.length > 96) {
+		sanitized.image = sanitized.image.startsWith("data:image/") ? "[data URL image omitted]" : "[image data omitted]";
+	}
+	if (typeof sanitized.base64 === "string" && sanitized.base64.length > 96) {
+		sanitized.base64 = "[base64 image omitted]";
+	}
+	if (Array.isArray(sanitized.images)) {
+		sanitized.images = sanitized.images.map((item) => (isRecord(item) ? sanitizeImageRecord(item) : item));
+	}
+	if (Array.isArray(sanitized.attachments)) {
+		sanitized.attachments = sanitized.attachments.map((item) => (isRecord(item) ? sanitizeImageRecord(item) : item));
+	}
+	if (Array.isArray(sanitized.content)) {
+		sanitized.content = sanitized.content.map((item) => (isRecord(item) ? sanitizeImageRecord(item) : item));
+	}
+	if (isRecord(sanitized.details)) {
+		sanitized.details = sanitizeImageRecord(sanitized.details);
+	}
+	return sanitized;
+}
+
+function formatToolResultUnknown(value: unknown): string {
+	return formatUnknown(isRecord(value) ? sanitizeImageRecord(value) : value);
+}
+
 function getToolArgsPath(args: unknown): string | undefined {
 	if (!isRecord(args)) {
 		return undefined;
@@ -240,12 +285,12 @@ export function getToolActivitySections(toolCall: ToolCallActivity): ToolActivit
 
 		default: {
 			const updateText =
-				toolCall.partialResult !== undefined && formatUnknown(toolCall.partialResult) !== errorText
-					? formatUnknown(toolCall.partialResult)
+				toolCall.partialResult !== undefined && formatToolResultUnknown(toolCall.partialResult) !== errorText
+					? formatToolResultUnknown(toolCall.partialResult)
 					: undefined;
 			const genericResultText =
-				toolCall.result !== undefined && formatUnknown(toolCall.result) !== errorText
-					? formatUnknown(toolCall.result)
+				toolCall.result !== undefined && formatToolResultUnknown(toolCall.result) !== errorText
+					? formatToolResultUnknown(toolCall.result)
 					: undefined;
 
 			sections.push(

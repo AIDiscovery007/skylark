@@ -811,7 +811,15 @@ function convertUserContent(
 	visibleText?: string,
 ): string | ThreadContentPart[] {
 	if (visibleText !== undefined) {
-		return visibleText.length > 0 ? [{ type: "text", text: visibleText }] : [];
+		const parts: ThreadContentPart[] = visibleText.length > 0 ? [{ type: "text", text: visibleText }] : [];
+		if (Array.isArray(content)) {
+			for (const part of content.filter(isUserContentPart)) {
+				if (part.type === "image") {
+					parts.push(createThreadImagePart(part));
+				}
+			}
+		}
+		return parts;
 	}
 	if (typeof content === "string") {
 		const safeContent = stripPromptFileBlocks(content);
@@ -828,14 +836,17 @@ function convertUserContent(
 			}
 		}
 		if (part.type === "image") {
-			const imagePart: ThreadImagePart = {
-				type: "image",
-				image: `data:${part.mimeType};base64,${part.data}`,
-			};
-			parts.push(imagePart);
+			parts.push(createThreadImagePart(part));
 		}
 	}
 	return parts;
+}
+
+function createThreadImagePart(part: UserContentPart & { type: "image" }): ThreadImagePart {
+	return {
+		type: "image",
+		image: `data:${part.mimeType};base64,${part.data}`,
+	};
 }
 
 function createFallbackPromptAttachments(

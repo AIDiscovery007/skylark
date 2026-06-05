@@ -76,6 +76,7 @@ const MAX_RESOURCE_BODY_LENGTH = 512_000;
 const MAX_CAPABILITY_INVOCATIONS = 24;
 const MAX_PROMPT_ATTACHMENTS = 10;
 const MAX_ATTACHMENT_SIZE = 128 * 1024 * 1024;
+const MAX_INLINE_IMAGE_DATA_LENGTH = Math.ceil(MAX_ATTACHMENT_SIZE / 3) * 4;
 const MAX_TERMINAL_WRITE_LENGTH = 1_048_576;
 const MAX_CWD_LENGTH = 4096;
 const MAX_TERMINAL_DIMENSION = 1000;
@@ -620,7 +621,7 @@ function validatePromptAttachmentImages(value: unknown, label: string): DesktopP
 		return {
 			type: "image",
 			mimeType: validateNonEmptyString(item.mimeType, `${label}[${index}].mimeType`, MAX_IDENTIFIER_LENGTH),
-			data: validateString(item.data, `${label}[${index}].data`, MAX_PROMPT_LENGTH),
+			data: validateString(item.data, `${label}[${index}].data`, MAX_INLINE_IMAGE_DATA_LENGTH),
 		};
 	});
 }
@@ -651,7 +652,7 @@ function validatePromptAttachmentCandidates(value: unknown): DesktopPromptAttach
 					`prompt attachment candidate[${index}].mimeType`,
 					MAX_IDENTIFIER_LENGTH,
 				),
-				data: validateString(item.data, `prompt attachment candidate[${index}].data`, MAX_PROMPT_LENGTH),
+				data: validateString(item.data, `prompt attachment candidate[${index}].data`, MAX_INLINE_IMAGE_DATA_LENGTH),
 				...(item.size === undefined
 					? {}
 					: {

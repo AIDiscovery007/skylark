@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { IDisposable, IPty } from "node-pty";
 import { describe, expect, it, vi } from "vitest";
 import {
+	createPtyEnvironment,
 	DesktopPtyManager,
 	ensurePtySpawnHelperExecutable,
 	resolvePtySpawnHelperPath,
@@ -69,6 +70,26 @@ class FakePty implements IPty {
 }
 
 describe("DesktopPtyManager", () => {
+	it("normalizes terminal locale and TERM for unicode filename output", () => {
+		const env = createPtyEnvironment({
+			LANG: "C",
+			LC_ALL: "POSIX",
+			LC_CTYPE: "C",
+			PATH: "/bin",
+			TERM: "dumb",
+		});
+
+		expect(env).toEqual(
+			expect.objectContaining({
+				LANG: "en_US.UTF-8",
+				LC_ALL: "en_US.UTF-8",
+				LC_CTYPE: "en_US.UTF-8",
+				PATH: "/bin",
+				TERM: "xterm-256color",
+			}),
+		);
+	});
+
 	it("makes the bundled unix spawn helper executable before spawning terminals", () => {
 		const packageRoot = mkdtempSync(join(tmpdir(), "desktop-pty-manager-"));
 		const helperDir = join(packageRoot, "prebuilds", "darwin-arm64");
@@ -133,7 +154,10 @@ describe("DesktopPtyManager", () => {
 				cwd: "/workspace/project",
 				cols: 120,
 				rows: 40,
-				env: process.env,
+				env: expect.objectContaining({
+					LC_CTYPE: expect.stringMatching(/UTF-8/i),
+					TERM: "xterm-256color",
+				}),
 			}),
 		);
 		expect(listener).toHaveBeenNthCalledWith(1, {

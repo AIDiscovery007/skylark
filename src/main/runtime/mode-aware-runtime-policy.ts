@@ -10,7 +10,6 @@ import {
 	createFindToolDefinition,
 	createGrepToolDefinition,
 	createLsToolDefinition,
-	createReadToolDefinition,
 	createWriteToolDefinition,
 	SessionManager,
 	type ToolDefinition,
@@ -34,6 +33,7 @@ import {
 	isDesktopTaskProgressStatus,
 } from "../../shared/types.ts";
 import type { JsonEnvironmentResourceStore } from "../environment/environment-resource-store.ts";
+import { createDesktopReadToolDefinition } from "./desktop-read-tool.ts";
 import { serializeAgentEvent } from "./serialize-agent-event.ts";
 
 export const DESKTOP_CREATE_EVENTS_TOOL_NAME = "create_events";
@@ -61,6 +61,11 @@ const DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS = 45_000;
 export const DESKTOP_READ_EXACT_OUTPUT_GUIDELINES = [
 	"When the user asks for local file content only, use read and return exactly the local file text with no extra commentary.",
 	"Do not refuse to quote local workspace file content that the user explicitly asked to read.",
+] as const;
+const DESKTOP_IMAGE_INSPECTION_GUIDELINES = [
+	"For local image discovery, use ls, find, grep, or conservative bash only to locate image paths or basic metadata.",
+	"For local image understanding, call read on the image path so the image pixels are sent to the vision-capable model. Do not write Python scripts or use image libraries to visually inspect images unless the user explicitly asks for OCR or image processing.",
+	"Use sips only for image dimensions or other basic metadata; do not treat metadata extraction as visual understanding.",
 ] as const;
 const PLAN_MODE_TOOL_NAMES = ["read", "find", "grep", "ls", "bash", DESKTOP_SUBAGENT_TOOL_NAME] as const;
 const SUBAGENT_CHILD_TOOL_NAMES = ["read", "find", "grep", "ls", "bash"] as const;
@@ -804,11 +809,12 @@ function createSubagentChildToolDefinitions(cwd: string, desktopSessionId: strin
 		"Subagent mode is active. Investigate the assigned task only.",
 		"First choose the smallest inspection path that can satisfy the success criteria.",
 		"Use ls for directory inventory, find or grep for discovery, read for evidence, and bash only for conservative read-only commands when the dedicated tools are insufficient.",
+		...DESKTOP_IMAGE_INSPECTION_GUIDELINES,
 		"Stop exploring once the success criteria are satisfied. Do not repeat blocked or aborted tool calls.",
 		"Return a concise Markdown summary with conclusions, relevant paths, and blockers.",
 	];
 	return [
-		withPromptGuidelines(createReadToolDefinition(cwd), promptGuidelines) as unknown as DesktopToolDefinition,
+		withPromptGuidelines(createDesktopReadToolDefinition(cwd), promptGuidelines) as unknown as DesktopToolDefinition,
 		withPromptGuidelines(createFindToolDefinition(cwd), promptGuidelines) as unknown as DesktopToolDefinition,
 		withPromptGuidelines(createGrepToolDefinition(cwd), promptGuidelines) as unknown as DesktopToolDefinition,
 		withPromptGuidelines(createLsToolDefinition(cwd), promptGuidelines) as unknown as DesktopToolDefinition,
@@ -1066,36 +1072,46 @@ function createSubagentToolDefinition(options: CreateSubagentToolDefinitionOptio
 
 function createModeAwareBuiltInToolDefinitions(options: ModeAwareRuntimePolicyOptions): DesktopToolDefinition[] {
 	const promptGuidelines = options.agentMode === "plan" ? PLAN_MODE_PROMPT_GUIDELINES : EXECUTE_MODE_PROMPT_GUIDELINES;
+	const sharedPromptGuidelines = [...DESKTOP_IMAGE_INSPECTION_GUIDELINES, ...promptGuidelines];
 	const bashTool =
 		options.agentMode === "plan"
 			? createPlanModeBashToolDefinition(options.cwd, options.desktopSessionId)
 			: createDesktopBashToolDefinition(options.cwd, options.desktopSessionId);
 	const tools: DesktopToolDefinition[] = [
-		withPromptGuidelines(createReadToolDefinition(options.cwd), [
+		withPromptGuidelines(createDesktopReadToolDefinition(options.cwd), [
 			...DESKTOP_READ_EXACT_OUTPUT_GUIDELINES,
-			...promptGuidelines,
+			...sharedPromptGuidelines,
 		]) as unknown as DesktopToolDefinition,
-		withPromptGuidelines(createFindToolDefinition(options.cwd), promptGuidelines) as unknown as DesktopToolDefinition,
-		withPromptGuidelines(createGrepToolDefinition(options.cwd), promptGuidelines) as unknown as DesktopToolDefinition,
-		withPromptGuidelines(createLsToolDefinition(options.cwd), promptGuidelines) as unknown as DesktopToolDefinition,
+		withPromptGuidelines(
+			createFindToolDefinition(options.cwd),
+			sharedPromptGuidelines,
+		) as unknown as DesktopToolDefinition,
+		withPromptGuidelines(
+			createGrepToolDefinition(options.cwd),
+			sharedPromptGuidelines,
+		) as unknown as DesktopToolDefinition,
+		withPromptGuidelines(
+			createLsToolDefinition(options.cwd),
+			sharedPromptGuidelines,
+		) as unknown as DesktopToolDefinition,
 		withPromptGuidelines(
 			bashTool,
-			options.agentMode === "plan" ? [] : promptGuidelines,
+			options.agentMode === "plan" ? DESKTOP_IMAGE_INSPECTION_GUIDELINES : sharedPromptGuidelines,
 		) as unknown as DesktopToolDefinition,
 	];
 	if (options.agentMode === "execute") {
 		tools.push(
 			withPromptGuidelines(
 				createEditToolDefinition(options.cwd),
-				promptGuidelines,
+				sharedPromptGuidelines,
 			) as unknown as DesktopToolDefinition,
 			withPromptGuidelines(
 				createWriteToolDefinition(options.cwd),
-				promptGuidelines,
+				sharedPromptGuidelines,
 			) as unknown as DesktopToolDefinition,
 			withPromptGuidelines(
 				createTaskProgressToolDefinition(options.updateTaskProgress ?? (() => undefined)),
-				promptGuidelines,
+				sharedPromptGuidelines,
 			),
 			withPromptGuidelines(
 				createEventsToolDefinition(
@@ -1104,7 +1120,7 @@ function createModeAwareBuiltInToolDefinitions(options: ModeAwareRuntimePolicyOp
 							throw new Error("Event creation is not configured.");
 						}),
 				),
-				promptGuidelines,
+				sharedPromptGuidelines,
 			),
 		);
 	}
@@ -1124,7 +1140,7 @@ function createModeAwareBuiltInToolDefinitions(options: ModeAwareRuntimePolicyOp
 					services: options.services,
 					subagentSessionsDir: options.subagentSessionsDir,
 				}),
-				promptGuidelines,
+				sharedPromptGuidelines,
 			),
 		);
 	}

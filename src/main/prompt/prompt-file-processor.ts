@@ -1,13 +1,16 @@
-import { access, open, readFile, stat } from "node:fs/promises";
-import { basename, extname, resolve } from "node:path";
+import { execFile } from "node:child_process";
+import { access, mkdtemp, open, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, extname, join, resolve } from "node:path";
+import { promisify } from "node:util";
 import type { ImageContent } from "@earendil-works/pi-ai";
-import { formatDimensionNote, resizeImage } from "@earendil-works/pi-coding-agent";
+import { formatDimensionNote, type ResizedImage, resizeImage } from "@earendil-works/pi-coding-agent";
 import mammoth from "mammoth";
 import xlsx, { type WorkSheet } from "xlsx";
 
 export type PromptFileInput =
 	| { type: "path"; path: string }
-	| { type: "inline_image"; name: string; mimeType: string; data: string; size?: number };
+	| { type: "inline_image"; name: string; mimeType: string; data: string; size?: number; path?: string };
 
 export type PromptFileAttachmentKind = "text" | "image";
 
@@ -40,12 +43,23 @@ const IMAGE_TYPE_SNIFF_BYTES = 4100;
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 const DOCX_MIME_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 const XLSX_MIME_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const MAX_INLINE_IMAGE_BASE64_BYTES = Math.floor(4.5 * 1024 * 1024);
 const MAX_STRUCTURED_PROMPT_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const MAX_SPREADSHEET_SHEETS = 5;
 const MAX_SPREADSHEET_ROWS_PER_SHEET = 200;
 const MAX_SPREADSHEET_COLUMNS = 50;
+const execFileAsync = promisify(execFile);
+const SIPS_RESIZE_ATTEMPTS = [
+	{ maxDimension: 2000, quality: 80 },
+	{ maxDimension: 1600, quality: 72 },
+	{ maxDimension: 1200, quality: 64 },
+	{ maxDimension: 900, quality: 56 },
+	{ maxDimension: 640, quality: 48 },
+] as const;
 const UNSUPPORTED_BINARY_PROMPT_ATTACHMENT_MESSAGE =
 	"Unsupported binary prompt attachment. Supported prompt attachments are text files, images, .docx, and .xlsx.";
+const IMAGE_PROMPT_ATTACHMENT_UNAVAILABLE_MESSAGE =
+	"Image attachment could not be prepared for the model. Try a smaller or different image file.";
 const TEXT_MIME_TYPES = new Map<string, string>([
 	[".bash", "text/x-shellscript"],
 	[".c", "text/x-c"],
@@ -192,7 +206,150 @@ function isLikelyTextBuffer(buffer: Buffer): boolean {
 	return disallowedControlCount / text.length < 0.01;
 }
 
-async function detectSupportedImageMimeTypeFromFile(filePath: string): Promise<string | null> {
+function appendImageUnavailableError(
+	input: {
+		name: string;
+		mimeType: string;
+		size: number;
+		path?: string;
+	},
+	output: Pick<ProcessPromptFileInputsResult, "errors"> & { text: string },
+): string {
+	output.errors.push({
+		name: input.name,
+		...(input.path ? { path: input.path } : {}),
+		message: IMAGE_PROMPT_ATTACHMENT_UNAVAILABLE_MESSAGE,
+	});
+	return output.text;
+}
+
+interface ImageDimensions {
+	width: number;
+	height: number;
+}
+
+function isInlineImageDataWithinLimit(data: string): boolean {
+	return Buffer.byteLength(data, "utf8") <= MAX_INLINE_IMAGE_BASE64_BYTES;
+}
+
+function createOriginalImageIfInlineable(input: { data: string; mimeType: string; size: number }): ResizedImage | null {
+	if (!isInlineImageDataWithinLimit(input.data)) {
+		return null;
+	}
+	return {
+		data: input.data,
+		mimeType: input.mimeType,
+		originalWidth: 0,
+		originalHeight: 0,
+		width: 0,
+		height: 0,
+		wasResized: false,
+	};
+}
+
+function parseSipsDimensions(output: string): ImageDimensions | null {
+	const width = /pixelWidth:\s*(\d+)/.exec(output)?.[1];
+	const height = /pixelHeight:\s*(\d+)/.exec(output)?.[1];
+	if (!width || !height) {
+		return null;
+	}
+	return {
+		width: Number(width),
+		height: Number(height),
+	};
+}
+
+async function readSipsDimensions(path: string): Promise<ImageDimensions | null> {
+	try {
+		const { stdout } = await execFileAsync("sips", ["-g", "pixelWidth", "-g", "pixelHeight", path], {
+			timeout: 10_000,
+		});
+		return parseSipsDimensions(stdout);
+	} catch {
+		return null;
+	}
+}
+
+async function resizeImageWithSips(path: string): Promise<ResizedImage | null> {
+	if (process.platform !== "darwin") {
+		return null;
+	}
+
+	const originalDimensions = await readSipsDimensions(path);
+	if (!originalDimensions) {
+		return null;
+	}
+
+	const tempDir = await mkdtemp(join(tmpdir(), "skylark-image-resize-"));
+	try {
+		for (const attempt of SIPS_RESIZE_ATTEMPTS) {
+			const outputPath = join(tempDir, `resized-${attempt.maxDimension}-${attempt.quality}.jpg`);
+			try {
+				await execFileAsync(
+					"sips",
+					[
+						"--resampleHeightWidthMax",
+						String(attempt.maxDimension),
+						"-s",
+						"format",
+						"jpeg",
+						"-s",
+						"formatOptions",
+						String(attempt.quality),
+						path,
+						"--out",
+						outputPath,
+					],
+					{ timeout: 20_000 },
+				);
+				const outputBuffer = await readFile(outputPath);
+				const data = outputBuffer.toString("base64");
+				if (!isInlineImageDataWithinLimit(data)) {
+					continue;
+				}
+				const resizedDimensions = (await readSipsDimensions(outputPath)) ?? originalDimensions;
+				return {
+					data,
+					mimeType: "image/jpeg",
+					originalWidth: originalDimensions.width,
+					originalHeight: originalDimensions.height,
+					width: resizedDimensions.width,
+					height: resizedDimensions.height,
+					wasResized:
+						resizedDimensions.width !== originalDimensions.width ||
+						resizedDimensions.height !== originalDimensions.height,
+				};
+			} catch {}
+		}
+		return null;
+	} finally {
+		await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+	}
+}
+
+async function resizeImageSafely(inputBytes: Buffer, mimeType: string): Promise<ResizedImage | null> {
+	try {
+		return await resizeImage(inputBytes, mimeType);
+	} catch {
+		return null;
+	}
+}
+
+export async function prepareInlineImageForModel(input: {
+	data: string;
+	mimeType: string;
+	name: string;
+	path?: string;
+	size: number;
+}): Promise<ResizedImage | null> {
+	const inputBytes = Buffer.from(input.data, "base64");
+	return (
+		(await resizeImageSafely(inputBytes, input.mimeType)) ??
+		(input.path ? await resizeImageWithSips(input.path) : createOriginalImageIfInlineable(input))
+	);
+}
+
+export async function detectSupportedImageMimeTypeFromFile(filePath: string): Promise<string | null> {
 	const fileHandle = await open(filePath, "r");
 	try {
 		const buffer = Buffer.alloc(IMAGE_TYPE_SNIFF_BYTES);
@@ -213,14 +370,9 @@ async function appendImageAttachment(
 	},
 	output: Pick<ProcessPromptFileInputsResult, "attachments" | "errors" | "images"> & { text: string },
 ): Promise<string> {
-	const resized = await resizeImage(Buffer.from(input.data, "base64"), input.mimeType);
+	const resized = await prepareInlineImageForModel(input);
 	if (!resized) {
-		output.errors.push({
-			name: input.name,
-			...(input.path ? { path: input.path } : {}),
-			message: "Image could not be resized below the inline image size limit.",
-		});
-		return output.text;
+		return appendImageUnavailableError(input, output);
 	}
 	const image: ImageContent = {
 		type: "image",
@@ -235,7 +387,10 @@ async function appendImageAttachment(
 		mimeType: resized.mimeType,
 		size: input.size,
 	});
-	return `${output.text}<file name="${input.path ?? input.name}">${formatDimensionNote(resized) ?? ""}</file>\n`;
+	const dimensionNote = formatDimensionNote(resized);
+	return `${output.text}<file name="${input.name}">\nImage attachment "${input.name}" is included directly as model image content. Use the attached image content; do not read this image from the filesystem unless the user explicitly asks about the local file.${
+		dimensionNote ? `\n${dimensionNote}` : ""
+	}\n</file>\n`;
 }
 
 function appendTextAttachment(
@@ -350,6 +505,7 @@ export async function processPromptFileInputs(
 					mimeType: input.mimeType,
 					data: input.data,
 					size: input.size ?? Buffer.byteLength(input.data, "base64"),
+					...(input.path ? { path: input.path } : {}),
 				},
 				{ attachments, errors, images, text },
 			);

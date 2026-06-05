@@ -100,6 +100,10 @@ Agent-facing state belongs under:
 ~/.skylark
 ```
 
+Prompt attachments created from pasted images belong under
+`~/.skylark/prompt-attachments` so the agent can inspect the original file by
+path when an image cannot be inlined into a model request.
+
 Platform-only Electron state, such as window state, may remain under Electron
 `userData`, for example `~/Library/Application Support/Skylark/desktop-agent`.
 Packaged releases must not read or migrate local source-tree data from

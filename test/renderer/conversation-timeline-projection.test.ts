@@ -57,6 +57,18 @@ function createUserMessage(text: string, timestamp: number): UserMessage {
 	};
 }
 
+function createUserImageMessage(text: string, timestamp: number, metadata?: unknown): AgentMessage {
+	return {
+		role: "user",
+		content: [
+			{ type: "text", text },
+			{ type: "image", mimeType: "image/png", data: "iVBORw0KGgo=" },
+		],
+		...(metadata ? { metadata } : {}),
+		timestamp,
+	} as unknown as AgentMessage;
+}
+
 function createAssistantMessage(text: string, timestamp: number, errorMessage?: string): AssistantMessage {
 	return {
 		role: "assistant",
@@ -275,6 +287,39 @@ describe("conversationTimelineProjection", () => {
 		const matchedToolCalls = getMessageToolCalls(createAssistantToolMessage(5), state.toolCalls);
 		expect(matchedToolCalls).toHaveLength(1);
 		expect(matchedToolCalls[0]?.toolCallId).toBe("call-1");
+	});
+
+	it("reconciles enriched image prompt metadata from agent_end without duplicating the turn", () => {
+		let state = createAgentRendererState(createSnapshot());
+		const userMessage = createUserImageMessage("inspect this screenshot", 1);
+		const enrichedUserMessage = createUserImageMessage("inspect this screenshot", 1, {
+			custom: {
+				desktopPromptVisibleText: "inspect this screenshot",
+				desktopPromptAttachments: [
+					{
+						id: "attachment-1",
+						kind: "image",
+						name: "panel.png",
+						mimeType: "image/png",
+						size: 42,
+					},
+				],
+			},
+		});
+		const finalAssistant = createAssistantMessage("Screenshot inspected.", 2);
+
+		state = reduceAgentEvent(state, createEvent({ type: "agent_start" }));
+		state = reduceAgentEvent(state, createEvent({ type: "message_end", message: userMessage }));
+		state = reduceAgentEvent(state, createEvent({ type: "message_end", message: finalAssistant }));
+		state = reduceAgentEvent(
+			state,
+			createEvent({ type: "agent_end", messages: [enrichedUserMessage, finalAssistant] }),
+		);
+
+		expect(state.isStreaming).toBe(false);
+		expect(state.streamingMessage).toBe(undefined);
+		expect(state.messages).toEqual([enrichedUserMessage, finalAssistant]);
+		expect(state.contextMessages).toEqual([enrichedUserMessage, finalAssistant]);
 	});
 
 	it("hydrates and updates task progress from internal tool results", () => {
