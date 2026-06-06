@@ -13,6 +13,10 @@ runtimes, events, MCP, previews, and environment resources.
   services. Do not leak Electron primitives into renderer-facing contracts.
 - Prefer small service interfaces that can be tested with temporary directories,
   fake stores, faux providers, and injected shell/window functions.
+- Implement new main-process IPC channels as focused bridge groups under
+  `src/main/ipc`; validate renderer input inside the group before calling
+  services. Keep closely related bridge groups in the same module when that is
+  clearer than adding one thin file per channel family.
 - When adding or materially changing a main-process service, IPC handler,
   runtime host behavior, storage path, permission flow, terminal capability, or
   event pipeline, update this file with the local rule or verification change

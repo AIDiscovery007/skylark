@@ -241,14 +241,14 @@ async function bootstrap(): Promise<void> {
 			await platformStateStore.set("windowStates", windowStates);
 		},
 	});
-	registerDesktopAgentHandlers(
-		desktopHost,
+	registerDesktopAgentHandlers({
+		host: desktopHost,
 		authService,
-		terminalManager,
+		ptyManager: terminalManager,
 		mcpManager,
 		approvalBroker,
 		getRuntimeCatalog,
-		{
+		stores: {
 			settingsStore,
 			instructionStore,
 			providerKeysStore,
@@ -256,28 +256,28 @@ async function bootstrap(): Promise<void> {
 			eventStore,
 			sessionStore,
 		},
-		{
+		workspaceRuntimeServices: {
 			contextHarvester,
 			runtimePermissionGate,
 			workspaceRuntime,
 			workspaceStore,
 		},
-		{
+		shellServices: {
 			promptAttachmentsDir: storagePaths.promptAttachmentsDir,
 			windowManager,
 		},
-		{
+		environmentServices: {
 			environmentResourceStore,
 			refreshEnvironmentResources,
 			subagentRuntimeBroker,
 			subagentSessionsDir: storagePaths.subagentSessionsDir,
 		},
-		{
+		eventServices: {
 			criteriaFilePath: storagePaths.eventManagementCriteriaFilePath,
 			eventBroker,
 			generateText: generateEventManagementText,
 		},
-	);
+	});
 	installDesktopApplicationMenu({
 		openSettingsWindow: () => {
 			windowManager?.openSettingsWindow();

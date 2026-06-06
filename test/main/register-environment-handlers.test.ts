@@ -75,7 +75,167 @@ function getListener(channel: string): IpcListener {
 	return listener;
 }
 
+function getHandler(channel: string): IpcHandler {
+	const handler = electronMocks.handlers.get(channel);
+	if (!handler) {
+		throw new Error(`Expected handler for ${channel}`);
+	}
+	return handler;
+}
+
 describe("environment IPC handlers", () => {
+	it("returns filtered resources while broadcasting the unfiltered environment snapshot", async () => {
+		const sessionResource: DesktopEnvironmentResource = {
+			createdAt: "2026-05-27T01:00:00.000Z",
+			cwd: "/workspace/project",
+			id: "tmux-session-1",
+			kind: "tmux_session",
+			lastSeenAt: "2026-05-27T01:00:00.000Z",
+			metadata: { tmuxSessionName: "skylark_session_1" },
+			provider: "tmux",
+			sessionId: "session-1",
+			status: "running",
+			title: "Session 1",
+			updatedAt: "2026-05-27T01:00:00.000Z",
+		};
+		const otherResource: DesktopEnvironmentResource = {
+			...sessionResource,
+			id: "tmux-session-2",
+			metadata: { tmuxSessionName: "skylark_session_2" },
+			sessionId: "session-2",
+			title: "Session 2",
+		};
+
+		registerDesktopAgentHandlers({
+			host: {} as unknown as DesktopRuntimeHost,
+			authService: {} as unknown as DesktopAuthService,
+			ptyManager: { disposeSession: vi.fn() } as unknown as DesktopPtyManager,
+			mcpManager: {} as unknown as DesktopMcpManager,
+			approvalBroker: {} as unknown as DesktopApprovalBroker,
+			getRuntimeCatalog: async () => ({ defaultTools: [], providers: [] }),
+			stores: {
+				eventStore: {
+					markRunAwaitingReviewForSession: vi.fn(async () => undefined),
+				} as unknown as DesktopEventStore,
+				projectStore: {} as DesktopProjectStore,
+				providerKeysStore: {} as DesktopProviderKeysStore,
+				sessionStore: {} as DesktopSessionStore,
+				settingsStore: {} as DesktopSettingsStore,
+			},
+			environmentServices: {
+				environmentResourceStore: {
+					detachResource: vi.fn(),
+					listResources: vi.fn(async () => [sessionResource, otherResource]),
+				},
+			},
+		});
+		const port = new FakeMessagePort();
+		getListener(IPC_CHANNELS.openEnvironmentStream)({ ports: [port] });
+
+		const result = await getHandler(IPC_CHANNELS.listEnvironmentResources)(undefined, { sessionId: "session-1" });
+
+		expect(result).toEqual([sessionResource]);
+		expect(port.messages).toEqual([
+			{
+				resources: [sessionResource, otherResource],
+				type: "environment_resources_updated",
+				updatedAt: expect.any(String),
+			},
+		]);
+	});
+
+	it("publishes detached environment resources and forwards subagent stream ports", async () => {
+		const resource: DesktopEnvironmentResource = {
+			createdAt: "2026-05-27T01:00:00.000Z",
+			cwd: "/workspace/project",
+			id: "tmux-session-1",
+			kind: "tmux_session",
+			lastSeenAt: "2026-05-27T01:00:00.000Z",
+			metadata: { tmuxSessionName: "skylark_session_1" },
+			provider: "tmux",
+			sessionId: "session-1",
+			status: "detached",
+			title: "Session 1",
+			updatedAt: "2026-05-27T01:00:00.000Z",
+		};
+		const openPort = vi.fn();
+
+		registerDesktopAgentHandlers({
+			host: {} as unknown as DesktopRuntimeHost,
+			authService: {} as unknown as DesktopAuthService,
+			ptyManager: { disposeSession: vi.fn() } as unknown as DesktopPtyManager,
+			mcpManager: {} as unknown as DesktopMcpManager,
+			approvalBroker: {} as unknown as DesktopApprovalBroker,
+			getRuntimeCatalog: async () => ({ defaultTools: [], providers: [] }),
+			stores: {
+				eventStore: {
+					markRunAwaitingReviewForSession: vi.fn(async () => undefined),
+				} as unknown as DesktopEventStore,
+				projectStore: {} as DesktopProjectStore,
+				providerKeysStore: {} as DesktopProviderKeysStore,
+				sessionStore: {} as DesktopSessionStore,
+				settingsStore: {} as DesktopSettingsStore,
+			},
+			environmentServices: {
+				environmentResourceStore: {
+					detachResource: vi.fn(async () => resource),
+					listResources: vi.fn(),
+				},
+				subagentRuntimeBroker: { openPort },
+			},
+		});
+		const environmentPort = new FakeMessagePort();
+		const subagentPort = new FakeMessagePort();
+		getListener(IPC_CHANNELS.openEnvironmentStream)({ ports: [environmentPort] });
+		getListener(IPC_CHANNELS.openSubagentStream)({ ports: [subagentPort] });
+
+		await expect(
+			getHandler(IPC_CHANNELS.detachEnvironmentResource)(undefined, { resourceId: "tmux-session-1" }),
+		).resolves.toBe(resource);
+
+		expect(openPort).toHaveBeenCalledWith(subagentPort);
+		expect(environmentPort.messages).toEqual([
+			{
+				resource,
+				type: "environment_resource_detached",
+				updatedAt: expect.any(String),
+			},
+		]);
+	});
+
+	it("rejects subagent snapshot requests when subagent storage is unavailable", async () => {
+		registerDesktopAgentHandlers({
+			host: {} as unknown as DesktopRuntimeHost,
+			authService: {} as unknown as DesktopAuthService,
+			ptyManager: { disposeSession: vi.fn() } as unknown as DesktopPtyManager,
+			mcpManager: {} as unknown as DesktopMcpManager,
+			approvalBroker: {} as unknown as DesktopApprovalBroker,
+			getRuntimeCatalog: async () => ({ defaultTools: [], providers: [] }),
+			stores: {
+				eventStore: {
+					markRunAwaitingReviewForSession: vi.fn(async () => undefined),
+				} as unknown as DesktopEventStore,
+				projectStore: {} as DesktopProjectStore,
+				providerKeysStore: {} as DesktopProviderKeysStore,
+				sessionStore: {} as DesktopSessionStore,
+				settingsStore: {} as DesktopSettingsStore,
+			},
+			environmentServices: {
+				environmentResourceStore: {
+					detachResource: vi.fn(),
+					listResources: vi.fn(),
+				},
+			},
+		});
+
+		await expect(
+			getHandler(IPC_CHANNELS.getSubagentSnapshot)(undefined, {
+				parentSessionId: "session-1",
+				subagentId: "subagent-1",
+			}),
+		).rejects.toThrow("Subagent snapshots are not available.");
+	});
+
 	it("refreshes and publishes environment resources after an agent run ends", async () => {
 		const resource: DesktopEnvironmentResource = {
 			createdAt: "2026-05-27T01:00:00.000Z",
@@ -100,14 +260,14 @@ describe("environment IPC handlers", () => {
 			}),
 		} as unknown as DesktopRuntimeHost;
 
-		registerDesktopAgentHandlers(
+		registerDesktopAgentHandlers({
 			host,
-			{} as unknown as DesktopAuthService,
-			{ disposeSession: vi.fn() } as unknown as DesktopPtyManager,
-			{} as unknown as DesktopMcpManager,
-			{} as unknown as DesktopApprovalBroker,
-			async () => ({ defaultTools: [], providers: [] }),
-			{
+			authService: {} as unknown as DesktopAuthService,
+			ptyManager: { disposeSession: vi.fn() } as unknown as DesktopPtyManager,
+			mcpManager: {} as unknown as DesktopMcpManager,
+			approvalBroker: {} as unknown as DesktopApprovalBroker,
+			getRuntimeCatalog: async () => ({ defaultTools: [], providers: [] }),
+			stores: {
 				eventStore: {
 					markRunAwaitingReviewForSession,
 				} as unknown as DesktopEventStore,
@@ -116,16 +276,14 @@ describe("environment IPC handlers", () => {
 				sessionStore: {} as DesktopSessionStore,
 				settingsStore: {} as DesktopSettingsStore,
 			},
-			undefined,
-			{},
-			{
+			environmentServices: {
 				environmentResourceStore: {
 					detachResource: vi.fn(),
 					listResources: vi.fn(),
 				},
 				refreshEnvironmentResources,
 			},
-		);
+		});
 		const port = new FakeMessagePort();
 		getListener(IPC_CHANNELS.openEnvironmentStream)({ ports: [port] });
 
@@ -165,14 +323,14 @@ describe("environment IPC handlers", () => {
 			}),
 		} as unknown as DesktopRuntimeHost;
 
-		registerDesktopAgentHandlers(
+		registerDesktopAgentHandlers({
 			host,
-			{} as unknown as DesktopAuthService,
-			{ disposeSession: vi.fn() } as unknown as DesktopPtyManager,
-			{} as unknown as DesktopMcpManager,
-			{} as unknown as DesktopApprovalBroker,
-			async () => ({ defaultTools: [], providers: [] }),
-			{
+			authService: {} as unknown as DesktopAuthService,
+			ptyManager: { disposeSession: vi.fn() } as unknown as DesktopPtyManager,
+			mcpManager: {} as unknown as DesktopMcpManager,
+			approvalBroker: {} as unknown as DesktopApprovalBroker,
+			getRuntimeCatalog: async () => ({ defaultTools: [], providers: [] }),
+			stores: {
 				eventStore: {
 					markRunAwaitingReviewForSession: vi.fn(async () => undefined),
 				} as unknown as DesktopEventStore,
@@ -181,16 +339,14 @@ describe("environment IPC handlers", () => {
 				sessionStore: {} as DesktopSessionStore,
 				settingsStore: {} as DesktopSettingsStore,
 			},
-			undefined,
-			{},
-			{
+			environmentServices: {
 				environmentResourceStore: {
 					detachResource: vi.fn(),
 					listResources: vi.fn(),
 				},
 				refreshEnvironmentResources,
 			},
-		);
+		});
 		const port = new FakeMessagePort();
 		getListener(IPC_CHANNELS.openEnvironmentStream)({ ports: [port] });
 

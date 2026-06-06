@@ -1,6 +1,7 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { dialog } from "electron";
 import { describe, expect, it, vi } from "vitest";
 import type { DesktopAuthService } from "../../src/main/auth/desktop-auth-service.ts";
 import { DesktopEventStore } from "../../src/main/events/event-store.ts";
@@ -94,6 +95,53 @@ async function createEventStore(rootDir: string): Promise<DesktopEventStore> {
 }
 
 describe("event IPC handlers", () => {
+	it("opens native event attachments and prepares selected document snapshots", async () => {
+		const rootDir = await mkdtemp(join(tmpdir(), "desktop-event-handlers-"));
+		const eventStore = await createEventStore(rootDir);
+		const attachmentPath = join(rootDir, "idea.md");
+		await writeFile(attachmentPath, "# Idea\n\nShip event attachments.");
+		vi.mocked(dialog.showOpenDialog).mockResolvedValue({
+			canceled: false,
+			filePaths: [attachmentPath],
+		});
+		registerDesktopAgentHandlers({
+			host: {} as DesktopRuntimeHost,
+			authService: {} as DesktopAuthService,
+			ptyManager: {} as DesktopPtyManager,
+			mcpManager: {} as DesktopMcpManager,
+			approvalBroker: {} as DesktopApprovalBroker,
+			getRuntimeCatalog: async () => ({ defaultTools: [], providers: [] }),
+			stores: {
+				eventStore,
+				projectStore: {} as DesktopProjectStore,
+				providerKeysStore: {} as DesktopProviderKeysStore,
+				sessionStore: {} as DesktopSessionStore,
+				settingsStore: {} as DesktopSettingsStore,
+			},
+		});
+
+		const result = await getHandler(IPC_CHANNELS.openEventAttachments)({ sender: {} }, { defaultPath: rootDir });
+
+		expect(dialog.showOpenDialog).toHaveBeenCalledWith(
+			expect.objectContaining({
+				defaultPath: rootDir,
+				filters: [{ name: "Event documents", extensions: ["txt", "md", "docx"] }],
+				properties: ["openFile", "multiSelections"],
+			}),
+		);
+		expect(result).toEqual({
+			attachments: [
+				expect.objectContaining({
+					mimeType: "text/markdown",
+					name: "idea.md",
+					sourcePath: attachmentPath,
+					textSnapshot: "# Idea\n\nShip event attachments.",
+				}),
+			],
+			errors: [],
+		});
+	});
+
 	it("handles criteria, comments, proposals, and publishes event updates", async () => {
 		const rootDir = await mkdtemp(join(tmpdir(), "desktop-event-handlers-"));
 		const eventStore = await createEventStore(rootDir);
@@ -113,28 +161,25 @@ describe("event IPC handlers", () => {
 			}),
 		);
 
-		registerDesktopAgentHandlers(
-			{} as DesktopRuntimeHost,
-			{} as DesktopAuthService,
-			{} as DesktopPtyManager,
-			{} as DesktopMcpManager,
-			{} as DesktopApprovalBroker,
-			async () => ({ defaultTools: [], providers: [] }),
-			{
+		registerDesktopAgentHandlers({
+			host: {} as DesktopRuntimeHost,
+			authService: {} as DesktopAuthService,
+			ptyManager: {} as DesktopPtyManager,
+			mcpManager: {} as DesktopMcpManager,
+			approvalBroker: {} as DesktopApprovalBroker,
+			getRuntimeCatalog: async () => ({ defaultTools: [], providers: [] }),
+			stores: {
 				eventStore,
 				projectStore: {} as DesktopProjectStore,
 				providerKeysStore: {} as DesktopProviderKeysStore,
 				sessionStore: {} as DesktopSessionStore,
 				settingsStore: {} as DesktopSettingsStore,
 			},
-			undefined,
-			{},
-			undefined,
-			{
+			eventServices: {
 				criteriaFilePath: join(rootDir, "events", "EVENTS.md"),
 				generateText,
 			},
-		);
+		});
 		const port = new FakeMessagePort();
 		getListener(IPC_CHANNELS.openEventStream)({ ports: [port] });
 

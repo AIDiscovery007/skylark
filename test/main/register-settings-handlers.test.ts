@@ -103,14 +103,14 @@ describe("settings IPC handlers", () => {
 		const settingsStore = new DesktopSettingsStore(join(agentDir, "settings.json"));
 		const instructionStore = new DesktopInstructionStore({ agentDir });
 
-		registerDesktopAgentHandlers(
-			{} as DesktopRuntimeHost,
-			{} as DesktopAuthService,
-			{} as DesktopPtyManager,
-			{} as DesktopMcpManager,
-			{} as DesktopApprovalBroker,
-			async () => ({ defaultTools: [], providers: [] }),
-			{
+		registerDesktopAgentHandlers({
+			host: {} as DesktopRuntimeHost,
+			authService: {} as DesktopAuthService,
+			ptyManager: {} as DesktopPtyManager,
+			mcpManager: {} as DesktopMcpManager,
+			approvalBroker: {} as DesktopApprovalBroker,
+			getRuntimeCatalog: async () => ({ defaultTools: [], providers: [] }),
+			stores: {
 				eventStore: {} as DesktopEventStore,
 				instructionStore,
 				projectStore: {} as DesktopProjectStore,
@@ -118,8 +118,7 @@ describe("settings IPC handlers", () => {
 				sessionStore: {} as DesktopSessionStore,
 				settingsStore,
 			},
-			undefined,
-		);
+		});
 		const port = new FakeMessagePort();
 		getListener(IPC_CHANNELS.openSettingsStream)({ ports: [port] });
 
@@ -165,23 +164,22 @@ describe("settings IPC handlers", () => {
 			message: "连接正常",
 		}));
 
-		registerDesktopAgentHandlers(
-			{} as DesktopRuntimeHost,
-			{} as DesktopAuthService,
-			{} as DesktopPtyManager,
-			{} as DesktopMcpManager,
-			{} as DesktopApprovalBroker,
-			async () => ({ defaultTools: [], providers: [] }),
-			{
+		registerDesktopAgentHandlers({
+			host: {} as DesktopRuntimeHost,
+			authService: {} as DesktopAuthService,
+			ptyManager: {} as DesktopPtyManager,
+			mcpManager: {} as DesktopMcpManager,
+			approvalBroker: {} as DesktopApprovalBroker,
+			getRuntimeCatalog: async () => ({ defaultTools: [], providers: [] }),
+			stores: {
 				eventStore: {} as DesktopEventStore,
 				projectStore: {} as DesktopProjectStore,
 				providerKeysStore: {} as DesktopProviderKeysStore,
 				sessionStore: {} as DesktopSessionStore,
 				settingsStore,
 			},
-			undefined,
-			{ testProviderKey },
-		);
+			authHandlerServices: { testProviderKey },
+		});
 
 		await expect(getHandler(IPC_CHANNELS.testProviderKey)(undefined, "anthropic")).resolves.toEqual({
 			provider: "anthropic",
@@ -203,22 +201,21 @@ describe("settings IPC handlers", () => {
 			notifyCredentialsChanged: vi.fn(),
 		};
 
-		registerDesktopAgentHandlers(
-			{} as DesktopRuntimeHost,
-			authService as unknown as DesktopAuthService,
-			{} as DesktopPtyManager,
-			{} as DesktopMcpManager,
-			{} as DesktopApprovalBroker,
-			async () => ({ defaultTools: [], providers: [] }),
-			{
+		registerDesktopAgentHandlers({
+			host: {} as DesktopRuntimeHost,
+			authService: authService as unknown as DesktopAuthService,
+			ptyManager: {} as DesktopPtyManager,
+			mcpManager: {} as DesktopMcpManager,
+			approvalBroker: {} as DesktopApprovalBroker,
+			getRuntimeCatalog: async () => ({ defaultTools: [], providers: [] }),
+			stores: {
 				eventStore: {} as DesktopEventStore,
 				projectStore: {} as DesktopProjectStore,
 				providerKeysStore: providerKeysStore as unknown as DesktopProviderKeysStore,
 				sessionStore: {} as DesktopSessionStore,
 				settingsStore,
 			},
-			undefined,
-		);
+		});
 
 		await getHandler(IPC_CHANNELS.setProviderKey)(undefined, "anthropic", "secret");
 		await getHandler(IPC_CHANNELS.deleteProviderKey)(undefined, "anthropic");

@@ -1,7 +1,6 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { dialog } from "electron";
 import { describe, expect, it, vi } from "vitest";
 import type { DesktopAuthService } from "../../src/main/auth/desktop-auth-service.ts";
 import type { DesktopEventStore } from "../../src/main/events/event-store.ts";
@@ -114,7 +113,6 @@ function createWorkspace(overrides: Partial<DesktopWorkspace> = {}): DesktopWork
 function registerHandlersForWorkspaceRuntime(
 	workspace: DesktopWorkspace = createWorkspace(),
 	runtimeStateOverrides: Record<string, unknown> = {},
-	desktopShellServices: Parameters<typeof registerDesktopAgentHandlers>[8] = {},
 ) {
 	let currentWorkspace = workspace;
 	const workspaceStore = {
@@ -218,102 +216,32 @@ function registerHandlersForWorkspaceRuntime(
 		recordRuntimeAuditEvent: vi.fn(async () => undefined),
 	};
 
-	registerDesktopAgentHandlers(
-		{} as unknown as DesktopRuntimeHost,
-		{} as unknown as DesktopAuthService,
-		{ disposeSession: vi.fn() } as unknown as DesktopPtyManager,
-		{} as unknown as DesktopMcpManager,
-		{} as unknown as DesktopApprovalBroker,
-		async () => ({ defaultTools: [], providers: [] }),
-		{
+	registerDesktopAgentHandlers({
+		host: {} as unknown as DesktopRuntimeHost,
+		authService: {} as unknown as DesktopAuthService,
+		ptyManager: { disposeSession: vi.fn() } as unknown as DesktopPtyManager,
+		mcpManager: {} as unknown as DesktopMcpManager,
+		approvalBroker: {} as unknown as DesktopApprovalBroker,
+		getRuntimeCatalog: async () => ({ defaultTools: [], providers: [] }),
+		stores: {
 			eventStore: {} as DesktopEventStore,
 			projectStore: {} as DesktopProjectStore,
 			providerKeysStore: {} as DesktopProviderKeysStore,
 			sessionStore: {} as DesktopSessionStore,
 			settingsStore: {} as DesktopSettingsStore,
 		},
-		{
+		workspaceRuntimeServices: {
 			contextHarvester,
 			runtimePermissionGate,
 			workspaceRuntime,
 			workspaceStore,
 		},
-		desktopShellServices,
-	);
+	});
 
 	return { contextHarvester, runtimePermissionGate, workspaceRuntime, workspaceStore };
 }
 
 describe("workspace runtime IPC handlers", () => {
-	it("handles desktop shell channels without exposing Electron primitives to the renderer", async () => {
-		const openSettingsWindow = vi.fn();
-		const notifyFirstInteractive = vi.fn();
-		const openExternalUrl = vi.fn(async () => undefined);
-		const nativeAppearance = {
-			accentColor: "#0a84ff",
-			colorScheme: "dark" as const,
-			forcedColors: false,
-			highContrast: false,
-			invertedColors: false,
-			reducedTransparency: true,
-		};
-		registerHandlersForWorkspaceRuntime(
-			createWorkspace(),
-			{},
-			{
-				getNativeAppearance: () => nativeAppearance,
-				openExternalUrl,
-				windowManager: {
-					focusMainWindow: vi.fn(),
-					notifyFirstInteractive,
-					openMainWindow: vi.fn(),
-					openSettingsWindow,
-				},
-			},
-		);
-
-		await getHandler(IPC_CHANNELS.openSettingsWindow)(undefined, { section: "credentials", providerId: "openai" });
-		await getHandler(IPC_CHANNELS.notifyFirstInteractive)({ sender: { id: 42 } });
-		await expect(getHandler(IPC_CHANNELS.getNativeAppearance)(undefined)).resolves.toBe(nativeAppearance);
-		await getHandler(IPC_CHANNELS.openExternalUrl)(undefined, "https://example.com/docs");
-
-		expect(openSettingsWindow).toHaveBeenCalledWith({ section: "credentials", providerId: "openai" });
-		expect(notifyFirstInteractive).toHaveBeenCalledWith(42);
-		expect(openExternalUrl).toHaveBeenCalledWith("https://example.com/docs");
-	});
-
-	it("opens native event attachments and prepares selected document snapshots", async () => {
-		const projectDir = await mkdtemp(join(tmpdir(), "event-attachments-ipc-"));
-		const attachmentPath = join(projectDir, "idea.md");
-		await writeFile(attachmentPath, "# Idea\n\nShip event attachments.");
-		vi.mocked(dialog.showOpenDialog).mockResolvedValue({
-			canceled: false,
-			filePaths: [attachmentPath],
-		});
-		registerHandlersForWorkspaceRuntime();
-
-		const result = await getHandler(IPC_CHANNELS.openEventAttachments)({ sender: {} }, { defaultPath: projectDir });
-
-		expect(dialog.showOpenDialog).toHaveBeenCalledWith(
-			expect.objectContaining({
-				defaultPath: projectDir,
-				filters: [{ name: "Event documents", extensions: ["txt", "md", "docx"] }],
-				properties: ["openFile", "multiSelections"],
-			}),
-		);
-		expect(result).toEqual({
-			attachments: [
-				expect.objectContaining({
-					mimeType: "text/markdown",
-					name: "idea.md",
-					sourcePath: attachmentPath,
-					textSnapshot: "# Idea\n\nShip event attachments.",
-				}),
-			],
-			errors: [],
-		});
-	});
-
 	it("publishes workspace runtime events after runtime mutations and captures", async () => {
 		registerHandlersForWorkspaceRuntime();
 		const port = new FakeMessagePort();
@@ -564,27 +492,27 @@ describe("workspace runtime IPC handlers", () => {
 			recordRuntimeAuditEvent: vi.fn(),
 		};
 
-		registerDesktopAgentHandlers(
-			{} as unknown as DesktopRuntimeHost,
-			{} as unknown as DesktopAuthService,
-			{ disposeSession: vi.fn() } as unknown as DesktopPtyManager,
-			{} as unknown as DesktopMcpManager,
-			{} as unknown as DesktopApprovalBroker,
-			async () => ({ defaultTools: [], providers: [] }),
-			{
+		registerDesktopAgentHandlers({
+			host: {} as unknown as DesktopRuntimeHost,
+			authService: {} as unknown as DesktopAuthService,
+			ptyManager: { disposeSession: vi.fn() } as unknown as DesktopPtyManager,
+			mcpManager: {} as unknown as DesktopMcpManager,
+			approvalBroker: {} as unknown as DesktopApprovalBroker,
+			getRuntimeCatalog: async () => ({ defaultTools: [], providers: [] }),
+			stores: {
 				eventStore: {} as DesktopEventStore,
 				projectStore: { get: vi.fn(async () => project) } as unknown as DesktopProjectStore,
 				providerKeysStore: {} as DesktopProviderKeysStore,
 				sessionStore: {} as DesktopSessionStore,
 				settingsStore: {} as DesktopSettingsStore,
 			},
-			{
+			workspaceRuntimeServices: {
 				contextHarvester,
 				runtimePermissionGate,
 				workspaceRuntime,
 				workspaceStore,
 			},
-		);
+		});
 
 		const result = await getHandler(IPC_CHANNELS.createDebugWorkspaceRuntime)(undefined, {
 			issue: "/api/login 一直 500，帮我定位并修掉。",
