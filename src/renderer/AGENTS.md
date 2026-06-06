@@ -13,6 +13,9 @@ presentation logic.
 - Keep stores and hooks deterministic. Prefer explicit loading/error states and
   tests that assert visible behavior through rendered UI or store APIs.
 - Use existing UI primitives and lucide icons when a suitable primitive exists.
+- Composer input surfaces should use the shared AI Elements Prompt Input shell
+  in `components/chat/SkylarkPromptInputComposer.tsx`; keep slash/@ suggestion
+  data flow and runtime submission behavior in the caller.
 - Do not add visible instructional text about implementation details, shortcuts,
   or styling unless the product workflow requires it.
 - When adding or materially changing a major workbench area, store contract,

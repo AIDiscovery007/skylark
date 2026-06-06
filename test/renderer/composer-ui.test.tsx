@@ -58,7 +58,7 @@ describe("Composer UI", () => {
 	});
 
 	it("shows a compact context window usage entry", () => {
-		const { container } = render(
+		render(
 			<TooltipProvider>
 				<Composer
 					contextWindowUsage={{ usedTokens: 166000, totalTokens: 258000 }}
@@ -70,12 +70,8 @@ describe("Composer UI", () => {
 		);
 
 		expect(screen.getByLabelText("Context window 64% used")).toBeTruthy();
-		expect(screen.getByText("背景信息窗口：")).toBeTruthy();
-		expect(screen.getByText("64% 已用")).toBeTruthy();
-		expect(screen.getByText("已用 166k 标记，共 258k")).toBeTruthy();
-		expect(container.querySelector("[data-slot='context-window-progress']")?.getAttribute("style")).toContain(
-			"conic-gradient",
-		);
+		expect(screen.getByText("64.3%")).toBeTruthy();
+		expect(screen.getByRole("img", { name: "Model context usage" })).toBeTruthy();
 		expect(screen.queryByText(/Codex/)).toBeNull();
 	});
 
@@ -100,7 +96,7 @@ describe("Composer UI", () => {
 
 		const statusIcons = container.querySelectorAll("[data-slot='composer-status-icon']");
 
-		expect(statusIcons).toHaveLength(3);
+		expect(statusIcons).toHaveLength(2);
 		for (const statusIcon of statusIcons) {
 			expect(statusIcon.className).not.toContain("rounded-full");
 			expect(statusIcon.className).not.toContain("bg-background");
@@ -163,11 +159,13 @@ describe("Composer UI", () => {
 		);
 
 		await user.click(screen.getByLabelText("Model anthropic / claude-3-5-sonnet"));
-		const providerButton = screen.getByText("anthropic").closest("button");
-		expect(providerButton).not.toBeNull();
-		await user.click(providerButton!);
+		const providerItem = screen.getByText("anthropic").closest("[data-slot='command-item']");
+		expect(providerItem).not.toBeNull();
+		await user.click(providerItem!);
 		await user.type(screen.getByPlaceholderText("Filter models"), "opus");
-		await user.click(screen.getByRole("button", { name: /claude-opus-4-6/i }));
+		const modelItem = screen.getByText(/Claude Opus 4\.6/i).closest("[data-slot='command-item']");
+		expect(modelItem).not.toBeNull();
+		await user.click(modelItem!);
 
 		await waitFor(() => {
 			expect(onUpdateSessionProfile).toHaveBeenCalledWith({
@@ -228,7 +226,9 @@ describe("Composer UI", () => {
 		await user.click(screen.getByLabelText("Model anthropic / claude-3-5-sonnet"));
 		expect(screen.getByLabelText("OpenAI 未配置")).toBeTruthy();
 		expect(screen.queryByText("未配置")).toBeNull();
-		await user.click(screen.getByRole("button", { name: /OpenAI/i }));
+		const openAiItem = screen.getByText("OpenAI").closest("[data-slot='command-item']");
+		expect(openAiItem).not.toBeNull();
+		await user.click(openAiItem!);
 
 		expect(onOpenSettings).toHaveBeenCalledWith({ section: "credentials", providerId: "openai" });
 		expect(onUpdateSessionProfile).not.toHaveBeenCalled();
@@ -297,13 +297,11 @@ describe("Composer UI", () => {
 		);
 
 		await user.click(screen.getByLabelText("Model openai-codex / gpt-5.5"));
-		const providerButtons = screen
-			.getAllByRole("button")
-			.filter((button) =>
-				["OpenAI Codex", "Anthropic", "OpenAI"].some((label) => button.textContent?.includes(label)),
-			);
+		const providerItems = Array.from(document.querySelectorAll("[data-slot='command-item']")).filter((item) =>
+			["OpenAI Codex", "Anthropic", "OpenAI"].some((label) => item.textContent?.includes(label)),
+		);
 
-		expect(providerButtons.map((button) => button.textContent)).toEqual([
+		expect(providerItems.map((item) => item.textContent)).toEqual([
 			expect.stringContaining("OpenAI Codex"),
 			expect.stringContaining("Anthropic"),
 			expect.stringContaining("OpenAI"),
@@ -317,9 +315,9 @@ describe("Composer UI", () => {
 
 		await user.type(screen.getByPlaceholderText("Filter providers"), "anth");
 
-		expect(screen.getByRole("button", { name: /Anthropic/i })).toBeTruthy();
-		expect(screen.queryByRole("button", { name: /OpenAI Codex/i })).toBeNull();
-		expect(screen.queryByRole("button", { name: /OpenAI 未配置/i })).toBeNull();
+		expect(screen.getByText("Anthropic").closest("[data-slot='command-item']")).toBeTruthy();
+		expect(screen.queryByText("OpenAI Codex")).toBeNull();
+		expect(screen.queryByText("OpenAI")).toBeNull();
 	});
 
 	it("opens the thinking popover and applies a selected level", async () => {
@@ -413,7 +411,7 @@ describe("Composer UI", () => {
 		expect((screen.getByLabelText("Thinking medium") as HTMLButtonElement).disabled).toBe(true);
 	});
 
-	it("avoids unknown percentage copy when the context window size is not available", () => {
+	it("does not render the context control when the context window size is not available", () => {
 		render(
 			<TooltipProvider>
 				<Composer
@@ -425,8 +423,7 @@ describe("Composer UI", () => {
 			</TooltipProvider>,
 		);
 
-		expect(screen.getByLabelText("Context window 70k tokens used")).toBeTruthy();
-		expect(screen.getByText("已用 70k 标记")).toBeTruthy();
+		expect(screen.queryByLabelText(/Context window/i)).toBeNull();
 		expect(screen.queryByText("未知 已用")).toBeNull();
 		expect(screen.queryByText(/共 未知/)).toBeNull();
 		expect(screen.queryByText(/Codex/)).toBeNull();

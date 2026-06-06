@@ -2,7 +2,6 @@ import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core"
 import type { FileUIPart } from "ai";
 import {
 	ArrowDown,
-	ArrowUp,
 	Box,
 	Check,
 	CheckCircle2,
@@ -17,9 +16,7 @@ import {
 	FileText,
 	FileType,
 	ImageIcon,
-	Paperclip,
 	Sparkles,
-	Square,
 	SquareSlash,
 	X,
 } from "lucide-react";
@@ -113,6 +110,7 @@ import {
 	MessageResponse,
 	type MessageResponseProps,
 } from "../ai-elements/message.tsx";
+import { PromptInputTextarea } from "../ai-elements/prompt-input.tsx";
 import { AgentRunActivity } from "./AgentRunActivity.tsx";
 import { ComposerQuickControls } from "./ComposerQuickControls.tsx";
 import {
@@ -121,6 +119,11 @@ import {
 	resolveContextWindowUsage,
 	resolveModelContextWindow,
 } from "./chat-helpers.ts";
+import {
+	SkylarkContextWindowControl,
+	SkylarkPromptInputAttachmentButton,
+	SkylarkPromptInputComposer,
+} from "./SkylarkPromptInputComposer.tsx";
 import {
 	type ResolvedThreadImagePreview,
 	type ThreadImagePreview,
@@ -2613,51 +2616,39 @@ function AssistantEmptyState({
 }
 
 function AssistantComposerInput({
-	activeSessionId,
 	activeSuggestionCount,
-	attachmentErrors,
 	capabilityCatalog,
 	disabled,
 	draft,
 	hasSuggestionPanel,
 	inputRef,
+	onAppendAttachmentCandidates,
 	onCloseSuggestionPanel,
-	onCompact,
 	onConfirmSuggestion,
 	onNavigateSuggestion,
 	onRequestCapabilities,
 	onSelectionChange,
-	onSubmitPrompt,
-	selectedCapabilityInvocations,
-	selectedPromptAttachments,
+	onSubmitDraft,
 	setAttachmentErrors,
 	setDraft,
 	setIsComposing,
-	setSelectedCapabilityInvocations,
-	setSelectedPromptAttachments,
 }: {
-	activeSessionId?: string;
 	activeSuggestionCount: number;
-	attachmentErrors: DesktopPromptAttachmentError[];
 	capabilityCatalog?: DesktopCapabilityCatalog;
 	disabled: boolean;
 	draft: string;
 	hasSuggestionPanel: boolean;
 	inputRef: Ref<HTMLTextAreaElement>;
+	onAppendAttachmentCandidates: (candidates: DesktopPromptAttachmentCandidate[]) => Promise<void>;
 	onCloseSuggestionPanel: () => void;
-	onCompact?: (customInstructions?: string) => Promise<void>;
 	onConfirmSuggestion: () => void;
 	onNavigateSuggestion: (direction: "down" | "up") => void;
 	onRequestCapabilities?: () => Promise<void> | void;
 	onSelectionChange: (selectionStart: number | undefined) => void;
-	onSubmitPrompt: (request: DesktopPromptSubmission) => Promise<void>;
-	selectedCapabilityInvocations: DesktopPromptCapabilityInvocation[];
-	selectedPromptAttachments: DesktopPreparedPromptAttachment[];
+	onSubmitDraft: (rawText: string) => Promise<void>;
 	setAttachmentErrors: (errors: DesktopPromptAttachmentError[]) => void;
 	setDraft: (draft: string) => void;
 	setIsComposing: (isComposing: boolean) => void;
-	setSelectedCapabilityInvocations: (invocations: DesktopPromptCapabilityInvocation[]) => void;
-	setSelectedPromptAttachments: (attachments: DesktopPreparedPromptAttachment[]) => void;
 }) {
 	const [hasInputOverflow, setHasInputOverflow] = useState(false);
 	const isComposingRef = useRef(false);
@@ -2731,54 +2722,6 @@ function AssistantComposerInput({
 		onSelectionChange(event.currentTarget.selectionStart);
 	}
 
-	async function prepareAndAppendAttachments(candidates: DesktopPromptAttachmentCandidate[]): Promise<void> {
-		if (candidates.length === 0) {
-			return;
-		}
-		const result = await window.desktopAgent.preparePromptAttachments({ candidates });
-		setAttachmentErrors(result.errors);
-		if (result.attachments.length > 0) {
-			setSelectedPromptAttachments([...selectedPromptAttachments, ...result.attachments]);
-		}
-	}
-
-	async function openPromptAttachments(): Promise<void> {
-		if (!activeSessionId) {
-			return;
-		}
-		const result = await window.desktopAgent.openPromptAttachments({ sessionId: activeSessionId });
-		setAttachmentErrors(result.errors);
-		if (result.attachments.length > 0) {
-			setSelectedPromptAttachments([...selectedPromptAttachments, ...result.attachments]);
-		}
-		textareaRef.current?.focus();
-	}
-
-	async function submitComposerText(rawText: string): Promise<void> {
-		const text = rawText.trim();
-		if (isCompactCommand(text) && onCompact) {
-			const customInstructions = getCompactInstructions(text);
-			setSelectedCapabilityInvocations([]);
-			setSelectedPromptAttachments([]);
-			setAttachmentErrors([]);
-			setDraft("");
-			await onCompact(customInstructions);
-			return;
-		}
-		if (!text && selectedCapabilityInvocations.length === 0 && selectedPromptAttachments.length === 0) {
-			return;
-		}
-		await onSubmitPrompt({
-			text,
-			...(selectedCapabilityInvocations.length > 0 ? { capabilityInvocations: selectedCapabilityInvocations } : {}),
-			...(selectedPromptAttachments.length > 0 ? { attachments: selectedPromptAttachments } : {}),
-		});
-		setSelectedCapabilityInvocations([]);
-		setSelectedPromptAttachments([]);
-		setAttachmentErrors([]);
-		setDraft("");
-	}
-
 	function handleBlur(event: FocusEvent<HTMLTextAreaElement>): void {
 		if (!isComposingRef.current) {
 			return;
@@ -2821,7 +2764,7 @@ function AssistantComposerInput({
 		isComposingRef.current = false;
 		setIsComposing(false);
 		setDraft(nextText);
-		void submitComposerText(nextText).catch(() => undefined);
+		void onSubmitDraft(nextText).catch(() => undefined);
 	}
 
 	function handleDrop(event: DragEvent<HTMLTextAreaElement>): void {
@@ -2833,7 +2776,7 @@ function AssistantComposerInput({
 		}
 		event.preventDefault();
 		void createPromptAttachmentCandidatesFromFiles(event.dataTransfer.files)
-			.then(prepareAndAppendAttachments)
+			.then(onAppendAttachmentCandidates)
 			.catch((error: unknown) =>
 				setAttachmentErrors([
 					{ name: "Dropped files", message: error instanceof Error ? error.message : String(error) },
@@ -2851,7 +2794,7 @@ function AssistantComposerInput({
 		}
 		event.preventDefault();
 		void createPromptAttachmentCandidatesFromFiles(imageFiles)
-			.then(prepareAndAppendAttachments)
+			.then(onAppendAttachmentCandidates)
 			.catch((error: unknown) =>
 				setAttachmentErrors([
 					{ name: "Pasted image", message: error instanceof Error ? error.message : String(error) },
@@ -2860,63 +2803,26 @@ function AssistantComposerInput({
 	}
 
 	return (
-		<div className="relative grid min-w-0 flex-1 gap-2">
-			<SelectedCapabilityChips
-				invocations={selectedCapabilityInvocations}
-				onRemove={(invocation) =>
-					setSelectedCapabilityInvocations(removeCapabilityInvocation(selectedCapabilityInvocations, invocation))
-				}
-			/>
-			<PromptAttachmentChips
-				attachments={selectedPromptAttachments}
-				onRemove={(attachment) => {
-					setSelectedPromptAttachments(selectedPromptAttachments.filter((item) => item.id !== attachment.id));
-					if (selectedPromptAttachments.length <= 1) {
-						setAttachmentErrors([]);
-					}
-				}}
-			/>
-			{attachmentErrors.length > 0 ? (
-				<div className="grid gap-1 text-[12px] leading-5 text-[color:var(--destructive)]">
-					{attachmentErrors.map((error) => (
-						<div key={`${error.path ?? error.name}:${error.message}`} className="truncate">
-							{error.name}: {error.message}
-						</div>
-					))}
-				</div>
-			) : null}
-			<textarea
-				aria-label="Message Skylark"
-				className="min-h-20 flex-1 resize-none border-0 bg-transparent p-0 pr-8 text-sm leading-6 text-foreground shadow-none outline-none placeholder:text-muted-foreground focus-visible:outline-none"
-				data-overflow={hasInputOverflow ? "true" : "false"}
-				disabled={isDisabled}
-				onBlur={handleBlur}
-				onChange={handleChange}
-				onCompositionEnd={handleCompositionEnd}
-				onCompositionStart={handleCompositionStart}
-				onClick={(event) => onSelectionChange(event.currentTarget.selectionStart)}
-				onDrop={handleDrop}
-				onKeyDown={handleKeyDown}
-				onKeyUp={(event) => onSelectionChange(event.currentTarget.selectionStart)}
-				onPaste={handlePaste}
-				onSelect={(event) => onSelectionChange(event.currentTarget.selectionStart)}
-				placeholder="Message Skylark"
-				ref={setComposedRef}
-				rows={3}
-				value={draft}
-			/>
-			<Button
-				aria-label="Attach files"
-				className="absolute right-0 top-0"
-				disabled={isDisabled}
-				onClick={() => void openPromptAttachments().catch(() => undefined)}
-				size="icon-xs"
-				type="button"
-				variant="ghost"
-			>
-				<Paperclip className="size-3.5" />
-			</Button>
-		</div>
+		<PromptInputTextarea
+			aria-label="Message Skylark"
+			className="max-h-[224px] min-h-20 resize-none"
+			data-overflow={hasInputOverflow ? "true" : "false"}
+			disabled={isDisabled}
+			onBlur={handleBlur}
+			onChange={handleChange}
+			onCompositionEnd={handleCompositionEnd}
+			onCompositionStart={handleCompositionStart}
+			onClick={(event) => onSelectionChange(event.currentTarget.selectionStart)}
+			onDrop={handleDrop}
+			onKeyDown={handleKeyDown}
+			onKeyUp={(event) => onSelectionChange(event.currentTarget.selectionStart)}
+			onPaste={handlePaste}
+			onSelect={(event) => onSelectionChange(event.currentTarget.selectionStart)}
+			placeholder="Message Skylark"
+			ref={setComposedRef}
+			rows={3}
+			value={draft}
+		/>
 	);
 }
 
@@ -2952,6 +2858,7 @@ function AssistantComposer({
 	const [composerDraft, setComposerDraft] = useState("");
 	const [composerSelectionStart, setComposerSelectionStart] = useState(0);
 	const [isComposerComposing, setIsComposerComposing] = useState(false);
+	const [isSubmitting, setIsSubmitting] = useState(false);
 	const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(0);
 	const [suggestionsSuppressed, setSuggestionsSuppressed] = useState(false);
 	const [workspaceFiles, setWorkspaceFiles] = useState<DesktopWorkspaceFileEntry[]>([]);
@@ -2984,13 +2891,14 @@ function AssistantComposer({
 			: activeSuggestionKind === "file"
 				? fileSuggestions.length
 				: 0;
-	const contextLabel =
-		contextWindowUsage?.totalTokens && contextWindowUsage.totalTokens > 0
-			? `${Math.round((contextWindowUsage.usedTokens / contextWindowUsage.totalTokens) * 100)}% context`
-			: contextWindowUsage
-				? `${contextWindowUsage.usedTokens.toLocaleString()} tokens`
-				: undefined;
 	const consoleState = disabled ? "disabled" : isStreaming ? "running" : "idle";
+	const canSubmit =
+		!disabled &&
+		!isSubmitting &&
+		!isComposerComposing &&
+		(composerDraft.trim().length > 0 ||
+			selectedCapabilityInvocations.length > 0 ||
+			selectedPromptAttachments.length > 0);
 	const handleComposerDraftChange = useCallback((nextDraft: string) => {
 		setComposerDraft(nextDraft);
 		setSelectedSuggestionIndex(0);
@@ -3084,6 +2992,85 @@ function AssistantComposer({
 			);
 		},
 		[activeSuggestionCount],
+	);
+	const appendPromptAttachmentCandidates = useCallback(
+		async (candidates: DesktopPromptAttachmentCandidate[]): Promise<void> => {
+			if (candidates.length === 0) {
+				return;
+			}
+			const result = await window.desktopAgent.preparePromptAttachments({ candidates });
+			setAttachmentErrors(result.errors);
+			if (result.attachments.length > 0) {
+				setSelectedPromptAttachments([...selectedPromptAttachments, ...result.attachments]);
+			}
+		},
+		[selectedPromptAttachments, setAttachmentErrors, setSelectedPromptAttachments],
+	);
+	const openPromptAttachments = useCallback(async (): Promise<void> => {
+		if (!activeSessionId) {
+			return;
+		}
+		const result = await window.desktopAgent.openPromptAttachments({ sessionId: activeSessionId });
+		setAttachmentErrors(result.errors);
+		if (result.attachments.length > 0) {
+			setSelectedPromptAttachments([...selectedPromptAttachments, ...result.attachments]);
+		}
+		getRefTextareaElement(inputRef)?.focus();
+	}, [activeSessionId, inputRef, selectedPromptAttachments, setAttachmentErrors, setSelectedPromptAttachments]);
+	const submitComposerDraft = useCallback(
+		async (rawText?: string): Promise<void> => {
+			if (disabled || isSubmitting || isComposerComposing) {
+				return;
+			}
+			const text = (rawText ?? getRefTextareaValue(inputRef) ?? composerDraft).trim();
+			if (isCompactCommand(text) && onCompact) {
+				setIsSubmitting(true);
+				try {
+					const customInstructions = getCompactInstructions(text);
+					setSelectedCapabilityInvocations([]);
+					setSelectedPromptAttachments([]);
+					setAttachmentErrors([]);
+					setComposerDraft("");
+					await onCompact(customInstructions);
+				} finally {
+					setIsSubmitting(false);
+				}
+				return;
+			}
+			if (!text && selectedCapabilityInvocations.length === 0 && selectedPromptAttachments.length === 0) {
+				return;
+			}
+			setIsSubmitting(true);
+			try {
+				await onSubmitPrompt({
+					text,
+					...(selectedCapabilityInvocations.length > 0
+						? { capabilityInvocations: selectedCapabilityInvocations }
+						: {}),
+					...(selectedPromptAttachments.length > 0 ? { attachments: selectedPromptAttachments } : {}),
+				});
+				setSelectedCapabilityInvocations([]);
+				setSelectedPromptAttachments([]);
+				setAttachmentErrors([]);
+				setComposerDraft("");
+			} finally {
+				setIsSubmitting(false);
+			}
+		},
+		[
+			composerDraft,
+			disabled,
+			inputRef,
+			isComposerComposing,
+			isSubmitting,
+			onCompact,
+			onSubmitPrompt,
+			selectedCapabilityInvocations,
+			selectedPromptAttachments,
+			setAttachmentErrors,
+			setSelectedCapabilityInvocations,
+			setSelectedPromptAttachments,
+		],
 	);
 	const handleConsoleMouseDown = useCallback(
 		(event: MouseEvent<HTMLFormElement>) => {
@@ -3228,58 +3215,68 @@ function AssistantComposer({
 		);
 	}
 
-	return (
-		<form
-			className={cn(
-				"relative grid max-h-[min(540px,66vh)] gap-3 overflow-visible rounded-[var(--radius-xl)] border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] p-3 shadow-[var(--shadow-middle)] backdrop-blur",
-				"transition-[border-color,box-shadow,opacity] duration-[var(--duration-normal)] ease-[var(--ease-standard)]",
-				isStreaming &&
-					"border-[color:color-mix(in_oklch,var(--info)_22%,var(--border-subtle))] ring-1 ring-[color:color-mix(in_oklch,var(--info)_12%,transparent)]",
-				disabled && "opacity-70",
-			)}
-			data-slot="agent-console"
-			data-state={consoleState}
-			onMouseDown={handleConsoleMouseDown}
-			onSubmit={(event) => event.preventDefault()}
-		>
-			<AnimatePresence>
-				{activeSuggestionKind ? (
-					<ComposerSuggestionPanel label="Composer suggestions">
-						{activeSuggestionKind === "slash" ? renderSlashSuggestionRows() : renderFileSuggestionRows()}
-					</ComposerSuggestionPanel>
+	const composerHeader =
+		selectedCapabilityInvocations.length > 0 ||
+		selectedPromptAttachments.length > 0 ||
+		attachmentErrors.length > 0 ? (
+			<div className="grid min-w-0 gap-2">
+				<SelectedCapabilityChips
+					invocations={selectedCapabilityInvocations}
+					onRemove={(invocation) =>
+						setSelectedCapabilityInvocations(
+							removeCapabilityInvocation(selectedCapabilityInvocations, invocation),
+						)
+					}
+				/>
+				<PromptAttachmentChips
+					attachments={selectedPromptAttachments}
+					onRemove={(attachment) => {
+						setSelectedPromptAttachments(selectedPromptAttachments.filter((item) => item.id !== attachment.id));
+						if (selectedPromptAttachments.length <= 1) {
+							setAttachmentErrors([]);
+						}
+					}}
+				/>
+				{attachmentErrors.length > 0 ? (
+					<div className="grid gap-1 text-[12px] leading-5 text-[color:var(--destructive)]">
+						{attachmentErrors.map((error) => (
+							<div key={`${error.path ?? error.name}:${error.message}`} className="truncate">
+								{error.name}: {error.message}
+							</div>
+						))}
+					</div>
 				) : null}
-			</AnimatePresence>
-			<div
-				className="flex min-h-24 items-start gap-2 overflow-visible rounded-[var(--radius-lg)] border border-[color:var(--border-subtle)] bg-[color:var(--background)] px-3 py-2 transition-[border-color,box-shadow,background-color] duration-[var(--duration-normal)] ease-[var(--ease-standard)] focus-within:border-[color:var(--border-subtle)] focus-within:shadow-[var(--control-focus-shadow)]"
-				data-slot="agent-console-input-surface"
-			>
+			</div>
+		) : undefined;
+
+	return (
+		<SkylarkPromptInputComposer
+			body={
 				<AssistantComposerInput
-					activeSessionId={activeSessionId}
 					activeSuggestionCount={activeSuggestionCount}
-					attachmentErrors={attachmentErrors}
 					capabilityCatalog={capabilityCatalog}
 					disabled={disabled}
 					draft={composerDraft}
 					hasSuggestionPanel={Boolean(activeSuggestionKind)}
 					inputRef={inputRef}
+					onAppendAttachmentCandidates={appendPromptAttachmentCandidates}
 					onCloseSuggestionPanel={closeSuggestionPanel}
-					onCompact={onCompact}
 					onConfirmSuggestion={confirmActiveSuggestion}
 					onNavigateSuggestion={navigateActiveSuggestion}
 					onRequestCapabilities={onRequestCapabilities}
 					onSelectionChange={handleComposerSelectionChange}
-					onSubmitPrompt={onSubmitPrompt}
-					selectedCapabilityInvocations={selectedCapabilityInvocations}
-					selectedPromptAttachments={selectedPromptAttachments}
+					onSubmitDraft={submitComposerDraft}
 					setAttachmentErrors={setAttachmentErrors}
 					setDraft={handleComposerDraftChange}
 					setIsComposing={setIsComposerComposing}
-					setSelectedCapabilityInvocations={setSelectedCapabilityInvocations}
-					setSelectedPromptAttachments={setSelectedPromptAttachments}
 				/>
-			</div>
-			<div className="flex items-center justify-between gap-3" data-slot="agent-console-toolbar">
-				<div className="flex min-w-0 items-center gap-1">
+			}
+			canSubmit={canSubmit}
+			consoleState={consoleState}
+			disabled={disabled}
+			footerLeft={
+				<>
+					<SkylarkPromptInputAttachmentButton disabled={disabled} onClick={openPromptAttachments} />
 					<ComposerQuickControls
 						agentMode={agentMode}
 						disabled={disabled}
@@ -3293,129 +3290,23 @@ function AssistantComposer({
 						runtimeCatalog={runtimeCatalog}
 						thinkingLevel={thinkingLevel}
 					/>
-					{contextLabel ? (
-						<span className="ml-1 truncate text-xs text-muted-foreground">{contextLabel}</span>
-					) : null}
-				</div>
-				{isStreaming ? (
-					<AssistantCancelRunButton onAbort={onAbort} />
-				) : (
-					<AssistantSendButton
-						attachments={selectedPromptAttachments}
-						composerDraft={composerDraft}
-						disabled={disabled}
-						inputRef={inputRef}
-						isComposing={isComposerComposing}
-						onCompact={onCompact}
-						onSubmitPrompt={onSubmitPrompt}
-						setAttachmentErrors={setAttachmentErrors}
-						setComposerDraft={setComposerDraft}
-						selectedCapabilityInvocations={selectedCapabilityInvocations}
-						setSelectedPromptAttachments={setSelectedPromptAttachments}
-						setSelectedCapabilityInvocations={setSelectedCapabilityInvocations}
-					/>
-				)}
-			</div>
-		</form>
-	);
-}
-
-function AssistantSendButton({
-	attachments,
-	composerDraft,
-	disabled,
-	inputRef,
-	isComposing,
-	onCompact,
-	onSubmitPrompt,
-	setAttachmentErrors,
-	setComposerDraft,
-	selectedCapabilityInvocations,
-	setSelectedPromptAttachments,
-	setSelectedCapabilityInvocations,
-}: {
-	attachments: DesktopPreparedPromptAttachment[];
-	composerDraft: string;
-	disabled: boolean;
-	inputRef: Ref<HTMLTextAreaElement>;
-	isComposing: boolean;
-	onCompact?: (customInstructions?: string) => Promise<void>;
-	onSubmitPrompt: (request: DesktopPromptSubmission) => Promise<void>;
-	setAttachmentErrors: (errors: DesktopPromptAttachmentError[]) => void;
-	setComposerDraft: (draft: string) => void;
-	selectedCapabilityInvocations: DesktopPromptCapabilityInvocation[];
-	setSelectedPromptAttachments: (attachments: DesktopPreparedPromptAttachment[]) => void;
-	setSelectedCapabilityInvocations: (invocations: DesktopPromptCapabilityInvocation[]) => void;
-}) {
-	const [isSubmitting, setIsSubmitting] = useState(false);
-	const currentText = getRefTextareaValue(inputRef) ?? composerDraft;
-	const canSubmit =
-		!disabled &&
-		!isSubmitting &&
-		!isComposing &&
-		(currentText.trim().length > 0 || selectedCapabilityInvocations.length > 0 || attachments.length > 0);
-
-	async function handleSubmit(): Promise<void> {
-		if (!canSubmit) {
-			return;
-		}
-		setIsSubmitting(true);
-		try {
-			const text = (getRefTextareaValue(inputRef) ?? composerDraft).trim();
-			if (isCompactCommand(text) && onCompact) {
-				const customInstructions = getCompactInstructions(text);
-				setSelectedCapabilityInvocations([]);
-				setSelectedPromptAttachments([]);
-				setAttachmentErrors([]);
-				setComposerDraft("");
-				await onCompact(customInstructions);
-				return;
+					<SkylarkContextWindowControl usage={contextWindowUsage} />
+				</>
 			}
-			await onSubmitPrompt({
-				text,
-				...(selectedCapabilityInvocations.length > 0
-					? { capabilityInvocations: selectedCapabilityInvocations }
-					: {}),
-				...(attachments.length > 0 ? { attachments } : {}),
-			});
-			setSelectedCapabilityInvocations([]);
-			setSelectedPromptAttachments([]);
-			setAttachmentErrors([]);
-			setComposerDraft("");
-		} finally {
-			setIsSubmitting(false);
-		}
-	}
-
-	return (
-		<Button
-			aria-label="Send message"
-			data-slot="agent-console-send-button"
-			data-state={canSubmit ? "ready" : "empty"}
-			disabled={!canSubmit}
-			onClick={() => void handleSubmit().catch(() => undefined)}
-			size="icon-sm"
-			type="button"
-			variant={canSubmit ? "default" : "secondary"}
+			header={composerHeader}
+			isStreaming={isStreaming}
+			onMouseDown={handleConsoleMouseDown}
+			onStop={onAbort}
+			onSubmit={() => submitComposerDraft()}
 		>
-			<ArrowUp className="size-4" />
-		</Button>
-	);
-}
-
-function AssistantCancelRunButton({ onAbort }: { onAbort: () => Promise<void> }) {
-	return (
-		<Button
-			aria-label="Cancel response"
-			className="text-[color:var(--text-primary)] hover:text-[color:var(--destructive)]"
-			data-slot="agent-console-stop-button"
-			onClick={() => void onAbort().catch(() => undefined)}
-			size="icon-sm"
-			type="button"
-			variant="secondary"
-		>
-			<Square className="size-3.5" />
-		</Button>
+			<AnimatePresence>
+				{activeSuggestionKind ? (
+					<ComposerSuggestionPanel label="Composer suggestions">
+						{activeSuggestionKind === "slash" ? renderSlashSuggestionRows() : renderFileSuggestionRows()}
+					</ComposerSuggestionPanel>
+				) : null}
+			</AnimatePresence>
+		</SkylarkPromptInputComposer>
 	);
 }
 

@@ -14,5 +14,22 @@ if (typeof Element !== "undefined" && typeof Element.prototype.scrollTo === "und
 	Object.defineProperty(Element.prototype, "scrollTo", {
 		configurable: true,
 		value() {},
+		writable: true,
+	});
+}
+
+if (typeof Element !== "undefined" && typeof Element.prototype.scrollIntoView === "undefined") {
+	Object.defineProperty(Element.prototype, "scrollIntoView", {
+		configurable: true,
+		value() {},
+		writable: true,
+	});
+}
+
+if (typeof window !== "undefined") {
+	Object.defineProperty(window, "scrollTo", {
+		configurable: true,
+		value() {},
+		writable: true,
 	});
 }

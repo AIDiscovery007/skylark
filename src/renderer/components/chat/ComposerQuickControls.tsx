@@ -1,8 +1,7 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { ArrowLeft, Bot, Brain, Check, type LucideIcon, Search } from "lucide-react";
+import { ArrowLeft, Bot, Brain, Check, type LucideIcon } from "lucide-react";
 import { type ComponentProps, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Spinner } from "@/components/ui/spinner";
 import type { DesktopAgentModel } from "../../../shared/serialized-agent-event.ts";
@@ -18,6 +17,16 @@ import type {
 	DesktopSettingsOpenRequest,
 } from "../../../shared/types.ts";
 import { cn } from "../../lib/utils.ts";
+import {
+	ModelSelector,
+	ModelSelectorContent,
+	ModelSelectorEmpty,
+	ModelSelectorGroup,
+	ModelSelectorInput,
+	ModelSelectorItem,
+	ModelSelectorList,
+	ModelSelectorTrigger,
+} from "../ai-elements/model-selector.tsx";
 
 type ModelPickerStep = "providers" | "models";
 
@@ -179,15 +188,6 @@ function StatusTrigger({
 	);
 }
 
-function PopoverHeader({ title, detail }: { title: string; detail?: string }) {
-	return (
-		<div className="border-b border-border/70 px-3.5 py-3">
-			<p className="text-sm font-medium leading-5 text-foreground">{title}</p>
-			{detail ? <p className="truncate text-xs leading-4 text-muted-foreground">{detail}</p> : null}
-		</div>
-	);
-}
-
 function ModelQuickControl({
 	disabled,
 	isStreaming,
@@ -273,72 +273,69 @@ function ModelQuickControl({
 	};
 
 	return (
-		<Popover onOpenChange={setOpen} open={open}>
-			<PopoverTrigger asChild>
+		<ModelSelector onOpenChange={setOpen} open={open}>
+			<ModelSelectorTrigger asChild>
 				<StatusTrigger disabled={isDisabled} icon={Bot} label={`Model ${currentModelLabel}`} />
-			</PopoverTrigger>
-			<PopoverContent align="start" className="w-[22rem]" side="top">
-				<PopoverHeader detail={currentModelLabel} title="Session model" />
+			</ModelSelectorTrigger>
+			<ModelSelectorContent className="max-w-[26rem] shadow-[var(--uix-flat-shadow-floating)]" title="Session model">
 				{step === "providers" ? (
-					<div className="space-y-2 p-2">
-						<div className="relative">
-							<Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-							<Input
-								className="h-8 pl-8 text-sm"
-								onChange={(event) => setProviderFilter(event.target.value)}
-								placeholder="Filter providers"
-								value={providerFilter}
-							/>
-						</div>
-						<div className="max-h-[17rem] overflow-y-auto">
+					<>
+						<ModelSelectorInput
+							onValueChange={setProviderFilter}
+							placeholder="Filter providers"
+							value={providerFilter}
+						/>
+						<ModelSelectorList className="max-h-[20rem]">
 							{runtimeCatalog === undefined ? (
-								<p className="px-2 py-4 text-sm text-muted-foreground">Loading providers...</p>
+								<ModelSelectorEmpty>Loading providers...</ModelSelectorEmpty>
 							) : filteredProviders.length > 0 ? (
-								filteredProviders.map((option) => {
-									const providerLabel = formatProviderLabel(option.provider);
-									const isActive = model?.provider === option.provider.id;
-									return (
-										<button
-											className={cn(
-												"grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-md px-2.5 py-2 text-left text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/35",
-												option.status === "unconfigured" && "text-muted-foreground",
-											)}
-											key={option.provider.id}
-											onClick={() => selectProvider(option)}
-											type="button"
-										>
-											<span className="min-w-0">
-												<span className="flex min-w-0 items-center gap-2">
-													<span className="truncate">{providerLabel}</span>
-													{isActive ? <Check className="size-3.5 shrink-0" /> : null}
-												</span>
-												{providerLabel !== option.provider.id ? (
-													<span className="block truncate text-xs text-muted-foreground">
-														{option.provider.id}
+								<ModelSelectorGroup heading="Providers">
+									{filteredProviders.map((option) => {
+										const providerLabel = formatProviderLabel(option.provider);
+										const isActive = model?.provider === option.provider.id;
+										return (
+											<ModelSelectorItem
+												className={cn(
+													"grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3",
+													option.status === "unconfigured" && "text-muted-foreground",
+												)}
+												key={option.provider.id}
+												onSelect={() => selectProvider(option)}
+												value={`${providerLabel} ${option.provider.id} ${option.statusLabel}`}
+											>
+												<span className="min-w-0">
+													<span className="flex min-w-0 items-center gap-2">
+														<span className="truncate">{providerLabel}</span>
+														{isActive ? <Check className="size-3.5 shrink-0" /> : null}
 													</span>
-												) : null}
-											</span>
-											<span
-												aria-label={`${providerLabel} ${option.statusLabel}`}
-												className={getProviderStatusDotClassName(option.status)}
-												data-provider-status={
-													option.status === "unconfigured" ? "unconfigured" : "configured"
-												}
-												role="img"
-												title={option.statusLabel}
-											/>
-										</button>
-									);
-								})
+													{providerLabel !== option.provider.id ? (
+														<span className="block truncate text-xs text-muted-foreground">
+															{option.provider.id}
+														</span>
+													) : null}
+												</span>
+												<span
+													aria-label={`${providerLabel} ${option.statusLabel}`}
+													className={getProviderStatusDotClassName(option.status)}
+													data-provider-status={
+														option.status === "unconfigured" ? "unconfigured" : "configured"
+													}
+													role="img"
+													title={option.statusLabel}
+												/>
+											</ModelSelectorItem>
+										);
+									})}
+								</ModelSelectorGroup>
 							) : providers.length > 0 ? (
-								<p className="px-2 py-4 text-sm text-muted-foreground">No providers match.</p>
+								<ModelSelectorEmpty>No providers match.</ModelSelectorEmpty>
 							) : (
-								<p className="px-2 py-4 text-sm text-muted-foreground">No providers available.</p>
+								<ModelSelectorEmpty>No providers available.</ModelSelectorEmpty>
 							)}
-						</div>
-					</div>
+						</ModelSelectorList>
+					</>
 				) : (
-					<div className="space-y-2 p-2">
+					<>
 						<div className="flex items-center gap-2 px-1">
 							<Button
 								aria-label="Back to providers"
@@ -351,51 +348,45 @@ function ModelQuickControl({
 							</Button>
 							<p className="min-w-0 truncate text-sm font-medium text-foreground">{selectedProvider}</p>
 						</div>
-						<div className="relative">
-							<Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-							<Input
-								className="h-8 pl-8 text-sm"
-								onChange={(event) => setModelFilter(event.target.value)}
-								placeholder="Filter models"
-								value={modelFilter}
-							/>
-						</div>
-						<div className="max-h-[16rem] overflow-y-auto">
+						<ModelSelectorInput onValueChange={setModelFilter} placeholder="Filter models" value={modelFilter} />
+						<ModelSelectorList className="max-h-[19rem]">
 							{filteredModels.length > 0 ? (
-								filteredModels.map((providerModel) => {
-									const isActive = model?.provider === selectedProvider && model.id === providerModel.id;
-									const isApplying = applyingModelId === providerModel.id;
-									return (
-										<button
-											className="flex w-full min-w-0 items-center justify-between gap-3 rounded-md px-2.5 py-2 text-left text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/35 disabled:cursor-wait disabled:opacity-70"
-											disabled={applyingModelId !== undefined}
-											key={providerModel.id}
-											onClick={() => void applyModel(providerModel.id)}
-											type="button"
-										>
-											<span className="min-w-0">
-												<span className="block truncate">{formatModelName(providerModel)}</span>
-												{providerModel.reasoning ? (
-													<span className="text-xs text-muted-foreground">reasoning</span>
+								<ModelSelectorGroup heading="Models">
+									{filteredModels.map((providerModel) => {
+										const isActive = model?.provider === selectedProvider && model.id === providerModel.id;
+										const isApplying = applyingModelId === providerModel.id;
+										return (
+											<ModelSelectorItem
+												className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3"
+												disabled={applyingModelId !== undefined}
+												key={providerModel.id}
+												onSelect={() => void applyModel(providerModel.id)}
+												value={`${providerModel.id} ${providerModel.name}`}
+											>
+												<span className="min-w-0">
+													<span className="block truncate">{formatModelName(providerModel)}</span>
+													{providerModel.reasoning ? (
+														<span className="text-xs text-muted-foreground">reasoning</span>
+													) : null}
+												</span>
+												{isApplying ? (
+													<Spinner className="size-3.5 shrink-0" label={`Applying ${providerModel.id}`} />
+												) : isActive ? (
+													<Check className="size-3.5 shrink-0" />
 												) : null}
-											</span>
-											{isApplying ? (
-												<Spinner className="size-3.5 shrink-0" label={`Applying ${providerModel.id}`} />
-											) : isActive ? (
-												<Check className="size-3.5 shrink-0" />
-											) : null}
-										</button>
-									);
-								})
+											</ModelSelectorItem>
+										);
+									})}
+								</ModelSelectorGroup>
 							) : (
-								<p className="px-2 py-4 text-sm text-muted-foreground">No models match.</p>
+								<ModelSelectorEmpty>No models match.</ModelSelectorEmpty>
 							)}
-						</div>
-					</div>
+						</ModelSelectorList>
+					</>
 				)}
-				{errorMessage ? <p className="border-t px-3.5 py-2 text-xs text-destructive">{errorMessage}</p> : null}
-			</PopoverContent>
-		</Popover>
+				{errorMessage ? <p className="px-3.5 py-2 text-xs text-destructive">{errorMessage}</p> : null}
+			</ModelSelectorContent>
+		</ModelSelector>
 	);
 }
 

@@ -681,7 +681,7 @@ describe("App profile controls", () => {
 
 		await screen.findByText("hello");
 		await user.click(screen.getByLabelText("Model kimi-coding / kimi-for-coding"));
-		await user.click(screen.getByRole("button", { name: /OpenAI/i }));
+		await user.click(screen.getByRole("option", { name: /OpenAI.*未配置/i }));
 
 		expect(openSettingsWindow).toHaveBeenCalledWith({ section: "credentials", providerId: "openai" });
 	});

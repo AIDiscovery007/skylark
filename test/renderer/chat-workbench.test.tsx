@@ -2767,17 +2767,21 @@ describe("ChatWorkbench", () => {
 		const dock = container.querySelector("[data-slot='composer-dock']");
 		const consoleRoot = dock?.querySelector("[data-slot='agent-console']");
 		const inputSurface = consoleRoot?.querySelector("[data-slot='agent-console-input-surface']");
+		const composerInput = consoleRoot?.querySelector("textarea[aria-label='Message Skylark']");
 		const toolbar = consoleRoot?.querySelector("[data-slot='agent-console-toolbar']");
 
 		expect(consoleRoot).toBeTruthy();
 		expect(consoleRoot?.getAttribute("data-state")).toBe("idle");
-		expect(consoleRoot?.className).toContain("shadow-[var(--shadow-middle)]");
 		expect(consoleRoot?.className).toContain("overflow-visible");
 		expect(consoleRoot?.className).not.toContain("overflow-hidden");
 		expect(inputSurface).toBeTruthy();
-		expect(inputSurface?.className).toContain("focus-within:shadow-[var(--control-focus-shadow)]");
+		expect(inputSurface?.className).toContain("shadow-[var(--shadow-middle)]");
+		expect(inputSurface?.className).toContain(
+			"has-[[data-slot=input-group-control]:focus-visible]:shadow-[var(--control-focus-shadow)]",
+		);
 		expect(inputSurface?.className).toContain("overflow-visible");
 		expect(inputSurface?.className).not.toContain("overflow-hidden");
+		expect(composerInput?.className).toContain("focus-visible:shadow-none");
 		expect(toolbar).toBeTruthy();
 		expect(toolbar?.querySelector("[data-slot='composer-status-icon']")).toBeTruthy();
 		const sendButton = toolbar?.querySelector("[aria-label='Send message']");
@@ -2800,11 +2804,13 @@ describe("ChatWorkbench", () => {
 
 		const input = screen.getByPlaceholderText("Message Skylark") as HTMLTextAreaElement;
 		const consoleRoot = container.querySelector("[data-slot='agent-console']");
+		const inputSurface = consoleRoot?.querySelector("[data-slot='agent-console-input-surface']");
 
 		expect(consoleRoot).toBeTruthy();
+		expect(inputSurface).toBeTruthy();
 		expect(document.activeElement).not.toBe(input);
 
-		await user.click(consoleRoot as Element);
+		await user.click(inputSurface as Element);
 
 		expect(document.activeElement).toBe(input);
 	});
@@ -2853,9 +2859,10 @@ describe("ChatWorkbench", () => {
 
 		const consoleRoot = container.querySelector("[data-slot='agent-console']");
 		const stopButton = screen.getByLabelText("Cancel response");
+		const inputSurface = consoleRoot?.querySelector("[data-slot='agent-console-input-surface']");
 
 		expect(consoleRoot?.getAttribute("data-state")).toBe("running");
-		expect(consoleRoot?.className).toContain("var(--info)");
+		expect(inputSurface?.className).toContain("var(--info)");
 		expect(stopButton.getAttribute("data-slot")).toBe("agent-console-stop-button");
 		expect(stopButton.className).toContain("rounded-[var(--radius-md)]");
 		expect(screen.queryByLabelText("Send message")).toBeNull();
