@@ -1613,6 +1613,46 @@ describe("ChatWorkbench", () => {
 		expect(screen.getByText("/skill:review")).toBeTruthy();
 	});
 
+	it("renders all slash skills and prompt templates in the scrollable panel", async () => {
+		const user = userEvent.setup();
+
+		render(
+			<ChatWorkbench
+				capabilityCatalog={{
+					diagnostics: [],
+					mcpServers: [],
+					prompts: [],
+					skills: [],
+					slashCommands: [
+						{ name: "compact", description: "Compact context", source: "builtin" },
+						...Array.from({ length: 5 }, (_, index) => ({
+							name: `skill:review-${index + 1}`,
+							description: `Review skill ${index + 1}`,
+							source: "skill" as const,
+							sourcePath: `/workspace/project/.pi/skills/review-${index + 1}/SKILL.md`,
+						})),
+						...Array.from({ length: 5 }, (_, index) => ({
+							name: `template-${index + 1}`,
+							description: `Prompt template ${index + 1}`,
+							source: "prompt" as const,
+							sourcePath: `/workspace/project/.pi/prompts/template-${index + 1}.md`,
+						})),
+					],
+				}}
+				onAbort={vi.fn(async () => undefined)}
+				onSubmitPrompt={vi.fn(async () => undefined)}
+				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
+				showThinkingBlocks={false}
+			/>,
+		);
+
+		await user.type(screen.getByLabelText("Message Skylark"), "/");
+
+		expect(await screen.findByRole("listbox", { name: "Composer suggestions" })).toBeTruthy();
+		expect(screen.getByText("/skill:review-5")).toBeTruthy();
+		expect(screen.getByText("/template-5")).toBeTruthy();
+	});
+
 	it("keeps the selected slash command scrolled into view during keyboard navigation", async () => {
 		const user = userEvent.setup();
 		const scrollIntoView = vi.fn();

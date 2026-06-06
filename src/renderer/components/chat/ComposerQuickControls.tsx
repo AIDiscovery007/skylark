@@ -1,11 +1,10 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { ArrowLeft, Bot, Brain, Check, type LucideIcon, Search, Wrench } from "lucide-react";
+import { ArrowLeft, Bot, Brain, Check, type LucideIcon, Search } from "lucide-react";
 import { type ComponentProps, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Spinner } from "@/components/ui/spinner";
-import { StatusDot } from "@/components/ui/status-dot";
 import type { DesktopAgentModel } from "../../../shared/serialized-agent-event.ts";
 import { DESKTOP_THINKING_LEVEL_OPTIONS, getDesktopThinkingLevelsForModel } from "../../../shared/thinking-levels.ts";
 import type {
@@ -23,7 +22,6 @@ import { cn } from "../../lib/utils.ts";
 type ModelPickerStep = "providers" | "models";
 
 interface ComposerQuickControlsProps {
-	availableTools: string[];
 	agentMode?: DesktopAgentMode;
 	disabled?: boolean;
 	isStreaming: boolean;
@@ -449,36 +447,6 @@ function PlanModeQuickControl({
 	);
 }
 
-function ToolsQuickControl({ availableTools, disabled }: ComposerQuickControlsProps) {
-	return (
-		<Popover>
-			<PopoverTrigger asChild>
-				<StatusTrigger disabled={disabled} icon={Wrench} label={`${availableTools.length} active tools`} />
-			</PopoverTrigger>
-			<PopoverContent align="start" className="w-72" side="top">
-				<PopoverHeader detail={`${availableTools.length} active`} title="Activated tools" />
-				<div className="max-h-[16rem] overflow-y-auto p-2">
-					{availableTools.length > 0 ? (
-						<ul className="space-y-1">
-							{availableTools.map((toolName) => (
-								<li
-									className="flex items-center justify-between rounded-md px-2.5 py-2 text-sm text-foreground"
-									key={toolName}
-								>
-									<span className="font-mono text-[12px]">{toolName}</span>
-									<StatusDot label={`${toolName} active`} status="success" />
-								</li>
-							))}
-						</ul>
-					) : (
-						<p className="px-2 py-4 text-sm text-muted-foreground">No active tools.</p>
-					)}
-				</div>
-			</PopoverContent>
-		</Popover>
-	);
-}
-
 function ThinkingQuickControl({
 	disabled,
 	isStreaming,
@@ -526,12 +494,8 @@ function ThinkingQuickControl({
 			<PopoverTrigger asChild>
 				<StatusTrigger disabled={isDisabled} icon={Brain} label={`Thinking ${thinkingLevel}`} />
 			</PopoverTrigger>
-			<PopoverContent align="start" className="w-72" side="top">
-				<PopoverHeader
-					detail={model?.reasoning ? "Adjust this session" : "Current model does not reason"}
-					title="Thinking level"
-				/>
-				<div className="grid grid-cols-2 gap-1.5 p-2">
+			<PopoverContent align="start" className="w-56 shadow-[var(--uix-flat-shadow-floating)]" side="top">
+				<div className="space-y-0.5 p-2.5">
 					{DESKTOP_THINKING_LEVEL_OPTIONS.map((level) => {
 						const isAvailable = availableLevels.includes(level);
 						const isActive = thinkingLevel === level;
@@ -539,8 +503,8 @@ function ThinkingQuickControl({
 						return (
 							<button
 								className={cn(
-									"flex h-9 items-center justify-between rounded-md border border-border/70 px-2.5 text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/35 disabled:cursor-not-allowed disabled:opacity-45",
-									isActive && "border-foreground/30 bg-secondary text-secondary-foreground",
+									"flex h-8 w-full items-center justify-between rounded-[var(--radius-md)] px-2.5 text-left text-[13px] leading-4 text-[color:var(--text-primary)] transition-colors hover:bg-[color:var(--surface-2)] focus-visible:outline-none focus-visible:shadow-[var(--control-focus-shadow)] disabled:cursor-not-allowed disabled:text-[color:var(--text-tertiary)] disabled:opacity-50",
+									isActive && "bg-[color:var(--surface-2)]",
 								)}
 								disabled={!isAvailable || applyingLevel !== undefined}
 								key={level}
@@ -551,13 +515,15 @@ function ThinkingQuickControl({
 								{isApplying ? (
 									<Spinner className="size-3.5" label={`Applying thinking ${level}`} />
 								) : isActive ? (
-									<Check className="size-3.5" />
+									<Check className="size-3.5 text-[color:var(--text-secondary)]" />
 								) : null}
 							</button>
 						);
 					})}
 				</div>
-				{errorMessage ? <p className="border-t px-3.5 py-2 text-xs text-destructive">{errorMessage}</p> : null}
+				{errorMessage ? (
+					<p className="px-3 py-2 pb-2.5 text-[12px] leading-4 text-destructive">{errorMessage}</p>
+				) : null}
 			</PopoverContent>
 		</Popover>
 	);
@@ -568,7 +534,6 @@ export function ComposerQuickControls(props: ComposerQuickControlsProps) {
 		<>
 			<PlanModeQuickControl {...props} />
 			<ModelQuickControl {...props} />
-			<ToolsQuickControl {...props} />
 			<ThinkingQuickControl {...props} />
 		</>
 	);

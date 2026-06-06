@@ -43,7 +43,6 @@ export function ChatShell({
 	runtimeCatalog,
 	showThinkingBlocks,
 }: ChatShellProps) {
-	const availableTools = useAgentStore((state) => state.availableTools);
 	const bridgeError = useAgentStore((state) => state.bridgeError);
 	const cwd = useAgentStore((state) => state.cwd);
 	const errorMessage = useAgentStore((state) => state.errorMessage);
@@ -221,7 +220,6 @@ export function ChatShell({
 						disabled={!hasHydrated}
 						isStreaming={isStreaming}
 						model={model}
-						availableTools={availableTools}
 						onAbort={onAbort}
 						oauthProviders={oauthProviders}
 						onOpenSettings={onOpenSettings}

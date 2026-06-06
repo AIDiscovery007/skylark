@@ -316,7 +316,6 @@ interface AssistantComposerProps {
 	activeProjectId?: string;
 	activeSessionId?: string;
 	attachmentErrors: DesktopPromptAttachmentError[];
-	availableTools: string[];
 	agentMode: DesktopAgentMode;
 	capabilityCatalog?: DesktopCapabilityCatalog;
 	contextWindowUsage?: ContextWindowUsage;
@@ -962,8 +961,7 @@ function resolveSlashCommandSuggestions(
 	const query = slashBody.toLowerCase();
 	return commands
 		.filter((command) => !query || command.name.toLowerCase().includes(query))
-		.sort((left, right) => left.name.localeCompare(right.name))
-		.slice(0, 8);
+		.sort((left, right) => left.name.localeCompare(right.name));
 }
 
 function emptyCapabilityCatalog(): DesktopCapabilityCatalog {
@@ -2926,7 +2924,6 @@ function AssistantComposer({
 	activeProjectId,
 	activeSessionId,
 	attachmentErrors,
-	availableTools,
 	agentMode,
 	capabilityCatalog,
 	contextWindowUsage,
@@ -3284,7 +3281,6 @@ function AssistantComposer({
 			<div className="flex items-center justify-between gap-3" data-slot="agent-console-toolbar">
 				<div className="flex min-w-0 items-center gap-1">
 					<ComposerQuickControls
-						availableTools={availableTools}
 						agentMode={agentMode}
 						disabled={disabled}
 						isStreaming={isStreaming}
@@ -3446,7 +3442,6 @@ export function ChatWorkbench({
 	workspaceStatus,
 }: ChatWorkbenchProps) {
 	const agentMode = useAgentStore((state) => state.agentMode);
-	const availableTools = useAgentStore((state) => state.availableTools);
 	const bridgeError = useAgentStore((state) => state.bridgeError);
 	const compactionActivity = useAgentStore((state) => state.compactionActivity);
 	const cwd = useAgentStore((state) => state.cwd);
@@ -3800,7 +3795,6 @@ export function ChatWorkbench({
 								activeProjectId={activeProjectId}
 								activeSessionId={activeAgentSessionId}
 								attachmentErrors={attachmentErrors}
-								availableTools={availableTools}
 								agentMode={agentMode}
 								capabilityCatalog={capabilityCatalog}
 								contextWindowUsage={contextWindowUsage}

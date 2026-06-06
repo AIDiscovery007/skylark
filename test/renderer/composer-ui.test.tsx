@@ -83,7 +83,6 @@ describe("Composer UI", () => {
 		const { container } = render(
 			<TooltipProvider>
 				<Composer
-					availableTools={["read", "bash", "edit", "write"]}
 					contextWindowUsage={{ usedTokens: 166000, totalTokens: 258000 }}
 					isStreaming={false}
 					model={{
@@ -101,34 +100,14 @@ describe("Composer UI", () => {
 
 		const statusIcons = container.querySelectorAll("[data-slot='composer-status-icon']");
 
-		expect(statusIcons).toHaveLength(4);
+		expect(statusIcons).toHaveLength(3);
 		for (const statusIcon of statusIcons) {
 			expect(statusIcon.className).not.toContain("rounded-full");
 			expect(statusIcon.className).not.toContain("bg-background");
 		}
 		expect(screen.getByLabelText("Model kimi-coding / kimi-for-coding")).toBeTruthy();
-		expect(screen.getByLabelText("4 active tools")).toBeTruthy();
+		expect(screen.queryByLabelText(/active tools/i)).toBeNull();
 		expect(screen.getByLabelText("Thinking high")).toBeTruthy();
-	});
-
-	it("opens the tools popover with active tool names", async () => {
-		const user = userEvent.setup();
-		render(
-			<TooltipProvider>
-				<Composer
-					availableTools={["read", "bash"]}
-					isStreaming={false}
-					onAbort={async () => undefined}
-					onSubmitPrompt={async () => undefined}
-				/>
-			</TooltipProvider>,
-		);
-
-		await user.click(screen.getByLabelText("2 active tools"));
-
-		expect(screen.getByText("Activated tools")).toBeTruthy();
-		expect(screen.getByText("read")).toBeTruthy();
-		expect(screen.getByText("bash")).toBeTruthy();
 	});
 
 	it("opens the model picker and applies a selected model", async () => {
@@ -365,6 +344,13 @@ describe("Composer UI", () => {
 		);
 
 		await user.click(screen.getByLabelText("Thinking off"));
+		const popover = document.querySelector("[data-slot='popover-content']");
+
+		expect(popover?.className).toContain("w-56");
+		expect(popover?.className).toContain("shadow-[var(--uix-flat-shadow-floating)]");
+		expect(screen.queryByText("Thinking level")).toBeNull();
+		expect(screen.queryByText("Adjust this session")).toBeNull();
+		expect(screen.queryByText("Current model does not reason")).toBeNull();
 		await user.click(screen.getByRole("button", { name: /^high$/i }));
 
 		await waitFor(() => {

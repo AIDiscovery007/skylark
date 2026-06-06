@@ -32,7 +32,6 @@ interface ComposerProps {
 	providerKeys?: DesktopProviderKeyStatus[];
 	runtimeCatalog?: DesktopRuntimeCatalog;
 	thinkingLevel?: ThinkingLevel;
-	availableTools?: string[];
 }
 
 interface SubmitComposerPromptOptions {
@@ -82,7 +81,6 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
 		providerKeys,
 		runtimeCatalog,
 		thinkingLevel = "off",
-		availableTools = [],
 	},
 	ref,
 ) {
@@ -180,7 +178,6 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
 				<div className="flex items-center gap-3.5 pl-11 pr-12">
 					{contextWindowUsage ? <ContextWindowStatus usage={contextWindowUsage} /> : null}
 					<ComposerQuickControls
-						availableTools={availableTools}
 						disabled={disabled}
 						isStreaming={isStreaming}
 						model={model}
