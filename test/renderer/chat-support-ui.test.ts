@@ -1,40 +1,19 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
-	ChatShell,
 	resolveChatShellNoticeState,
 	resolveContextWindowUsage,
 	resolveModelContextWindow,
-} from "../../src/renderer/components/chat/ChatShell.tsx";
+} from "../../src/renderer/components/chat/chat-helpers.ts";
 import { MessageList } from "../../src/renderer/components/chat/MessageList.tsx";
 import { AppLayout } from "../../src/renderer/components/layout/AppLayout.tsx";
 import { WorkbenchHeader } from "../../src/renderer/components/layout/WorkbenchHeader.tsx";
 import { SessionList } from "../../src/renderer/components/sidebar/SessionList.tsx";
 import { TooltipProvider } from "../../src/renderer/components/ui/tooltip.tsx";
-import { INITIAL_AGENT_RENDERER_STATE } from "../../src/renderer/lib/conversation-timeline-projection.ts";
-import { agentStore } from "../../src/renderer/stores/agent-store.ts";
 
-function resetAgentStore() {
-	const { applyEvent, hydrateSnapshot, setActiveSession, setBridgeError } = agentStore.getState();
-	agentStore.setState({
-		...INITIAL_AGENT_RENDERER_STATE,
-		activeSessionId: undefined,
-		sessionStateAccessedAt: {},
-		sessionStates: {},
-		applyEvent,
-		hydrateSnapshot,
-		setActiveSession,
-		setBridgeError,
-	});
-}
-
-describe("ChatShell empty states", () => {
-	beforeEach(() => {
-		resetAgentStore();
-	});
-
+describe("Chat support UI", () => {
 	it("shows a visible empty transcript state in the message pane", () => {
 		const html = renderToStaticMarkup(
 			createElement(MessageList, {
@@ -163,40 +142,6 @@ describe("ChatShell empty states", () => {
 		expect(html).not.toContain("pt-4");
 	});
 
-	it("lets the scroll stage cover the full chat pane behind the composer", () => {
-		agentStore.getState().hydrateSnapshot({
-			sessionId: "session-1",
-			cwd: "/workspace/project",
-			agentMode: "execute",
-			diagnostics: [],
-			model: undefined,
-			thinkingLevel: "off",
-			availableTools: ["read"],
-			messages: [],
-			streamingMessage: undefined,
-			pendingToolCalls: [],
-			isStreaming: false,
-			errorMessage: undefined,
-		});
-
-		const html = renderToStaticMarkup(
-			createElement(
-				TooltipProvider,
-				undefined,
-				createElement(ChatShell, {
-					onAbort: async () => undefined,
-					onSubmitPrompt: async () => undefined,
-					showThinkingBlocks: false,
-				}),
-			),
-		);
-
-		expect(html).toContain('data-slot="chat-scroll-stage"');
-		expect(html).toContain("absolute inset-0");
-		expect(html).toContain('data-slot="composer-dock"');
-		expect(html).toContain("pointer-events-none absolute inset-x-0 bottom-0");
-	});
-
 	it("calculates context window usage from the latest assistant usage", () => {
 		const contextWindowUsage = resolveContextWindowUsage({
 			contextWindow: 258000,
@@ -308,23 +253,6 @@ describe("ChatShell empty states", () => {
 		});
 
 		expect(contextWindow).toBe(256000);
-	});
-
-	it("renders the loading transcript skeleton without an avatar placeholder", () => {
-		const html = renderToStaticMarkup(
-			createElement(
-				TooltipProvider,
-				undefined,
-				createElement(ChatShell, {
-					onAbort: async () => undefined,
-					onSubmitPrompt: async () => undefined,
-					showThinkingBlocks: false,
-				}),
-			),
-		);
-
-		expect(html).toContain("h-4 w-28");
-		expect(html).not.toContain("h-10 w-10 rounded-lg");
 	});
 
 	it("routes aborted requests to the lightweight transient notice state", () => {

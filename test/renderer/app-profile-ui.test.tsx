@@ -26,6 +26,10 @@ import type {
 	DesktopSessionProfileUpdateRequest,
 	DesktopSessionSummary,
 } from "../../src/shared/types.ts";
+import {
+	installRendererDesktopAgentBridge,
+	removeRendererDesktopAgentBridge,
+} from "../support/renderer-desktop-agent-bridge.ts";
 
 const activeSession: DesktopSessionSummary = {
 	id: "session-1",
@@ -486,10 +490,7 @@ function installDesktopAgentBridge(overrides: Partial<DesktopAgentBridge> = {}) 
 			})),
 	};
 
-	Object.defineProperty(window, "desktopAgent", {
-		configurable: true,
-		value: bridge,
-	});
+	installRendererDesktopAgentBridge(bridge);
 
 	return { bridge, getSnapshot, listSessions, updateSessionProfile };
 }
@@ -534,7 +535,7 @@ afterEach(() => {
 	terminalMocks.MockTerminal.instances.length = 0;
 	resetStores();
 	vi.useRealTimers();
-	Reflect.deleteProperty(window, "desktopAgent");
+	removeRendererDesktopAgentBridge();
 });
 
 describe("App profile controls", () => {

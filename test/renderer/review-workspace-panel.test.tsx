@@ -21,6 +21,11 @@ import type {
 	DesktopSubagentSnapshot,
 	DesktopWorkspacePreviewFileRequest,
 } from "../../src/shared/types.ts";
+import {
+	createRendererBridgeEventChannel,
+	installRendererDesktopAgentBridge,
+	removeRendererDesktopAgentBridge,
+} from "../support/renderer-desktop-agent-bridge.ts";
 
 const changedSnapshot: DesktopReviewSnapshot = {
 	status: "changed",
@@ -223,9 +228,9 @@ const subagentSnapshot: DesktopSubagentSnapshot = {
 };
 
 function installBridge(snapshot: ReviewSnapshotSource = changedSnapshot, previewFiles: DesktopPreviewFile[] = []) {
-	const agentListeners = new Set<(event: SerializedAgentEvent) => void>();
-	const environmentListeners = new Set<(event: DesktopEnvironmentEvent) => void>();
-	const subagentListeners = new Set<(event: DesktopSubagentRuntimeEvent) => void>();
+	const agentEvents = createRendererBridgeEventChannel<SerializedAgentEvent>();
+	const environmentEvents = createRendererBridgeEventChannel<DesktopEnvironmentEvent>();
+	const subagentEvents = createRendererBridgeEventChannel<DesktopSubagentRuntimeEvent>();
 	const bridge = {
 		getReviewSnapshot: vi.fn(async (request: DesktopReviewSnapshotRequest) =>
 			typeof snapshot === "function" ? snapshot(request) : snapshot,
@@ -248,24 +253,9 @@ function installBridge(snapshot: ReviewSnapshotSource = changedSnapshot, preview
 			}
 			return previewFile;
 		}),
-		subscribeToAgentEvents: vi.fn((listener: (event: SerializedAgentEvent) => void) => {
-			agentListeners.add(listener);
-			return () => {
-				agentListeners.delete(listener);
-			};
-		}),
-		subscribeToEnvironmentEvents: vi.fn((listener: (event: DesktopEnvironmentEvent) => void) => {
-			environmentListeners.add(listener);
-			return () => {
-				environmentListeners.delete(listener);
-			};
-		}),
-		subscribeToSubagentEvents: vi.fn((listener: (event: DesktopSubagentRuntimeEvent) => void) => {
-			subagentListeners.add(listener);
-			return () => {
-				subagentListeners.delete(listener);
-			};
-		}),
+		subscribeToAgentEvents: agentEvents.subscribe,
+		subscribeToEnvironmentEvents: environmentEvents.subscribe,
+		subscribeToSubagentEvents: subagentEvents.subscribe,
 	} as Pick<
 		DesktopAgentBridge,
 		| "getSubagentSnapshot"
@@ -278,28 +268,13 @@ function installBridge(snapshot: ReviewSnapshotSource = changedSnapshot, preview
 		| "subscribeToSubagentEvents"
 	>;
 
-	Object.defineProperty(window, "desktopAgent", {
-		configurable: true,
-		value: bridge,
-	});
+	installRendererDesktopAgentBridge(bridge);
 
 	return {
 		bridge,
-		emitAgentEvent(event: SerializedAgentEvent) {
-			for (const listener of agentListeners) {
-				listener(event);
-			}
-		},
-		emitSubagentEvent(event: DesktopSubagentRuntimeEvent) {
-			for (const listener of subagentListeners) {
-				listener(event);
-			}
-		},
-		emitEnvironmentEvent(event: DesktopEnvironmentEvent) {
-			for (const listener of environmentListeners) {
-				listener(event);
-			}
-		},
+		emitAgentEvent: agentEvents.emit,
+		emitEnvironmentEvent: environmentEvents.emit,
+		emitSubagentEvent: subagentEvents.emit,
 	};
 }
 
@@ -386,7 +361,7 @@ function ClosedReviewPanelHarness() {
 afterEach(() => {
 	cleanup();
 	vi.useRealTimers();
-	Reflect.deleteProperty(window, "desktopAgent");
+	removeRendererDesktopAgentBridge();
 });
 
 describe("ReviewWorkspacePanel", () => {

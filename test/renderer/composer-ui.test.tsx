@@ -1,73 +1,36 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ComponentProps } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Composer } from "../../src/renderer/components/chat/Composer.tsx";
+import { ComposerQuickControls } from "../../src/renderer/components/chat/ComposerQuickControls.tsx";
+import { SkylarkContextWindowControl } from "../../src/renderer/components/chat/SkylarkPromptInputComposer.tsx";
 import { TooltipProvider } from "../../src/renderer/components/ui/tooltip.tsx";
 
 afterEach(() => {
 	cleanup();
 });
 
+type QuickControlsProps = ComponentProps<typeof ComposerQuickControls>;
+
+function renderQuickControls(props: Partial<QuickControlsProps> = {}) {
+	return render(
+		<TooltipProvider>
+			<ComposerQuickControls isStreaming={false} thinkingLevel="off" {...props} />
+		</TooltipProvider>,
+	);
+}
+
+function renderContextControl(props: ComponentProps<typeof SkylarkContextWindowControl>) {
+	return render(
+		<TooltipProvider>
+			<SkylarkContextWindowControl {...props} />
+		</TooltipProvider>,
+	);
+}
+
 describe("Composer UI", () => {
-	it("submits the trimmed prompt on Enter", async () => {
-		const user = userEvent.setup();
-		const onSubmitPrompt = vi.fn(async () => undefined);
-
-		render(
-			<TooltipProvider>
-				<Composer isStreaming={false} onAbort={async () => undefined} onSubmitPrompt={onSubmitPrompt} />
-			</TooltipProvider>,
-		);
-
-		const textbox = screen.getByRole("textbox");
-		await user.type(textbox, "  inspect app shell  ");
-		await user.keyboard("{Enter}");
-
-		await waitFor(() => {
-			expect(onSubmitPrompt).toHaveBeenCalledWith("inspect app shell");
-		});
-	});
-
-	it("keeps newline entry on Shift+Enter instead of submitting", async () => {
-		const user = userEvent.setup();
-		const onSubmitPrompt = vi.fn(async () => undefined);
-
-		render(
-			<TooltipProvider>
-				<Composer isStreaming={false} onAbort={async () => undefined} onSubmitPrompt={onSubmitPrompt} />
-			</TooltipProvider>,
-		);
-
-		const textbox = screen.getByRole("textbox");
-		await user.type(textbox, "line 1");
-		await user.keyboard("{Shift>}{Enter}{/Shift}");
-
-		expect(onSubmitPrompt).not.toHaveBeenCalled();
-		expect((textbox as HTMLTextAreaElement).value).toBe("line 1\n");
-	});
-
-	it("does not render a redundant run status indicator", () => {
-		render(
-			<TooltipProvider>
-				<Composer isStreaming={true} onAbort={async () => undefined} onSubmitPrompt={async () => undefined} />
-			</TooltipProvider>,
-		);
-
-		expect(screen.queryByLabelText("Ready")).toBeNull();
-		expect(screen.queryByLabelText("Streaming")).toBeNull();
-	});
-
 	it("shows a compact context window usage entry", () => {
-		render(
-			<TooltipProvider>
-				<Composer
-					contextWindowUsage={{ usedTokens: 166000, totalTokens: 258000 }}
-					isStreaming={false}
-					onAbort={async () => undefined}
-					onSubmitPrompt={async () => undefined}
-				/>
-			</TooltipProvider>,
-		);
+		renderContextControl({ usage: { usedTokens: 166000, totalTokens: 258000 } });
 
 		expect(screen.getByLabelText("Context window 64% used")).toBeTruthy();
 		expect(screen.getByText("64.3%")).toBeTruthy();
@@ -76,23 +39,15 @@ describe("Composer UI", () => {
 	});
 
 	it("renders the model selector and status entries without circular chrome", () => {
-		const { container } = render(
-			<TooltipProvider>
-				<Composer
-					contextWindowUsage={{ usedTokens: 166000, totalTokens: 258000 }}
-					isStreaming={false}
-					model={{
-						id: "kimi-for-coding",
-						name: "kimi-for-coding",
-						provider: "kimi-coding",
-						reasoning: true,
-					}}
-					onAbort={async () => undefined}
-					onSubmitPrompt={async () => undefined}
-					thinkingLevel="high"
-				/>
-			</TooltipProvider>,
-		);
+		const { container } = renderQuickControls({
+			model: {
+				id: "kimi-for-coding",
+				name: "kimi-for-coding",
+				provider: "kimi-coding",
+				reasoning: true,
+			},
+			thinkingLevel: "high",
+		});
 
 		const statusIcons = container.querySelectorAll("[data-slot='composer-status-icon']");
 		const modelSelectorTrigger = container.querySelector("[data-slot='composer-model-selector-trigger']");
@@ -114,54 +69,47 @@ describe("Composer UI", () => {
 	it("opens the model picker and applies a selected model", async () => {
 		const user = userEvent.setup();
 		const onUpdateSessionProfile = vi.fn(async () => undefined);
-		render(
-			<TooltipProvider>
-				<Composer
-					isStreaming={false}
-					model={{
-						id: "claude-3-5-sonnet",
-						name: "Claude 3.5 Sonnet",
-						provider: "anthropic",
-						reasoning: true,
-					}}
-					onAbort={async () => undefined}
-					onSubmitPrompt={async () => undefined}
-					onUpdateSessionProfile={onUpdateSessionProfile}
-					runtimeCatalog={{
-						defaultTools: ["read", "bash"],
-						providers: [
+		renderQuickControls({
+			model: {
+				id: "claude-3-5-sonnet",
+				name: "Claude 3.5 Sonnet",
+				provider: "anthropic",
+				reasoning: true,
+			},
+			onUpdateSessionProfile,
+			runtimeCatalog: {
+				defaultTools: ["read", "bash"],
+				providers: [
+					{
+						id: "openai",
+						name: "OpenAI",
+						configured: false,
+						authMethods: ["api_key" as const],
+						models: [{ id: "gpt-5.4", name: "GPT-5.4", reasoning: true, contextWindow: 256000 }],
+					},
+					{
+						id: "anthropic",
+						name: "Anthropic",
+						configured: true,
+						authMethods: ["api_key" as const],
+						models: [
 							{
-								id: "openai",
-								name: "OpenAI",
-								configured: false,
-								authMethods: ["api_key" as const],
-								models: [{ id: "gpt-5.4", name: "GPT-5.4", reasoning: true, contextWindow: 256000 }],
+								id: "claude-3-5-sonnet",
+								name: "Claude 3.5 Sonnet",
+								reasoning: true,
+								contextWindow: 200000,
 							},
 							{
-								id: "anthropic",
-								name: "Anthropic",
-								configured: true,
-								authMethods: ["api_key" as const],
-								models: [
-									{
-										id: "claude-3-5-sonnet",
-										name: "Claude 3.5 Sonnet",
-										reasoning: true,
-										contextWindow: 200000,
-									},
-									{
-										id: "claude-opus-4-6",
-										name: "Claude Opus 4.6",
-										reasoning: true,
-										contextWindow: 200000,
-									},
-								],
+								id: "claude-opus-4-6",
+								name: "Claude Opus 4.6",
+								reasoning: true,
+								contextWindow: 200000,
 							},
 						],
-					}}
-				/>
-			</TooltipProvider>,
-		);
+					},
+				],
+			},
+		});
 
 		await user.click(screen.getByLabelText("Model anthropic / claude-3-5-sonnet"));
 		await user.type(screen.getByPlaceholderText("Filter models"), "opus");
@@ -181,49 +129,42 @@ describe("Composer UI", () => {
 		const user = userEvent.setup();
 		const onOpenSettings = vi.fn();
 		const onUpdateSessionProfile = vi.fn(async () => undefined);
-		render(
-			<TooltipProvider>
-				<Composer
-					isStreaming={false}
-					model={{
-						id: "claude-3-5-sonnet",
-						name: "Claude 3.5 Sonnet",
-						provider: "anthropic",
-						reasoning: true,
-					}}
-					onAbort={async () => undefined}
-					onOpenSettings={onOpenSettings}
-					onSubmitPrompt={async () => undefined}
-					onUpdateSessionProfile={onUpdateSessionProfile}
-					runtimeCatalog={{
-						defaultTools: [],
-						providers: [
+		renderQuickControls({
+			model: {
+				id: "claude-3-5-sonnet",
+				name: "Claude 3.5 Sonnet",
+				provider: "anthropic",
+				reasoning: true,
+			},
+			onOpenSettings,
+			onUpdateSessionProfile,
+			runtimeCatalog: {
+				defaultTools: [],
+				providers: [
+					{
+						id: "openai",
+						name: "OpenAI",
+						configured: false,
+						authMethods: ["api_key" as const],
+						models: [{ id: "gpt-5.4", name: "GPT-5.4", reasoning: true, contextWindow: 256000 }],
+					},
+					{
+						id: "anthropic",
+						name: "Anthropic",
+						configured: true,
+						authMethods: ["api_key" as const],
+						models: [
 							{
-								id: "openai",
-								name: "OpenAI",
-								configured: false,
-								authMethods: ["api_key" as const],
-								models: [{ id: "gpt-5.4", name: "GPT-5.4", reasoning: true, contextWindow: 256000 }],
-							},
-							{
-								id: "anthropic",
-								name: "Anthropic",
-								configured: true,
-								authMethods: ["api_key" as const],
-								models: [
-									{
-										id: "claude-3-5-sonnet",
-										name: "Claude 3.5 Sonnet",
-										reasoning: true,
-										contextWindow: 200000,
-									},
-								],
+								id: "claude-3-5-sonnet",
+								name: "Claude 3.5 Sonnet",
+								reasoning: true,
+								contextWindow: 200000,
 							},
 						],
-					}}
-				/>
-			</TooltipProvider>,
-		);
+					},
+				],
+			},
+		});
 
 		await user.click(screen.getByLabelText("Model anthropic / claude-3-5-sonnet"));
 		expect(screen.getByLabelText(/GPT-5\.4.*OpenAI.*未配置/i)).toBeTruthy();
@@ -238,65 +179,58 @@ describe("Composer UI", () => {
 
 	it("sorts configured providers first and filters the provider catalog", async () => {
 		const user = userEvent.setup();
-		render(
-			<TooltipProvider>
-				<Composer
-					isStreaming={false}
-					model={{
-						id: "gpt-5.5",
-						name: "GPT-5.5",
-						provider: "openai-codex",
-						reasoning: true,
-					}}
-					oauthProviders={[
-						{
-							id: "openai-codex",
-							name: "OpenAI Codex",
-							configured: true,
-							source: "shared-auth",
-							usesCallbackServer: true,
-						},
-					]}
-					onAbort={async () => undefined}
-					onSubmitPrompt={async () => undefined}
-					onUpdateSessionProfile={async () => undefined}
-					providerKeys={[{ provider: "anthropic", configured: true }]}
-					runtimeCatalog={{
-						defaultTools: [],
-						providers: [
+		renderQuickControls({
+			model: {
+				id: "gpt-5.5",
+				name: "GPT-5.5",
+				provider: "openai-codex",
+				reasoning: true,
+			},
+			oauthProviders: [
+				{
+					id: "openai-codex",
+					name: "OpenAI Codex",
+					configured: true,
+					source: "shared-auth",
+					usesCallbackServer: true,
+				},
+			],
+			onUpdateSessionProfile: async () => undefined,
+			providerKeys: [{ provider: "anthropic", configured: true }],
+			runtimeCatalog: {
+				defaultTools: [],
+				providers: [
+					{
+						id: "openai",
+						name: "OpenAI",
+						configured: false,
+						authMethods: ["api_key" as const],
+						models: [{ id: "gpt-5.4", name: "GPT-5.4", reasoning: true, contextWindow: 256000 }],
+					},
+					{
+						id: "anthropic",
+						name: "Anthropic",
+						configured: false,
+						authMethods: ["api_key" as const],
+						models: [
 							{
-								id: "openai",
-								name: "OpenAI",
-								configured: false,
-								authMethods: ["api_key" as const],
-								models: [{ id: "gpt-5.4", name: "GPT-5.4", reasoning: true, contextWindow: 256000 }],
-							},
-							{
-								id: "anthropic",
-								name: "Anthropic",
-								configured: false,
-								authMethods: ["api_key" as const],
-								models: [
-									{
-										id: "claude-3-5-sonnet",
-										name: "Claude 3.5 Sonnet",
-										reasoning: true,
-										contextWindow: 200000,
-									},
-								],
-							},
-							{
-								id: "openai-codex",
-								name: "OpenAI Codex",
-								configured: false,
-								authMethods: ["oauth" as const],
-								models: [{ id: "gpt-5.5", name: "GPT-5.5", reasoning: true, contextWindow: 256000 }],
+								id: "claude-3-5-sonnet",
+								name: "Claude 3.5 Sonnet",
+								reasoning: true,
+								contextWindow: 200000,
 							},
 						],
-					}}
-				/>
-			</TooltipProvider>,
-		);
+					},
+					{
+						id: "openai-codex",
+						name: "OpenAI Codex",
+						configured: false,
+						authMethods: ["oauth" as const],
+						models: [{ id: "gpt-5.5", name: "GPT-5.5", reasoning: true, contextWindow: 256000 }],
+					},
+				],
+			},
+		});
 
 		await user.click(screen.getByLabelText("Model openai-codex / gpt-5.5"));
 		const providerGroups = Array.from(document.querySelectorAll("[data-slot='command-group']"));
@@ -336,71 +270,62 @@ describe("Composer UI", () => {
 			contextWindow: 200000,
 		});
 
-		render(
-			<TooltipProvider>
-				<Composer
-					isStreaming={false}
-					model={{
-						id: "claude-model-1",
-						name: "Claude Model 1",
-						provider: "anthropic",
-						reasoning: true,
-					}}
-					onAbort={async () => undefined}
-					onSubmitPrompt={async () => undefined}
-					onUpdateSessionProfile={async () => undefined}
-					runtimeCatalog={{
-						defaultTools: [],
-						providers: [
+		renderQuickControls({
+			model: {
+				id: "claude-model-1",
+				name: "Claude Model 1",
+				provider: "anthropic",
+				reasoning: true,
+			},
+			onUpdateSessionProfile: async () => undefined,
+			runtimeCatalog: {
+				defaultTools: [],
+				providers: [
+					{
+						id: "anthropic",
+						name: "Anthropic",
+						configured: true,
+						authMethods: ["api_key" as const],
+						models: anthropicModels,
+					},
+					{
+						id: "openai",
+						name: "OpenAI",
+						configured: false,
+						authMethods: ["api_key" as const],
+						models: [{ id: "gpt-5.4", name: "GPT-5.4", reasoning: true, contextWindow: 256000 }],
+					},
+					{
+						id: "google",
+						name: "Google",
+						configured: false,
+						authMethods: ["api_key" as const],
+						models: [{ id: "gemini-pro", name: "Gemini Pro", reasoning: true, contextWindow: 1000000 }],
+					},
+					{
+						id: "mistral",
+						name: "Mistral",
+						configured: false,
+						authMethods: ["api_key" as const],
+						models: [{ id: "mistral-large", name: "Mistral Large", reasoning: false, contextWindow: 128000 }],
+					},
+					{
+						id: "zz-hidden",
+						name: "Zzz Hidden",
+						configured: false,
+						authMethods: ["api_key" as const],
+						models: [
 							{
-								id: "anthropic",
-								name: "Anthropic",
-								configured: true,
-								authMethods: ["api_key" as const],
-								models: anthropicModels,
-							},
-							{
-								id: "openai",
-								name: "OpenAI",
-								configured: false,
-								authMethods: ["api_key" as const],
-								models: [{ id: "gpt-5.4", name: "GPT-5.4", reasoning: true, contextWindow: 256000 }],
-							},
-							{
-								id: "google",
-								name: "Google",
-								configured: false,
-								authMethods: ["api_key" as const],
-								models: [{ id: "gemini-pro", name: "Gemini Pro", reasoning: true, contextWindow: 1000000 }],
-							},
-							{
-								id: "mistral",
-								name: "Mistral",
-								configured: false,
-								authMethods: ["api_key" as const],
-								models: [
-									{ id: "mistral-large", name: "Mistral Large", reasoning: false, contextWindow: 128000 },
-								],
-							},
-							{
-								id: "zz-hidden",
-								name: "Zzz Hidden",
-								configured: false,
-								authMethods: ["api_key" as const],
-								models: [
-									{
-										id: "zz-hidden-model",
-										name: "Zzz Hidden Model",
-										reasoning: false,
-										contextWindow: 128000,
-									},
-								],
+								id: "zz-hidden-model",
+								name: "Zzz Hidden Model",
+								reasoning: false,
+								contextWindow: 128000,
 							},
 						],
-					}}
-				/>
-			</TooltipProvider>,
-		);
+					},
+				],
+			},
+		});
 
 		await user.click(screen.getByLabelText("Model anthropic / claude-model-1"));
 		expect(screen.queryByText("Claude Opus Ten")).toBeNull();
@@ -418,23 +343,16 @@ describe("Composer UI", () => {
 	it("opens the thinking popover and applies a selected level", async () => {
 		const user = userEvent.setup();
 		const onUpdateSessionProfile = vi.fn(async () => undefined);
-		render(
-			<TooltipProvider>
-				<Composer
-					isStreaming={false}
-					model={{
-						id: "gpt-5.4",
-						name: "GPT-5.4",
-						provider: "openai",
-						reasoning: true,
-					}}
-					onAbort={async () => undefined}
-					onSubmitPrompt={async () => undefined}
-					onUpdateSessionProfile={onUpdateSessionProfile}
-					thinkingLevel="off"
-				/>
-			</TooltipProvider>,
-		);
+		renderQuickControls({
+			model: {
+				id: "gpt-5.4",
+				name: "GPT-5.4",
+				provider: "openai",
+				reasoning: true,
+			},
+			onUpdateSessionProfile,
+			thinkingLevel: "off",
+		});
 
 		await user.click(screen.getByLabelText("Thinking off"));
 		const popover = document.querySelector("[data-slot='popover-content']");
@@ -454,23 +372,16 @@ describe("Composer UI", () => {
 	it("keeps xhigh selectable for GPT-5.5 thinking sessions", async () => {
 		const user = userEvent.setup();
 		const onUpdateSessionProfile = vi.fn(async () => undefined);
-		render(
-			<TooltipProvider>
-				<Composer
-					isStreaming={false}
-					model={{
-						id: "gpt-5.5",
-						name: "GPT-5.5",
-						provider: "openai-codex",
-						reasoning: true,
-					}}
-					onAbort={async () => undefined}
-					onSubmitPrompt={async () => undefined}
-					onUpdateSessionProfile={onUpdateSessionProfile}
-					thinkingLevel="high"
-				/>
-			</TooltipProvider>,
-		);
+		renderQuickControls({
+			model: {
+				id: "gpt-5.5",
+				name: "GPT-5.5",
+				provider: "openai-codex",
+				reasoning: true,
+			},
+			onUpdateSessionProfile,
+			thinkingLevel: "high",
+		});
 
 		await user.click(screen.getByLabelText("Thinking high"));
 		const xhighButton = screen.getByRole("button", { name: /^xhigh$/i }) as HTMLButtonElement;
@@ -484,39 +395,24 @@ describe("Composer UI", () => {
 	});
 
 	it("disables model and thinking profile controls while streaming", () => {
-		render(
-			<TooltipProvider>
-				<Composer
-					isStreaming={true}
-					model={{
-						id: "gpt-5.4",
-						name: "GPT-5.4",
-						provider: "openai",
-						reasoning: true,
-					}}
-					onAbort={async () => undefined}
-					onSubmitPrompt={async () => undefined}
-					onUpdateSessionProfile={async () => undefined}
-					thinkingLevel="medium"
-				/>
-			</TooltipProvider>,
-		);
+		renderQuickControls({
+			isStreaming: true,
+			model: {
+				id: "gpt-5.4",
+				name: "GPT-5.4",
+				provider: "openai",
+				reasoning: true,
+			},
+			onUpdateSessionProfile: async () => undefined,
+			thinkingLevel: "medium",
+		});
 
 		expect((screen.getByLabelText("Model openai / gpt-5.4") as HTMLButtonElement).disabled).toBe(true);
 		expect((screen.getByLabelText("Thinking medium") as HTMLButtonElement).disabled).toBe(true);
 	});
 
 	it("does not render the context control when the context window size is not available", () => {
-		render(
-			<TooltipProvider>
-				<Composer
-					contextWindowUsage={{ usedTokens: 70000 }}
-					isStreaming={false}
-					onAbort={async () => undefined}
-					onSubmitPrompt={async () => undefined}
-				/>
-			</TooltipProvider>,
-		);
+		renderContextControl({ usage: { usedTokens: 70000 } });
 
 		expect(screen.queryByLabelText(/Context window/i)).toBeNull();
 		expect(screen.queryByText("未知 已用")).toBeNull();

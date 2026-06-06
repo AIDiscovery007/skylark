@@ -5,7 +5,6 @@ import userEvent from "@testing-library/user-event";
 import { flushSync } from "react-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatWorkbench } from "../../src/renderer/components/chat/ChatWorkbench.tsx";
-import { INITIAL_AGENT_RENDERER_STATE } from "../../src/renderer/lib/conversation-timeline-projection.ts";
 import { activityDrawerTransition } from "../../src/renderer/lib/motion.ts";
 import { agentStore } from "../../src/renderer/stores/agent-store.ts";
 import type { DesktopAgentBridge } from "../../src/shared/ipc-contract.ts";
@@ -15,6 +14,16 @@ import type {
 	DesktopEnvironmentResource,
 	DesktopWorkspaceFileEntry,
 } from "../../src/shared/types.ts";
+import {
+	clearChatWorkbenchAgentStore,
+	renderChatWorkbench,
+	resetChatWorkbenchAgentStore,
+} from "../support/chat-workbench-harness.tsx";
+import {
+	createRendererBridgeEventChannel,
+	installRendererDesktopAgentBridge,
+	removeRendererDesktopAgentBridge,
+} from "../support/renderer-desktop-agent-bridge.ts";
 
 const EMPTY_USAGE = {
 	input: 0,
@@ -24,27 +33,6 @@ const EMPTY_USAGE = {
 	totalTokens: 0,
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 };
-
-function resetAgentStore(): void {
-	agentStore.setState({
-		...INITIAL_AGENT_RENDERER_STATE,
-		activeSessionId: "session-1",
-		availableTools: ["read", "bash", "edit", "write"],
-		cwd: "/workspace/project",
-		hasHydrated: true,
-		model: {
-			contextWindow: 128000,
-			id: "faux-model",
-			name: "Faux Model",
-			provider: "faux",
-			reasoning: true,
-		},
-		sessionStateAccessedAt: {},
-		pendingActiveSessionId: undefined,
-		sessionStates: {},
-		thinkingLevel: "low",
-	});
-}
 
 function assistantMessage(
 	content: Extract<AgentMessage, { role: "assistant" }>["content"],
@@ -303,11 +291,7 @@ function installEnvironmentBridge(resources: DesktopEnvironmentResource[] = envi
 		listEnvironmentResources: vi.fn(async () => resources),
 		subscribeToEnvironmentEvents: vi.fn(() => () => undefined),
 	} satisfies Pick<DesktopAgentBridge, "listEnvironmentResources" | "subscribeToEnvironmentEvents">;
-	Object.defineProperty(window, "desktopAgent", {
-		configurable: true,
-		value: bridge,
-	});
-	return bridge;
+	return installRendererDesktopAgentBridge(bridge);
 }
 
 function installWorkspaceFileBridge(files: DesktopWorkspaceFileEntry[]) {
@@ -318,11 +302,7 @@ function installWorkspaceFileBridge(files: DesktopWorkspaceFileEntry[]) {
 			truncated: false,
 		})),
 	} satisfies Pick<DesktopAgentBridge, "listWorkspaceFiles">;
-	Object.defineProperty(window, "desktopAgent", {
-		configurable: true,
-		value: bridge,
-	});
-	return bridge;
+	return installRendererDesktopAgentBridge(bridge);
 }
 
 const workspaceFiles: DesktopWorkspaceFileEntry[] = [
@@ -350,19 +330,13 @@ const workspaceFiles: DesktopWorkspaceFileEntry[] = [
 ];
 
 beforeEach(() => {
-	resetAgentStore();
+	resetChatWorkbenchAgentStore();
 });
 
 afterEach(() => {
 	cleanup();
-	agentStore.setState({
-		...INITIAL_AGENT_RENDERER_STATE,
-		activeSessionId: undefined,
-		pendingActiveSessionId: undefined,
-		sessionStateAccessedAt: {},
-		sessionStates: {},
-	});
-	Reflect.deleteProperty(window, "desktopAgent");
+	clearChatWorkbenchAgentStore();
+	removeRendererDesktopAgentBridge();
 	vi.useRealTimers();
 });
 
@@ -378,14 +352,7 @@ describe("ChatWorkbench", () => {
 	it("renders an intentional empty boundary state without prompt examples", async () => {
 		const user = userEvent.setup();
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		const emptyState = screen.getByText("What should we work on?").closest("[data-slot='assistant-empty-state']");
 		expect(emptyState).not.toBeNull();
@@ -405,14 +372,7 @@ describe("ChatWorkbench", () => {
 			hasHydrated: true,
 		});
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		const emptyState = screen
 			.getByText("The current transcript could not be loaded.")
@@ -427,14 +387,7 @@ describe("ChatWorkbench", () => {
 		vi.useFakeTimers();
 		agentStore.setState({ activeSessionId: "session-1", hasHydrated: false });
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		const hydrationState = document.querySelector("[data-slot='assistant-hydration-state']");
 		expect(hydrationState?.getAttribute("aria-busy")).toBe("true");
@@ -454,14 +407,7 @@ describe("ChatWorkbench", () => {
 		vi.useFakeTimers();
 		agentStore.setState({ activeSessionId: undefined, cwd: undefined, hasHydrated: false });
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		act(() => {
 			vi.advanceTimersByTime(250);
@@ -480,14 +426,7 @@ describe("ChatWorkbench", () => {
 			pendingActiveSessionId: "session-2",
 		});
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		const switchState = document.querySelector("[data-slot='assistant-session-switch-state']");
 		expect(switchState?.getAttribute("aria-busy")).toBe("true");
@@ -510,14 +449,7 @@ describe("ChatWorkbench", () => {
 			pendingActiveSessionId: undefined,
 		});
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		expect(screen.getByText("Cached transcript appears immediately.")).toBeTruthy();
 		expect(document.querySelector("[data-slot='assistant-session-switch-state']")).toBeNull();
@@ -531,14 +463,7 @@ describe("ChatWorkbench", () => {
 			],
 		});
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		const markdownRoots = document.querySelectorAll("[data-slot='assistant-markdown-content']");
 		expect(markdownRoots.length).toBeGreaterThanOrEqual(2);
@@ -553,14 +478,7 @@ describe("ChatWorkbench", () => {
 		const onSubmitPrompt = vi.fn(async () => undefined);
 		const prompt = "inspect package json：中文，punctuation?!";
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={onSubmitPrompt}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench({ onSubmitPrompt });
 
 		await user.type(screen.getByPlaceholderText("Message Skylark"), prompt);
 		await user.click(screen.getByLabelText("Send message"));
@@ -568,6 +486,34 @@ describe("ChatWorkbench", () => {
 		await waitFor(() => {
 			expect(onSubmitPrompt).toHaveBeenCalledWith({ text: prompt });
 		});
+	});
+
+	it("submits composer text on Enter through the active workbench composer", async () => {
+		const user = userEvent.setup();
+		const onSubmitPrompt = vi.fn(async () => undefined);
+
+		renderChatWorkbench({ onSubmitPrompt });
+
+		await user.type(screen.getByPlaceholderText("Message Skylark"), "  inspect app shell  ");
+		await user.keyboard("{Enter}");
+
+		await waitFor(() => {
+			expect(onSubmitPrompt).toHaveBeenCalledWith({ text: "inspect app shell" });
+		});
+	});
+
+	it("keeps newline entry on Shift+Enter in the active workbench composer", async () => {
+		const user = userEvent.setup();
+		const onSubmitPrompt = vi.fn(async () => undefined);
+
+		renderChatWorkbench({ onSubmitPrompt });
+
+		const input = screen.getByPlaceholderText("Message Skylark") as HTMLTextAreaElement;
+		await user.type(input, "line 1");
+		await user.keyboard("{Shift>}{Enter}{/Shift}");
+
+		expect(onSubmitPrompt).not.toHaveBeenCalled();
+		expect(input.value).toBe("line 1\n");
 	});
 
 	it("submits prepared prompt attachments without requiring visible text", async () => {
@@ -583,21 +529,11 @@ describe("ChatWorkbench", () => {
 			images: [],
 		};
 		agentStore.setState({ activeSessionId: "session-1" });
-		Object.defineProperty(window, "desktopAgent", {
-			configurable: true,
-			value: {
-				openPromptAttachments: vi.fn(async () => ({ attachments: [attachment], errors: [] })),
-			},
+		installRendererDesktopAgentBridge({
+			openPromptAttachments: vi.fn(async () => ({ attachments: [attachment], errors: [] })),
 		});
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={onSubmitPrompt}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench({ onSubmitPrompt });
 
 		await user.click(screen.getByLabelText("Attach files"));
 		expect(await screen.findByText("notes.md")).toBeTruthy();
@@ -619,19 +555,9 @@ describe("ChatWorkbench", () => {
 			images: [],
 		};
 		const preparePromptAttachments = vi.fn(async () => ({ attachments: [attachment], errors: [] }));
-		Object.defineProperty(window, "desktopAgent", {
-			configurable: true,
-			value: { preparePromptAttachments },
-		});
+		installRendererDesktopAgentBridge({ preparePromptAttachments });
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		const file = new File([new Uint8Array([1, 2, 3, 4])], "pasted.png", { type: "image/png" });
 		fireEvent.paste(screen.getByPlaceholderText("Message Skylark"), {
@@ -659,31 +585,21 @@ describe("ChatWorkbench", () => {
 	it("clears prompt attachment errors when switching sessions", async () => {
 		const user = userEvent.setup();
 		agentStore.setState({ activeSessionId: "session-1" });
-		Object.defineProperty(window, "desktopAgent", {
-			configurable: true,
-			value: {
-				openPromptAttachments: vi.fn(async () => ({
-					attachments: [],
-					errors: [
-						{
-							name: "budget.xlsx",
-							path: "/workspace/project/budget.xlsx",
-							message:
-								"Unsupported binary prompt attachment. Supported prompt attachments are text files, images, .docx, and .xlsx.",
-						},
-					],
-				})),
-			},
+		installRendererDesktopAgentBridge({
+			openPromptAttachments: vi.fn(async () => ({
+				attachments: [],
+				errors: [
+					{
+						name: "budget.xlsx",
+						path: "/workspace/project/budget.xlsx",
+						message:
+							"Unsupported binary prompt attachment. Supported prompt attachments are text files, images, .docx, and .xlsx.",
+					},
+				],
+			})),
 		});
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		await user.click(screen.getByLabelText("Attach files"));
 		expect(await screen.findByText(/budget\.xlsx/)).toBeTruthy();
@@ -801,14 +717,7 @@ describe("ChatWorkbench", () => {
 			],
 		});
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		expect(await screen.findByText("上下文已压缩")).toBeTruthy();
 		expect(screen.queryByText(/Architecture Decisions/)).toBeNull();
@@ -825,14 +734,7 @@ describe("ChatWorkbench", () => {
 			messages: [userMessage("compact this session", 1)],
 		});
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		const divider = screen.getByText("正在压缩上下文").closest("[data-slot='compaction-timeline-divider']");
 		expect(divider).toBeTruthy();
@@ -995,14 +897,7 @@ describe("ChatWorkbench", () => {
 
 	it("hides the workspace status panel when no progress or environment resource exists", () => {
 		installEnvironmentBridge([]);
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		expect(screen.queryByLabelText("Environment")).toBeNull();
 	});
@@ -1016,14 +911,7 @@ describe("ChatWorkbench", () => {
 		]);
 		agentStore.setState({ activeSessionId: "session-1" });
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		await waitFor(() => expect(bridge.listEnvironmentResources).toHaveBeenCalled());
 		expect(screen.queryByLabelText("Environment")).toBeNull();
@@ -1034,14 +922,7 @@ describe("ChatWorkbench", () => {
 		installEnvironmentBridge();
 		agentStore.setState({ activeSessionId: "session-1" });
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		const panel = await screen.findByLabelText("Environment");
 		expect(screen.getByText("Test")).toBeTruthy();
@@ -1158,14 +1039,7 @@ describe("ChatWorkbench", () => {
 			],
 		});
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		await user.click(screen.getByRole("button", { name: /Agent activity Completed 0s/i }));
 		expect(screen.getByText("Ran subagent").closest("[data-slot='assistant-tool-call-step']")).not.toBeNull();
@@ -1178,14 +1052,7 @@ describe("ChatWorkbench", () => {
 		installEnvironmentBridge(singleWindowEnvironmentResources);
 		agentStore.setState({ activeSessionId: "session-1" });
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		await screen.findByText("fix-login-500");
 		expect(screen.queryByText("zsh")).toBeNull();
@@ -1195,34 +1062,21 @@ describe("ChatWorkbench", () => {
 
 	it("updates environment resources from the event stream without interval polling", async () => {
 		const setIntervalSpy = vi.spyOn(window, "setInterval");
-		const listeners: Array<(event: DesktopEnvironmentEvent) => void> = [];
+		const environmentEvents = createRendererBridgeEventChannel<DesktopEnvironmentEvent>();
 		const bridge = {
 			listEnvironmentResources: vi.fn(async () => []),
-			subscribeToEnvironmentEvents: vi.fn((listener: (event: DesktopEnvironmentEvent) => void) => {
-				listeners.push(listener);
-				return () => undefined;
-			}),
+			subscribeToEnvironmentEvents: environmentEvents.subscribe,
 		} satisfies Pick<DesktopAgentBridge, "listEnvironmentResources" | "subscribeToEnvironmentEvents">;
-		Object.defineProperty(window, "desktopAgent", {
-			configurable: true,
-			value: bridge,
-		});
+		installRendererDesktopAgentBridge(bridge);
 		agentStore.setState({ activeSessionId: "session-1" });
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		await waitFor(() => expect(bridge.subscribeToEnvironmentEvents).toHaveBeenCalledTimes(1));
 		expect(screen.queryByLabelText("Environment")).toBeNull();
 
 		act(() => {
-			listeners[0]?.({
+			environmentEvents.emit({
 				type: "environment_resources_updated",
 				resources: environmentResources,
 				updatedAt: "2026-05-20T08:31:00.000Z",
@@ -1253,14 +1107,7 @@ describe("ChatWorkbench", () => {
 			},
 		});
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		expect(await screen.findByText("Current task")).toBeTruthy();
 		await waitFor(() => expect(bridge.listEnvironmentResources).toHaveBeenCalled());
@@ -1868,14 +1715,7 @@ describe("ChatWorkbench", () => {
 			],
 		});
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		expect(screen.getByText("desktop-prompt")).toBeTruthy();
 		expect(screen.getByText("review")).toBeTruthy();
@@ -1908,14 +1748,7 @@ describe("ChatWorkbench", () => {
 			],
 		});
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		const attachmentCard = screen.getByLabelText("notes.md");
 		const mediaStack = attachmentCard.closest("[data-slot='user-message-media-stack']");
@@ -1945,14 +1778,7 @@ describe("ChatWorkbench", () => {
 			],
 		});
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		expect(screen.getByLabelText("budget.xlsx")).toBeTruthy();
 		expect(screen.getByText("Spreadsheet")).toBeTruthy();
@@ -1999,14 +1825,7 @@ describe("ChatWorkbench", () => {
 			],
 		});
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		const xlsxCard = screen.getByLabelText("budget.xlsx");
 		const docxCard = screen.getByLabelText("brief.docx");
@@ -2030,14 +1849,7 @@ describe("ChatWorkbench", () => {
 			messages: [userMessage("Open [docs](https://example.com) and inspect `src/index.ts`.", 1)],
 		});
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		const link = screen.getByRole("link", { name: "docs" });
 		const bubble = link.closest("[data-slot='user-message-bubble']");
@@ -2052,12 +1864,7 @@ describe("ChatWorkbench", () => {
 		const user = userEvent.setup();
 		const onOpenWorkspacePreviewFile = vi.fn();
 		const openExternalUrl = vi.fn(async () => undefined);
-		Object.defineProperty(window, "desktopAgent", {
-			configurable: true,
-			value: {
-				openExternalUrl,
-			},
-		});
+		installRendererDesktopAgentBridge({ openExternalUrl });
 		agentStore.setState({
 			messages: [
 				assistantMessage(
@@ -2072,15 +1879,7 @@ describe("ChatWorkbench", () => {
 			],
 		});
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onOpenWorkspacePreviewFile={onOpenWorkspacePreviewFile}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench({ onOpenWorkspacePreviewFile });
 
 		await user.click(screen.getByRole("link", { name: "App" }));
 		expect(onOpenWorkspacePreviewFile).toHaveBeenCalledWith("/workspace/project/src/App.tsx:12");
@@ -2105,10 +1904,7 @@ describe("ChatWorkbench", () => {
 				? "data:image/png;base64,ZGlhZ3JhbQ=="
 				: "data:image/png;base64,cGFuZWw=",
 		}));
-		Object.defineProperty(window, "desktopAgent", {
-			configurable: true,
-			value: { openWorkspacePreviewFile },
-		});
+		installRendererDesktopAgentBridge({ openWorkspacePreviewFile });
 		agentStore.setState({
 			messages: [
 				assistantMessage(
@@ -2123,14 +1919,7 @@ describe("ChatWorkbench", () => {
 			],
 		});
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		await waitFor(() => {
 			expect(screen.getByAltText("panel")).toBeTruthy();
@@ -2161,22 +1950,12 @@ describe("ChatWorkbench", () => {
 			updatedAt: "1970-01-01T00:00:00.000Z",
 			errorMessage: "只能预览当前 workspace 内的文件。",
 		}));
-		Object.defineProperty(window, "desktopAgent", {
-			configurable: true,
-			value: { openWorkspacePreviewFile },
-		});
+		installRendererDesktopAgentBridge({ openWorkspacePreviewFile });
 		agentStore.setState({
 			messages: [assistantMessage([{ type: "text", text: "![secret](/Users/qiaochao/.ssh/secret.png)" }], 1)],
 		});
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		await waitFor(() => {
 			expect(screen.getByText("Image not available")).toBeTruthy();
@@ -2213,15 +1992,7 @@ describe("ChatWorkbench", () => {
 			],
 		});
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onOpenWorkspacePreviewFile={onOpenWorkspacePreviewFile}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench({ onOpenWorkspacePreviewFile });
 
 		expect(screen.getByText("Changed")).toBeTruthy();
 		const fileButton = screen.getByRole("button", { name: "Open src/App.tsx in workspace preview" });
@@ -2244,14 +2015,7 @@ describe("ChatWorkbench", () => {
 			],
 		});
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		const image = screen.getByAltText("Attached visual");
 		const nativeImage = image.closest("[data-slot='user-thread-image']");
@@ -2280,14 +2044,7 @@ describe("ChatWorkbench", () => {
 			],
 		});
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		await user.click(screen.getByRole("button", { name: "Open image preview for Attached visual" }));
 
@@ -2327,14 +2084,7 @@ describe("ChatWorkbench", () => {
 			],
 		});
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		expect(screen.getByText("Inspect this")).toBeTruthy();
 		expect(screen.queryByText(/<file name=/)).toBeNull();
@@ -2346,14 +2096,7 @@ describe("ChatWorkbench", () => {
 		const user = userEvent.setup();
 		const onSubmitPrompt = vi.fn(async () => undefined);
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={onSubmitPrompt}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench({ onSubmitPrompt });
 
 		const input = screen.getByPlaceholderText("Message Skylark") as HTMLTextAreaElement;
 		fireEvent.compositionStart(input);
@@ -2387,14 +2130,7 @@ describe("ChatWorkbench", () => {
 			pendingActiveSessionId: "session-2",
 		});
 
-		const { container } = render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		const { container } = renderChatWorkbench();
 
 		expect(screen.queryByText("Current thread should be hidden.")).toBeNull();
 		expect(container.querySelector("[data-slot='assistant-session-switch-state']")).toBeTruthy();
@@ -2404,14 +2140,7 @@ describe("ChatWorkbench", () => {
 	});
 
 	it("hides the disabled scroll-to-bottom affordance at the bottom of the thread", () => {
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		const scrollToBottom = screen.getByLabelText("Scroll to bottom") as HTMLButtonElement;
 		const scrollAnchor = scrollToBottom.closest("[data-slot='assistant-scroll-to-bottom-anchor']");
@@ -2735,14 +2464,7 @@ describe("ChatWorkbench", () => {
 	});
 
 	it("keeps the composer dock inside the shell aligned to the workbench reading width", () => {
-		const { container } = render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		const { container } = renderChatWorkbench();
 
 		const shell = container.querySelector("[data-slot='assistant-chat-shell']");
 		const dock = shell?.querySelector("[data-slot='composer-dock']");
@@ -2755,14 +2477,7 @@ describe("ChatWorkbench", () => {
 	});
 
 	it("renders the active composer as an agent console inside the dock", () => {
-		const { container } = render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		const { container } = renderChatWorkbench();
 
 		const dock = container.querySelector("[data-slot='composer-dock']");
 		const consoleRoot = dock?.querySelector("[data-slot='agent-console']");
@@ -2793,14 +2508,7 @@ describe("ChatWorkbench", () => {
 
 	it("focuses the input when the agent console surface is clicked", async () => {
 		const user = userEvent.setup();
-		const { container } = render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		const { container } = renderChatWorkbench();
 
 		const input = screen.getByPlaceholderText("Message Skylark") as HTMLTextAreaElement;
 		const consoleRoot = container.querySelector("[data-slot='agent-console']");
@@ -2816,14 +2524,7 @@ describe("ChatWorkbench", () => {
 	});
 
 	it("keeps long composer input bounded with internal scrolling", async () => {
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		const input = screen.getByPlaceholderText("Message Skylark") as HTMLTextAreaElement;
 		Object.defineProperty(input, "scrollHeight", {
@@ -2848,14 +2549,7 @@ describe("ChatWorkbench", () => {
 			streamingMessage: assistantMessage([{ type: "text", text: "working" }], 10),
 		});
 
-		const { container } = render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		const { container } = renderChatWorkbench();
 
 		const consoleRoot = container.querySelector("[data-slot='agent-console']");
 		const stopButton = screen.getByLabelText("Cancel response");
@@ -3106,14 +2800,7 @@ describe("ChatWorkbench", () => {
 			],
 		});
 
-		const { container } = render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		const { container } = renderChatWorkbench();
 
 		expect(await screen.findByText("I started the request.")).toBeTruthy();
 		expect(screen.getByRole("button", { name: "Authentication required" })).toBeTruthy();
@@ -3140,14 +2827,7 @@ describe("ChatWorkbench", () => {
 			],
 		});
 
-		const { container } = render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		const { container } = renderChatWorkbench();
 
 		await user.click(await screen.findByRole("button", { name: "Provider limit reached" }));
 		const detail = screen
@@ -3190,14 +2870,7 @@ describe("ChatWorkbench", () => {
 			],
 		});
 
-		const { container } = render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		const { container } = renderChatWorkbench();
 
 		expect(await screen.findByRole("button", { name: summary })).toBeTruthy();
 		expect(container.querySelector("[data-slot='thread-run-status-task']")).toBeTruthy();
@@ -3220,14 +2893,7 @@ describe("ChatWorkbench", () => {
 			],
 		});
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		expect(await screen.findByText("line 7")).toBeTruthy();
 		const codeBlock = document.querySelector<HTMLElement>("[data-streamdown='code-block']");
@@ -3254,14 +2920,7 @@ describe("ChatWorkbench", () => {
 			],
 		});
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		expect(
 			await screen.findByText(
@@ -3291,14 +2950,7 @@ describe("ChatWorkbench", () => {
 			],
 		});
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		expect(await screen.findByText("line 7")).toBeTruthy();
 		const codeBlock = document.querySelector<HTMLElement>("[data-streamdown='code-block']");
@@ -3324,14 +2976,7 @@ describe("ChatWorkbench", () => {
 			],
 		});
 
-		const { container } = render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		const { container } = renderChatWorkbench();
 
 		const viewport = getAssistantViewport(container);
 		const scrollToBottom = screen.getByLabelText("Scroll to bottom") as HTMLButtonElement;
@@ -3367,14 +3012,7 @@ describe("ChatWorkbench", () => {
 			],
 		});
 
-		const { container } = render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		const { container } = renderChatWorkbench();
 
 		const viewport = getAssistantViewport(container);
 		const scrollTo = vi.fn();
@@ -3453,14 +3091,7 @@ describe("ChatWorkbench", () => {
 			],
 		});
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		expect(screen.getByText("Tool run finished.")).toBeTruthy();
 		expect(screen.queryByText("Hidden reasoning.")).toBeNull();
@@ -3723,14 +3354,7 @@ describe("ChatWorkbench", () => {
 			streamingMessage: assistantMessage([{ type: "text", text: "Live answer should stay uncontained." }], 3),
 		});
 
-		const { container } = render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		const { container } = renderChatWorkbench();
 
 		const completedMessage = screen
 			.getByText("Settled answer should be contained.")
@@ -3869,14 +3493,7 @@ describe("ChatWorkbench", () => {
 			],
 		});
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		await act(async () => undefined);
 		expect(screen.getByRole("button", { name: /Waiting for response Responding 5s/i })).toBeTruthy();
@@ -3982,14 +3599,7 @@ describe("ChatWorkbench", () => {
 			],
 		});
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		const activityTrigger = screen.getByRole("button", { name: /Working Running \d+s/i });
 		await waitFor(() => {
@@ -4031,14 +3641,7 @@ describe("ChatWorkbench", () => {
 			],
 		});
 
-		render(
-			<ChatWorkbench
-				onAbort={vi.fn(async () => undefined)}
-				onSubmitPrompt={vi.fn(async () => undefined)}
-				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
-				showThinkingBlocks={false}
-			/>,
-		);
+		renderChatWorkbench();
 
 		const activityTrigger = screen.getByRole("button", { name: /Working Running \d+s/i });
 		await act(async () => {

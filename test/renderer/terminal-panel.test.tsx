@@ -6,6 +6,11 @@ import { TerminalPanel } from "../../src/renderer/components/terminal/TerminalPa
 import type { DesktopAgentBridge } from "../../src/shared/ipc-contract.ts";
 import type { SerializedTerminalEvent } from "../../src/shared/serialized-terminal-event.ts";
 import type { DesktopReviewSnapshot } from "../../src/shared/types.ts";
+import {
+	createRendererBridgeEventChannel,
+	installRendererDesktopAgentBridge,
+	removeRendererDesktopAgentBridge,
+} from "../support/renderer-desktop-agent-bridge.ts";
 
 const cleanReviewSnapshot: DesktopReviewSnapshot = {
 	status: "clean",
@@ -86,7 +91,7 @@ vi.mock("@xterm/xterm", () => ({ Terminal: terminalMocks.MockTerminal }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: terminalMocks.MockFitAddon }));
 
 function installBridge() {
-	const terminalListeners = new Set<(event: SerializedTerminalEvent) => void>();
+	const terminalEvents = createRendererBridgeEventChannel<SerializedTerminalEvent>();
 	const bridge: DesktopAgentBridge = {
 		abort: vi.fn(async () => undefined),
 		cancelOAuthLogin: vi.fn(async () => undefined),
@@ -308,12 +313,7 @@ function installBridge() {
 		subscribeToSettingsEvents: vi.fn(() => () => undefined),
 		subscribeToSettingsOpenRequests: vi.fn(() => () => undefined),
 		subscribeToSubagentEvents: vi.fn(() => () => undefined),
-		subscribeToTerminalEvents: vi.fn((listener) => {
-			terminalListeners.add(listener);
-			return () => {
-				terminalListeners.delete(listener);
-			};
-		}),
+		subscribeToTerminalEvents: terminalEvents.subscribe,
 		subscribeToWorkspaceRuntimeEvents: vi.fn(() => () => undefined),
 		switchProject: vi.fn(async () => undefined),
 		switchSession: vi.fn(async () => undefined),
@@ -323,18 +323,11 @@ function installBridge() {
 		writeTerminal: vi.fn(async () => undefined),
 	};
 
-	Object.defineProperty(window, "desktopAgent", {
-		configurable: true,
-		value: bridge,
-	});
+	installRendererDesktopAgentBridge(bridge);
 
 	return {
 		bridge,
-		emitTerminalEvent(event: SerializedTerminalEvent) {
-			for (const listener of terminalListeners) {
-				listener(event);
-			}
-		},
+		emitTerminalEvent: terminalEvents.emit,
 	};
 }
 
@@ -344,7 +337,7 @@ afterEach(() => {
 	document.documentElement.style.removeProperty("--desktop-code-font-size");
 	document.documentElement.style.removeProperty("--font-mono");
 	terminalMocks.MockTerminal.instances.length = 0;
-	Reflect.deleteProperty(window, "desktopAgent");
+	removeRendererDesktopAgentBridge();
 });
 
 function ControlledTerminalPanel({

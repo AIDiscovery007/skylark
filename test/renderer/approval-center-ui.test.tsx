@@ -5,35 +5,30 @@ import { ApprovalCenter } from "../../src/renderer/components/security/ApprovalC
 import { approvalStore } from "../../src/renderer/stores/approval-store.ts";
 import type { DesktopAgentBridge } from "../../src/shared/ipc-contract.ts";
 import type { DesktopApprovalEvent } from "../../src/shared/types.ts";
+import {
+	createRendererBridgeEventChannel,
+	installRendererDesktopAgentBridge,
+	removeRendererDesktopAgentBridge,
+} from "../support/renderer-desktop-agent-bridge.ts";
 
 afterEach(() => {
 	cleanup();
 	approvalStore.getState().resetApprovals();
-	Reflect.deleteProperty(window, "desktopAgent");
+	removeRendererDesktopAgentBridge();
 });
 
 function installApprovalBridge() {
-	let approvalListener: ((event: DesktopApprovalEvent) => void) | undefined;
+	const approvalEvents = createRendererBridgeEventChannel<DesktopApprovalEvent>();
 	const resolveApproval = vi.fn(async () => undefined);
 	const bridge = {
 		resolveApproval,
-		subscribeToApprovalEvents: vi.fn((listener: (event: DesktopApprovalEvent) => void) => {
-			approvalListener = listener;
-			return () => {
-				approvalListener = undefined;
-			};
-		}),
+		subscribeToApprovalEvents: approvalEvents.subscribe,
 	} satisfies Pick<DesktopAgentBridge, "resolveApproval" | "subscribeToApprovalEvents">;
 
-	Object.defineProperty(window, "desktopAgent", {
-		configurable: true,
-		value: bridge,
-	});
+	installRendererDesktopAgentBridge(bridge);
 
 	return {
-		emitApprovalEvent(event: DesktopApprovalEvent) {
-			approvalListener?.(event);
-		},
+		emitApprovalEvent: approvalEvents.emit,
 		resolveApproval,
 	};
 }
