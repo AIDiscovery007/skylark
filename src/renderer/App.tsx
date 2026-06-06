@@ -929,6 +929,7 @@ function DesktopApp({ desktopAgent }: { desktopAgent: DesktopAgentBridge }) {
 													/>
 												) : (
 													<ChatWorkbench
+														activeProjectId={projects.activeProjectId}
 														capabilityCatalog={capabilities.hasLoaded ? capabilities.catalog : undefined}
 														composerFocusRequest={composerFocusRequest}
 														onAbort={abort}

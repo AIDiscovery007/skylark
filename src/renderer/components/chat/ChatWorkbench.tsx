@@ -79,6 +79,7 @@ import type {
 	DesktopSlashCommandSummary,
 	DesktopTaskProgress,
 	DesktopTaskProgressStatus,
+	DesktopWorkspaceFileEntry,
 } from "../../../shared/types.ts";
 import { useWorkspaceStatus, type WorkspaceStatusState } from "../../hooks/use-workspace-status.ts";
 import {
@@ -286,6 +287,7 @@ class AssistantTimelineErrorBoundary extends Component<
 }
 
 interface ChatWorkbenchProps {
+	activeProjectId?: string;
 	composerFocusRequest?: {
 		nonce: number;
 		sessionId: string;
@@ -311,6 +313,7 @@ interface ChatWorkbenchProps {
 }
 
 interface AssistantComposerProps {
+	activeProjectId?: string;
 	activeSessionId?: string;
 	attachmentErrors: DesktopPromptAttachmentError[];
 	availableTools: string[];
@@ -324,6 +327,7 @@ interface AssistantComposerProps {
 	onAbort: () => Promise<void>;
 	oauthProviders?: DesktopOAuthProviderStatus[];
 	onOpenSettings?: (request?: DesktopSettingsOpenRequest) => void;
+	onOpenWorkspacePreviewFile?: (path: string) => void;
 	onCompact?: (customInstructions?: string) => Promise<void>;
 	onRequestCapabilities?: () => Promise<void> | void;
 	onSetSessionMode?: (agentMode: DesktopAgentMode) => Promise<void>;
@@ -440,6 +444,13 @@ function getRefTextareaValue(ref: Ref<HTMLTextAreaElement>): string | undefined 
 		return undefined;
 	}
 	return ref.current?.value;
+}
+
+function getRefTextareaElement(ref: Ref<HTMLTextAreaElement>): HTMLTextAreaElement | undefined {
+	if (typeof ref === "function" || ref === null) {
+		return undefined;
+	}
+	return ref.current ?? undefined;
 }
 
 function AssistantScrollToBottomButton({ viewport }: { viewport: HTMLDivElement | null }) {
@@ -1224,68 +1235,203 @@ function PromptAttachmentChips({
 	);
 }
 
-function SlashCommandPalette({
-	commands,
-	onSelect,
-	selectedIndex,
-}: {
+type SlashCommandSectionKey = "commands" | "skills" | "prompts";
+
+interface SlashCommandSection {
+	key: SlashCommandSectionKey;
+	title: string;
 	commands: DesktopSlashCommandSummary[];
-	onSelect: (command: DesktopSlashCommandSummary) => void;
-	selectedIndex: number;
-}) {
-	const selectedCommandRef = useRef<HTMLButtonElement | null>(null);
+}
 
-	useEffect(() => {
-		if (selectedIndex < 0 || selectedIndex >= commands.length) {
-			return;
+interface AtReferenceToken {
+	start: number;
+	end: number;
+	query: string;
+}
+
+function groupSlashCommandSuggestions(commands: DesktopSlashCommandSummary[]): SlashCommandSection[] {
+	const sections: SlashCommandSection[] = [
+		{ key: "commands", title: "Commands", commands: [] },
+		{ key: "skills", title: "Skills", commands: [] },
+		{ key: "prompts", title: "Prompt templates", commands: [] },
+	];
+	for (const command of commands) {
+		if (command.source === "skill") {
+			sections[1]?.commands.push(command);
+			continue;
 		}
-		selectedCommandRef.current?.scrollIntoView?.({ block: "nearest" });
-	}, [commands.length, selectedIndex]);
+		if (command.source === "prompt") {
+			sections[2]?.commands.push(command);
+			continue;
+		}
+		sections[0]?.commands.push(command);
+	}
+	return sections.filter((section) => section.commands.length > 0);
+}
 
+function getAtReferenceTokenEnd(text: string, start: number): number {
+	let end = start;
+	while (end < text.length && !/\s/.test(text[end] ?? "")) {
+		end += 1;
+	}
+	return end;
+}
+
+function isAtTokenBoundary(text: string, atIndex: number): boolean {
+	if (atIndex === 0) {
+		return true;
+	}
+	const previous = text[atIndex - 1];
+	return previous === undefined || /[\s([{'"`]/.test(previous);
+}
+
+function resolveAtReferenceToken(text: string, cursor: number | undefined): AtReferenceToken | undefined {
+	const cursorIndex = Math.min(Math.max(cursor ?? text.length, 0), text.length);
+	const beforeCursor = text.slice(0, cursorIndex);
+	const atIndex = beforeCursor.lastIndexOf("@");
+	if (atIndex < 0 || !isAtTokenBoundary(text, atIndex)) {
+		return undefined;
+	}
+	const query = text.slice(atIndex + 1, cursorIndex);
+	if (/\s/.test(query)) {
+		return undefined;
+	}
+	return {
+		start: atIndex,
+		end: getAtReferenceTokenEnd(text, atIndex),
+		query,
+	};
+}
+
+function filterWorkspaceFileSuggestions(
+	files: DesktopWorkspaceFileEntry[],
+	query: string,
+): DesktopWorkspaceFileEntry[] {
+	const normalizedQuery = query.replace(/^"/, "").toLowerCase();
+	if (!normalizedQuery) {
+		return files.slice(0, 12);
+	}
+	return files
+		.filter(
+			(file) =>
+				file.name.toLowerCase().includes(normalizedQuery) || file.path.toLowerCase().includes(normalizedQuery),
+		)
+		.slice(0, 12);
+}
+
+function formatWorkspaceFileReference(path: string): string {
+	if (!/\s/.test(path)) {
+		return `@${path}`;
+	}
+	return `@"${path.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+function getWorkspaceFileIcon(file: DesktopWorkspaceFileEntry): ReactNode {
+	switch (file.type) {
+		case "code":
+			return <FileCode2 className="size-3.5" />;
+		case "docs":
+			return <FileText className="size-3.5" />;
+		case "images":
+			return <ImageIcon className="size-3.5" />;
+		case "data":
+			return file.name.toLowerCase().endsWith(".json") || file.name.toLowerCase().endsWith(".jsonl") ? (
+				<FileJson className="size-3.5" />
+			) : (
+				<FileSpreadsheet className="size-3.5" />
+			);
+		default:
+			return <FileType className="size-3.5" />;
+	}
+}
+
+function getSlashCommandIcon(command: DesktopSlashCommandSummary): ReactNode {
+	if (command.source === "skill") {
+		return <Sparkles className="size-3.5" />;
+	}
+	if (command.source === "prompt") {
+		return <FileText className="size-3.5" />;
+	}
+	return <SquareSlash className="size-3.5" />;
+}
+
+function ComposerSuggestionPanel({ children, label }: { children: ReactNode; label: string }) {
 	return (
 		<motion.div
 			animate={{ opacity: 1, y: 0 }}
-			className="absolute bottom-full left-0 z-50 mb-3 w-[min(28rem,calc(100vw-5rem))] overflow-hidden rounded-lg border border-border/80 bg-background shadow-[0_20px_60px_-34px_rgba(15,23,42,0.6)]"
-			exit={{ opacity: 0, y: 4 }}
+			aria-label={label}
+			className="absolute inset-x-0 bottom-full z-[var(--z-popover)] mb-2 overflow-hidden rounded-[var(--radius-xl)] border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] shadow-[var(--uix-flat-shadow-floating)]"
+			data-slot="composer-suggestion-panel"
 			initial={{ opacity: 0, y: 4 }}
+			role="listbox"
 			transition={softRevealTransition}
 		>
-			<div className="border-b border-border/70 px-3 py-2">
-				<div className="flex items-center gap-2 text-[12px] font-medium uppercase text-muted-foreground">
-					<SquareSlash className="size-3.5" />
-					<span>Slash commands</span>
-				</div>
-			</div>
-			<div className="max-h-72 overflow-y-auto p-1">
-				{commands.map((command, index) => (
-					<button
-						aria-current={index === selectedIndex ? "true" : undefined}
-						className={cn(
-							"grid w-full grid-cols-[minmax(0,1fr)_auto] gap-3 rounded-md px-3 py-2 text-left transition-colors",
-							index === selectedIndex ? "bg-secondary text-secondary-foreground" : "hover:bg-muted/70",
-						)}
-						data-selected={index === selectedIndex ? "true" : undefined}
-						key={`${command.source}:${command.name}`}
-						onMouseDown={(event) => {
-							event.preventDefault();
-							onSelect(command);
-						}}
-						ref={index === selectedIndex ? selectedCommandRef : undefined}
-						type="button"
-					>
-						<span className="min-w-0">
-							<span className="block truncate font-mono text-[13px] font-medium">/{command.name}</span>
-							<span className="block truncate text-[12px] leading-5 text-muted-foreground">
-								{command.description ?? command.source}
-							</span>
-						</span>
-						<span className="self-center rounded-md bg-muted px-2 py-1 text-[11px] uppercase text-muted-foreground">
-							{command.source}
-						</span>
-					</button>
-				))}
-			</div>
+			<div className="composer-suggestion-scrollbar max-h-[min(360px,48vh)] overflow-y-auto py-2">{children}</div>
 		</motion.div>
+	);
+}
+
+function ComposerSuggestionSection({ children, title }: { children: ReactNode; title: string }) {
+	return (
+		<section className="px-2 py-1" data-slot="composer-suggestion-section">
+			<div className="px-2 pb-1 text-[12px] font-medium leading-5 text-[color:var(--text-tertiary)]">{title}</div>
+			<div className="grid gap-0.5">{children}</div>
+		</section>
+	);
+}
+
+function ComposerSuggestionRow({
+	description,
+	icon,
+	onSelect,
+	selected,
+	title,
+	trailing,
+}: {
+	description?: string;
+	icon: ReactNode;
+	onSelect: () => void;
+	selected: boolean;
+	title: string;
+	trailing?: ReactNode;
+}) {
+	const rowRef = useRef<HTMLButtonElement | null>(null);
+
+	useEffect(() => {
+		if (selected) {
+			rowRef.current?.scrollIntoView?.({ block: "nearest" });
+		}
+	}, [selected]);
+
+	return (
+		<button
+			aria-selected={selected}
+			className={cn(
+				"grid min-h-10 w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-[var(--radius-md)] px-2.5 py-1.5 text-left transition-[background-color,color] duration-[var(--duration-fast)] ease-[var(--ease-standard)]",
+				selected
+					? "bg-[color:var(--surface-2)] text-[color:var(--text-primary)]"
+					: "text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)]",
+			)}
+			data-selected={selected ? "true" : undefined}
+			onMouseDown={(event) => {
+				event.preventDefault();
+				onSelect();
+			}}
+			ref={rowRef}
+			role="option"
+			type="button"
+		>
+			<span className="grid size-5 shrink-0 place-items-center text-[color:var(--text-tertiary)]">{icon}</span>
+			<span className="min-w-0">
+				<span className="block truncate text-[13px] font-medium leading-5">{title}</span>
+				{description ? (
+					<span className="block truncate text-[12px] leading-5 text-[color:var(--text-tertiary)]">
+						{description}
+					</span>
+				) : null}
+			</span>
+			{trailing ? <span className="shrink-0 text-[12px] text-[color:var(--text-tertiary)]">{trailing}</span> : null}
+		</button>
 	);
 }
 
@@ -2470,13 +2616,19 @@ function AssistantEmptyState({
 
 function AssistantComposerInput({
 	activeSessionId,
+	activeSuggestionCount,
 	attachmentErrors,
 	capabilityCatalog,
 	disabled,
 	draft,
+	hasSuggestionPanel,
 	inputRef,
+	onCloseSuggestionPanel,
 	onCompact,
+	onConfirmSuggestion,
+	onNavigateSuggestion,
 	onRequestCapabilities,
+	onSelectionChange,
 	onSubmitPrompt,
 	selectedCapabilityInvocations,
 	selectedPromptAttachments,
@@ -2487,13 +2639,19 @@ function AssistantComposerInput({
 	setSelectedPromptAttachments,
 }: {
 	activeSessionId?: string;
+	activeSuggestionCount: number;
 	attachmentErrors: DesktopPromptAttachmentError[];
 	capabilityCatalog?: DesktopCapabilityCatalog;
 	disabled: boolean;
 	draft: string;
+	hasSuggestionPanel: boolean;
 	inputRef: Ref<HTMLTextAreaElement>;
+	onCloseSuggestionPanel: () => void;
 	onCompact?: (customInstructions?: string) => Promise<void>;
+	onConfirmSuggestion: () => void;
+	onNavigateSuggestion: (direction: "down" | "up") => void;
 	onRequestCapabilities?: () => Promise<void> | void;
+	onSelectionChange: (selectionStart: number | undefined) => void;
 	onSubmitPrompt: (request: DesktopPromptSubmission) => Promise<void>;
 	selectedCapabilityInvocations: DesktopPromptCapabilityInvocation[];
 	selectedPromptAttachments: DesktopPreparedPromptAttachment[];
@@ -2503,18 +2661,11 @@ function AssistantComposerInput({
 	setSelectedCapabilityInvocations: (invocations: DesktopPromptCapabilityInvocation[]) => void;
 	setSelectedPromptAttachments: (attachments: DesktopPreparedPromptAttachment[]) => void;
 }) {
-	const resolvedCapabilityCatalog = capabilityCatalog ?? emptyCapabilityCatalog();
 	const [hasInputOverflow, setHasInputOverflow] = useState(false);
 	const isComposingRef = useRef(false);
 	const hasRequestedCapabilitiesRef = useRef(false);
 	const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 	const isDisabled = disabled;
-	const [selectedSlashIndex, setSelectedSlashIndex] = useState(0);
-	const slashCommands = useMemo(
-		() => resolveSlashCommandSuggestions(draft, resolvedCapabilityCatalog.slashCommands),
-		[draft, resolvedCapabilityCatalog.slashCommands],
-	);
-	const showSlashCommands = slashCommands.length > 0 && draft.startsWith("/") && !draft.includes("\n") && !isDisabled;
 
 	const resizeTextarea = useCallback((currentText: string) => {
 		const textarea = textareaRef.current;
@@ -2558,6 +2709,7 @@ function AssistantComposerInput({
 	function handleChange(event: ChangeEvent<HTMLTextAreaElement>): void {
 		const nextText = event.currentTarget.value;
 		setDraft(nextText);
+		onSelectionChange(event.currentTarget.selectionStart);
 
 		if (isCompositionInputEvent(event.nativeEvent)) {
 			setIsComposing(true);
@@ -2566,7 +2718,6 @@ function AssistantComposerInput({
 
 		isComposingRef.current = false;
 		setIsComposing(false);
-		setSelectedSlashIndex(0);
 	}
 
 	function handleCompositionStart(): void {
@@ -2579,21 +2730,7 @@ function AssistantComposerInput({
 		isComposingRef.current = false;
 		setIsComposing(false);
 		setDraft(nextText);
-	}
-
-	function selectSlashCommand(command: DesktopSlashCommandSummary): void {
-		const invocation = createCapabilityInvocationFromSlashCommand(command);
-		if (invocation) {
-			setSelectedCapabilityInvocations(upsertCapabilityInvocation(selectedCapabilityInvocations, invocation));
-			setDraft("");
-			setSelectedSlashIndex(0);
-			textareaRef.current?.focus();
-			return;
-		}
-
-		const nextText = `/${command.name} `;
-		setDraft(nextText);
-		textareaRef.current?.focus();
+		onSelectionChange(event.currentTarget.selectionStart);
 	}
 
 	async function prepareAndAppendAttachments(candidates: DesktopPromptAttachmentCandidate[]): Promise<void> {
@@ -2659,22 +2796,27 @@ function AssistantComposerInput({
 			return;
 		}
 
-		if (event.key !== "Enter" || event.shiftKey) {
-			if (showSlashCommands && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
-				event.preventDefault();
-				setSelectedSlashIndex((current) =>
-					event.key === "ArrowDown"
-						? (current + 1) % slashCommands.length
-						: (current - 1 + slashCommands.length) % slashCommands.length,
-				);
+		if (hasSuggestionPanel && event.key === "Escape") {
+			event.preventDefault();
+			onCloseSuggestionPanel();
+			return;
+		}
+
+		if (hasSuggestionPanel && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+			event.preventDefault();
+			if (activeSuggestionCount > 0) {
+				onNavigateSuggestion(event.key === "ArrowDown" ? "down" : "up");
 			}
 			return;
 		}
 
+		if (event.key !== "Enter" || event.shiftKey) {
+			return;
+		}
+
 		event.preventDefault();
-		if (showSlashCommands) {
-			const selectedCommand = slashCommands[selectedSlashIndex] ?? slashCommands[0];
-			selectSlashCommand(selectedCommand);
+		if (hasSuggestionPanel) {
+			onConfirmSuggestion();
 			return;
 		}
 		const nextText = event.currentTarget.value;
@@ -2754,23 +2896,17 @@ function AssistantComposerInput({
 				onChange={handleChange}
 				onCompositionEnd={handleCompositionEnd}
 				onCompositionStart={handleCompositionStart}
+				onClick={(event) => onSelectionChange(event.currentTarget.selectionStart)}
 				onDrop={handleDrop}
 				onKeyDown={handleKeyDown}
+				onKeyUp={(event) => onSelectionChange(event.currentTarget.selectionStart)}
 				onPaste={handlePaste}
+				onSelect={(event) => onSelectionChange(event.currentTarget.selectionStart)}
 				placeholder="Message Skylark"
 				ref={setComposedRef}
 				rows={3}
 				value={draft}
 			/>
-			<AnimatePresence>
-				{showSlashCommands ? (
-					<SlashCommandPalette
-						commands={slashCommands}
-						onSelect={selectSlashCommand}
-						selectedIndex={selectedSlashIndex}
-					/>
-				) : null}
-			</AnimatePresence>
 			<Button
 				aria-label="Attach files"
 				className="absolute right-0 top-0"
@@ -2787,6 +2923,7 @@ function AssistantComposerInput({
 }
 
 function AssistantComposer({
+	activeProjectId,
 	activeSessionId,
 	attachmentErrors,
 	availableTools,
@@ -2801,6 +2938,7 @@ function AssistantComposer({
 	onAbort,
 	oauthProviders,
 	onOpenSettings,
+	onOpenWorkspacePreviewFile,
 	onRequestCapabilities,
 	onSetSessionMode,
 	onSubmitPrompt,
@@ -2815,7 +2953,40 @@ function AssistantComposer({
 	thinkingLevel,
 }: AssistantComposerProps) {
 	const [composerDraft, setComposerDraft] = useState("");
+	const [composerSelectionStart, setComposerSelectionStart] = useState(0);
 	const [isComposerComposing, setIsComposerComposing] = useState(false);
+	const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(0);
+	const [suggestionsSuppressed, setSuggestionsSuppressed] = useState(false);
+	const [workspaceFiles, setWorkspaceFiles] = useState<DesktopWorkspaceFileEntry[]>([]);
+	const [workspaceFilesStatus, setWorkspaceFilesStatus] = useState<"idle" | "loading" | "loaded" | "error">("idle");
+	const [workspaceFilesError, setWorkspaceFilesError] = useState<string | undefined>();
+	const workspaceFileScopeKey = `${activeProjectId ?? ""}\u0000${activeSessionId ?? ""}`;
+	const resolvedCapabilityCatalog = capabilityCatalog ?? emptyCapabilityCatalog();
+	const slashCommands = useMemo(
+		() => resolveSlashCommandSuggestions(composerDraft, resolvedCapabilityCatalog.slashCommands),
+		[composerDraft, resolvedCapabilityCatalog.slashCommands],
+	);
+	const slashSections = useMemo(() => groupSlashCommandSuggestions(slashCommands), [slashCommands]);
+	const flattenedSlashCommands = useMemo(() => slashSections.flatMap((section) => section.commands), [slashSections]);
+	const atReferenceToken = useMemo(
+		() => resolveAtReferenceToken(composerDraft, composerSelectionStart),
+		[composerDraft, composerSelectionStart],
+	);
+	const showSlashSuggestions =
+		!disabled && !suggestionsSuppressed && slashCommands.length > 0 && composerDraft.startsWith("/");
+	const showFileSuggestions =
+		!disabled && !suggestionsSuppressed && !showSlashSuggestions && Boolean(atReferenceToken);
+	const fileSuggestions = useMemo(
+		() => filterWorkspaceFileSuggestions(workspaceFiles, atReferenceToken?.query ?? ""),
+		[atReferenceToken?.query, workspaceFiles],
+	);
+	const activeSuggestionKind = showSlashSuggestions ? "slash" : showFileSuggestions ? "file" : undefined;
+	const activeSuggestionCount =
+		activeSuggestionKind === "slash"
+			? flattenedSlashCommands.length
+			: activeSuggestionKind === "file"
+				? fileSuggestions.length
+				: 0;
 	const contextLabel =
 		contextWindowUsage?.totalTokens && contextWindowUsage.totalTokens > 0
 			? `${Math.round((contextWindowUsage.usedTokens / contextWindowUsage.totalTokens) * 100)}% context`
@@ -2823,6 +2994,100 @@ function AssistantComposer({
 				? `${contextWindowUsage.usedTokens.toLocaleString()} tokens`
 				: undefined;
 	const consoleState = disabled ? "disabled" : isStreaming ? "running" : "idle";
+	const handleComposerDraftChange = useCallback((nextDraft: string) => {
+		setComposerDraft(nextDraft);
+		setSelectedSuggestionIndex(0);
+		setSuggestionsSuppressed(false);
+	}, []);
+	const handleComposerSelectionChange = useCallback(
+		(selectionStart: number | undefined) => {
+			setComposerSelectionStart(selectionStart ?? composerDraft.length);
+		},
+		[composerDraft.length],
+	);
+	const closeSuggestionPanel = useCallback(() => {
+		setSuggestionsSuppressed(true);
+	}, []);
+	const focusComposerAt = useCallback(
+		(cursor: number) => {
+			requestAnimationFrame(() => {
+				const textarea = getRefTextareaElement(inputRef);
+				textarea?.focus();
+				textarea?.setSelectionRange(cursor, cursor);
+			});
+		},
+		[inputRef],
+	);
+	const selectSlashCommand = useCallback(
+		(command: DesktopSlashCommandSummary) => {
+			const invocation = createCapabilityInvocationFromSlashCommand(command);
+			setSuggestionsSuppressed(true);
+			if (invocation) {
+				setSelectedCapabilityInvocations(upsertCapabilityInvocation(selectedCapabilityInvocations, invocation));
+				setComposerDraft("");
+				setComposerSelectionStart(0);
+				getRefTextareaElement(inputRef)?.focus();
+				return;
+			}
+
+			const nextText = `/${command.name} `;
+			setComposerDraft(nextText);
+			setComposerSelectionStart(nextText.length);
+			focusComposerAt(nextText.length);
+		},
+		[focusComposerAt, inputRef, selectedCapabilityInvocations, setSelectedCapabilityInvocations],
+	);
+	const insertWorkspaceFileReference = useCallback(
+		(file: DesktopWorkspaceFileEntry) => {
+			if (!atReferenceToken) {
+				return;
+			}
+			const reference = formatWorkspaceFileReference(file.path);
+			const nextText =
+				composerDraft.slice(0, atReferenceToken.start) + reference + composerDraft.slice(atReferenceToken.end);
+			const nextCursor = atReferenceToken.start + reference.length;
+			setSuggestionsSuppressed(true);
+			setComposerDraft(nextText);
+			setComposerSelectionStart(nextCursor);
+			focusComposerAt(nextCursor);
+		},
+		[atReferenceToken, composerDraft, focusComposerAt],
+	);
+	const confirmActiveSuggestion = useCallback(() => {
+		if (activeSuggestionKind === "slash") {
+			const command = flattenedSlashCommands[selectedSuggestionIndex] ?? flattenedSlashCommands[0];
+			if (command) {
+				selectSlashCommand(command);
+			}
+			return;
+		}
+		if (activeSuggestionKind === "file") {
+			const file = fileSuggestions[selectedSuggestionIndex] ?? fileSuggestions[0];
+			if (file) {
+				insertWorkspaceFileReference(file);
+			}
+		}
+	}, [
+		activeSuggestionKind,
+		fileSuggestions,
+		flattenedSlashCommands,
+		insertWorkspaceFileReference,
+		selectSlashCommand,
+		selectedSuggestionIndex,
+	]);
+	const navigateActiveSuggestion = useCallback(
+		(direction: "down" | "up") => {
+			if (activeSuggestionCount <= 0) {
+				return;
+			}
+			setSelectedSuggestionIndex((current) =>
+				direction === "down"
+					? (current + 1) % activeSuggestionCount
+					: (current - 1 + activeSuggestionCount) % activeSuggestionCount,
+			);
+		},
+		[activeSuggestionCount],
+	);
 	const handleConsoleMouseDown = useCallback(
 		(event: MouseEvent<HTMLFormElement>) => {
 			if (disabled) {
@@ -2843,10 +3108,133 @@ function AssistantComposer({
 		[disabled],
 	);
 
+	useEffect(() => {
+		if (workspaceFileScopeKey.length === 0) {
+			setWorkspaceFilesError(undefined);
+		}
+		setWorkspaceFiles([]);
+		setWorkspaceFilesStatus("idle");
+		setWorkspaceFilesError(undefined);
+	}, [workspaceFileScopeKey]);
+
+	useEffect(() => {
+		if (!showFileSuggestions || workspaceFilesStatus !== "idle") {
+			return;
+		}
+		const desktopBridge = (window as Partial<Window>).desktopAgent as Partial<DesktopAgentBridge> | undefined;
+		if (typeof desktopBridge?.listWorkspaceFiles !== "function") {
+			setWorkspaceFilesStatus("error");
+			setWorkspaceFilesError("Restart Skylark to enable workspace file listing.");
+			return;
+		}
+		if (!activeProjectId && !activeSessionId) {
+			setWorkspaceFilesStatus("error");
+			setWorkspaceFilesError("Workspace is unavailable.");
+			return;
+		}
+		let isCanceled = false;
+		void desktopBridge
+			.listWorkspaceFiles({
+				...(activeProjectId ? { projectId: activeProjectId } : {}),
+				...(activeSessionId ? { sessionId: activeSessionId } : {}),
+				limit: 1000,
+			})
+			.then((result) => {
+				if (isCanceled) {
+					return;
+				}
+				setWorkspaceFiles(result.files);
+				setWorkspaceFilesStatus(result.errorMessage ? "error" : "loaded");
+				setWorkspaceFilesError(result.errorMessage);
+			})
+			.catch((error: unknown) => {
+				if (isCanceled) {
+					return;
+				}
+				setWorkspaceFilesStatus("error");
+				setWorkspaceFilesError(error instanceof Error ? error.message : String(error));
+			});
+		return () => {
+			isCanceled = true;
+		};
+	}, [activeProjectId, activeSessionId, showFileSuggestions, workspaceFilesStatus]);
+
+	useEffect(() => {
+		if (activeSuggestionCount === 0) {
+			setSelectedSuggestionIndex(0);
+			return;
+		}
+		setSelectedSuggestionIndex((current) => Math.min(current, activeSuggestionCount - 1));
+	}, [activeSuggestionCount]);
+
+	function renderSlashSuggestionRows(): ReactNode {
+		let rowIndex = 0;
+		return slashSections.map((section) => (
+			<ComposerSuggestionSection key={section.key} title={section.title}>
+				{section.commands.map((command) => {
+					const currentIndex = rowIndex;
+					rowIndex += 1;
+					return (
+						<ComposerSuggestionRow
+							description={command.description ?? command.source}
+							icon={getSlashCommandIcon(command)}
+							key={`${command.source}:${command.name}`}
+							onSelect={() => selectSlashCommand(command)}
+							selected={currentIndex === selectedSuggestionIndex}
+							title={`/${command.name}`}
+							trailing={command.source}
+						/>
+					);
+				})}
+			</ComposerSuggestionSection>
+		));
+	}
+
+	function renderFileSuggestionRows(): ReactNode {
+		if (workspaceFilesStatus === "idle" || workspaceFilesStatus === "loading") {
+			return (
+				<ComposerSuggestionSection title="Files">
+					<div className="flex items-center gap-2 px-2.5 py-2 text-[12px] leading-5 text-[color:var(--text-tertiary)]">
+						<Spinner className="size-3.5" label="Loading files" />
+						<span>Loading files...</span>
+					</div>
+				</ComposerSuggestionSection>
+			);
+		}
+		if (fileSuggestions.length === 0) {
+			return (
+				<ComposerSuggestionSection title="Files">
+					<div className="px-2.5 py-2 text-[12px] leading-5 text-[color:var(--text-tertiary)]">
+						{workspaceFilesError ?? "No files found."}
+					</div>
+				</ComposerSuggestionSection>
+			);
+		}
+		return (
+			<ComposerSuggestionSection title="Files">
+				{fileSuggestions.map((file, index) => (
+					<ComposerSuggestionRow
+						description={file.path}
+						icon={getWorkspaceFileIcon(file)}
+						key={file.path}
+						onSelect={() => {
+							setSelectedSuggestionIndex(index);
+							onOpenWorkspacePreviewFile?.(file.path);
+							getRefTextareaElement(inputRef)?.focus();
+						}}
+						selected={index === selectedSuggestionIndex}
+						title={file.name}
+						trailing={file.type}
+					/>
+				))}
+			</ComposerSuggestionSection>
+		);
+	}
+
 	return (
 		<form
 			className={cn(
-				"grid max-h-[min(540px,66vh)] gap-3 overflow-visible rounded-[var(--radius-xl)] border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] p-3 shadow-[var(--shadow-middle)] backdrop-blur",
+				"relative grid max-h-[min(540px,66vh)] gap-3 overflow-visible rounded-[var(--radius-xl)] border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] p-3 shadow-[var(--shadow-middle)] backdrop-blur",
 				"transition-[border-color,box-shadow,opacity] duration-[var(--duration-normal)] ease-[var(--ease-standard)]",
 				isStreaming &&
 					"border-[color:color-mix(in_oklch,var(--info)_22%,var(--border-subtle))] ring-1 ring-[color:color-mix(in_oklch,var(--info)_12%,transparent)]",
@@ -2857,24 +3245,37 @@ function AssistantComposer({
 			onMouseDown={handleConsoleMouseDown}
 			onSubmit={(event) => event.preventDefault()}
 		>
+			<AnimatePresence>
+				{activeSuggestionKind ? (
+					<ComposerSuggestionPanel label="Composer suggestions">
+						{activeSuggestionKind === "slash" ? renderSlashSuggestionRows() : renderFileSuggestionRows()}
+					</ComposerSuggestionPanel>
+				) : null}
+			</AnimatePresence>
 			<div
-				className="flex min-h-24 items-start gap-2 overflow-visible rounded-[var(--radius-lg)] border border-[color:var(--border-subtle)] bg-[color:var(--background)] px-3 py-2 transition-[border-color,box-shadow,background-color] duration-[var(--duration-normal)] ease-[var(--ease-standard)] focus-within:border-[color:var(--ring)] focus-within:shadow-[var(--shadow-panel-focused)]"
+				className="flex min-h-24 items-start gap-2 overflow-visible rounded-[var(--radius-lg)] border border-[color:var(--border-subtle)] bg-[color:var(--background)] px-3 py-2 transition-[border-color,box-shadow,background-color] duration-[var(--duration-normal)] ease-[var(--ease-standard)] focus-within:border-[color:var(--border-subtle)] focus-within:shadow-[var(--control-focus-shadow)]"
 				data-slot="agent-console-input-surface"
 			>
 				<AssistantComposerInput
 					activeSessionId={activeSessionId}
+					activeSuggestionCount={activeSuggestionCount}
 					attachmentErrors={attachmentErrors}
 					capabilityCatalog={capabilityCatalog}
 					disabled={disabled}
 					draft={composerDraft}
+					hasSuggestionPanel={Boolean(activeSuggestionKind)}
 					inputRef={inputRef}
+					onCloseSuggestionPanel={closeSuggestionPanel}
 					onCompact={onCompact}
+					onConfirmSuggestion={confirmActiveSuggestion}
+					onNavigateSuggestion={navigateActiveSuggestion}
 					onRequestCapabilities={onRequestCapabilities}
+					onSelectionChange={handleComposerSelectionChange}
 					onSubmitPrompt={onSubmitPrompt}
 					selectedCapabilityInvocations={selectedCapabilityInvocations}
 					selectedPromptAttachments={selectedPromptAttachments}
 					setAttachmentErrors={setAttachmentErrors}
-					setDraft={setComposerDraft}
+					setDraft={handleComposerDraftChange}
 					setIsComposing={setIsComposerComposing}
 					setSelectedCapabilityInvocations={setSelectedCapabilityInvocations}
 					setSelectedPromptAttachments={setSelectedPromptAttachments}
@@ -3023,6 +3424,7 @@ function AssistantCancelRunButton({ onAbort }: { onAbort: () => Promise<void> })
 }
 
 export function ChatWorkbench({
+	activeProjectId,
 	capabilityCatalog,
 	composerFocusRequest,
 	isWorkspacePanelOpen = true,
@@ -3395,6 +3797,7 @@ export function ChatWorkbench({
 					>
 						<div className="pointer-events-auto w-full max-w-[880px]">
 							<AssistantComposer
+								activeProjectId={activeProjectId}
 								activeSessionId={activeAgentSessionId}
 								attachmentErrors={attachmentErrors}
 								availableTools={availableTools}
@@ -3409,6 +3812,7 @@ export function ChatWorkbench({
 								onCompact={onCompact}
 								oauthProviders={oauthProviders}
 								onOpenSettings={onOpenSettings}
+								onOpenWorkspacePreviewFile={onOpenWorkspacePreviewFile}
 								onRequestCapabilities={onRequestCapabilities}
 								onSetSessionMode={onSetSessionMode}
 								onSubmitPrompt={onSubmitPrompt}

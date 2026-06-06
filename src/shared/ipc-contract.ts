@@ -68,6 +68,8 @@ import type {
 	DesktopTerminalDisposeRequest,
 	DesktopTerminalResizeRequest,
 	DesktopTerminalWriteRequest,
+	DesktopWorkspaceFileListRequest,
+	DesktopWorkspaceFileListResult,
 	DesktopWorkspaceOverview,
 	DesktopWorkspacePreviewFileRequest,
 	DesktopWorkspaceRuntimeCaptureRequest,
@@ -110,6 +112,7 @@ export const IPC_CHANNELS = {
 	getReviewSnapshot: "desktop-agent:get-review-snapshot",
 	openPreviewFiles: "desktop-agent:open-preview-files",
 	openWorkspacePreviewFile: "desktop-agent:open-workspace-preview-file",
+	listWorkspaceFiles: "desktop-agent:list-workspace-files",
 	refreshPreviewFile: "desktop-agent:refresh-preview-file",
 	openStream: "desktop-agent:open-stream",
 	getSettings: "desktop-agent:get-settings",
@@ -274,6 +277,7 @@ export interface DesktopAgentBridge {
 	getReviewSnapshot(request: DesktopReviewSnapshotRequest): Promise<DesktopReviewSnapshot>;
 	openPreviewFiles(request: DesktopReviewSnapshotRequest): Promise<DesktopPreviewFile[]>;
 	openWorkspacePreviewFile(request: DesktopWorkspacePreviewFileRequest): Promise<DesktopPreviewFile>;
+	listWorkspaceFiles(request: DesktopWorkspaceFileListRequest): Promise<DesktopWorkspaceFileListResult>;
 	refreshPreviewFile(request: DesktopPreviewFileRequest): Promise<DesktopPreviewFile>;
 	subscribeToAgentEvents(listener: (event: SerializedAgentEvent) => void): () => void;
 	subscribeToTerminalEvents(listener: (event: SerializedTerminalEvent) => void): () => void;

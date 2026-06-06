@@ -476,6 +476,7 @@ function installDesktopAgentBridge(overrides: Partial<DesktopAgentBridge> = {}) 
 		subscribeToTerminalEvents: vi.fn(() => () => undefined),
 		subscribeToWorkspaceRuntimeEvents: vi.fn(() => () => undefined),
 		...overrides,
+		listWorkspaceFiles: overrides.listWorkspaceFiles ?? vi.fn(async () => ({ files: [], truncated: false })),
 		testProviderKey:
 			overrides.testProviderKey ??
 			vi.fn(async (provider: string) => ({
@@ -2568,7 +2569,9 @@ describe("App profile controls", () => {
 		await waitFor(() => expect(listCapabilities).toHaveBeenCalledTimes(1));
 		expect((input as HTMLTextAreaElement).value).toBe("/");
 
-		expect(await screen.findByText("Slash commands")).toBeTruthy();
+		expect(await screen.findByRole("listbox", { name: "Composer suggestions" })).toBeTruthy();
+		expect(screen.getByText("Skills")).toBeTruthy();
+		expect(screen.getByText("Prompt templates")).toBeTruthy();
 		expect(screen.getByText("/desktop-prompt")).toBeTruthy();
 		expect(screen.getByText("/skill:review")).toBeTruthy();
 	});

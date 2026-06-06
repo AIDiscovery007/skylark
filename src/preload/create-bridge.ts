@@ -69,6 +69,8 @@ import type {
 	DesktopTerminalDisposeRequest,
 	DesktopTerminalResizeRequest,
 	DesktopTerminalWriteRequest,
+	DesktopWorkspaceFileListRequest,
+	DesktopWorkspaceFileListResult,
 	DesktopWorkspaceOverview,
 	DesktopWorkspacePreviewFileRequest,
 	DesktopWorkspaceRuntimeCaptureRequest,
@@ -580,6 +582,9 @@ export function createDesktopAgentBridge(
 		},
 		async openWorkspacePreviewFile(request: DesktopWorkspacePreviewFileRequest): Promise<DesktopPreviewFile> {
 			return (await ipcRenderer.invoke(IPC_CHANNELS.openWorkspacePreviewFile, request)) as DesktopPreviewFile;
+		},
+		async listWorkspaceFiles(request: DesktopWorkspaceFileListRequest): Promise<DesktopWorkspaceFileListResult> {
+			return (await ipcRenderer.invoke(IPC_CHANNELS.listWorkspaceFiles, request)) as DesktopWorkspaceFileListResult;
 		},
 		async refreshPreviewFile(request: DesktopPreviewFileRequest): Promise<DesktopPreviewFile> {
 			return (await ipcRenderer.invoke(IPC_CHANNELS.refreshPreviewFile, request)) as DesktopPreviewFile;

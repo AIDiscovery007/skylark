@@ -88,6 +88,7 @@ describe("createDesktopAgentBridge", () => {
 			"listProjects",
 			"listProviderKeys",
 			"listSessions",
+			"listWorkspaceFiles",
 			"listWorkspaceRuntimes",
 			"logoutOAuthProvider",
 			"newSession",
@@ -769,6 +770,7 @@ describe("createDesktopAgentBridge", () => {
 			attachmentIds: ["attachment-1"],
 		});
 		await bridge.testProviderKey("anthropic");
+		await bridge.listWorkspaceFiles({ projectId: "project-1", limit: 200 });
 
 		expect(ipcRenderer.invoke).toHaveBeenNthCalledWith(1, IPC_CHANNELS.getSnapshot, "session-1");
 		expect(ipcRenderer.invoke).toHaveBeenNthCalledWith(2, IPC_CHANNELS.getRuntimeCatalog);
@@ -946,5 +948,9 @@ describe("createDesktopAgentBridge", () => {
 			attachmentIds: ["attachment-1"],
 		});
 		expect(ipcRenderer.invoke).toHaveBeenNthCalledWith(67, IPC_CHANNELS.testProviderKey, "anthropic");
+		expect(ipcRenderer.invoke).toHaveBeenNthCalledWith(68, IPC_CHANNELS.listWorkspaceFiles, {
+			projectId: "project-1",
+			limit: 200,
+		});
 	});
 });

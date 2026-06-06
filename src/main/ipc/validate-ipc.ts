@@ -56,6 +56,7 @@ import type {
 	DesktopThemePalette,
 	DesktopWindowKind,
 	DesktopWindowState,
+	DesktopWorkspaceFileListRequest,
 	DesktopWorkspacePreviewFileRequest,
 	DesktopWorkspaceRuntimeCaptureRequest,
 	DesktopWorkspaceRuntimeCreateDebugRequest,
@@ -76,6 +77,7 @@ const MAX_RESOURCE_BODY_LENGTH = 512_000;
 const MAX_CAPABILITY_INVOCATIONS = 24;
 const MAX_PROMPT_ATTACHMENTS = 10;
 const MAX_ATTACHMENT_SIZE = 128 * 1024 * 1024;
+const MAX_WORKSPACE_FILE_LIST_LIMIT = 5000;
 const MAX_INLINE_IMAGE_DATA_LENGTH = Math.ceil(MAX_ATTACHMENT_SIZE / 3) * 4;
 const MAX_TERMINAL_WRITE_LENGTH = 1_048_576;
 const MAX_CWD_LENGTH = 4096;
@@ -1212,6 +1214,25 @@ export function validateWorkspacePreviewFileRequest(value: unknown): DesktopWork
 		path: validateNonEmptyString(value.path, "workspace preview file path", MAX_CWD_LENGTH),
 		projectId,
 		sessionId,
+	};
+}
+
+export function validateWorkspaceFileListRequest(value: unknown): DesktopWorkspaceFileListRequest {
+	if (!isRecord(value)) {
+		reject("workspace file list request", "expected an object");
+	}
+	const projectId = validateOptionalIdentifier(value.projectId, "workspace file list project id");
+	const sessionId = validateOptionalIdentifier(value.sessionId, "workspace file list session id");
+	if (!projectId && !sessionId) {
+		reject("workspace file list request", "expected a project id or session id");
+	}
+	return {
+		projectId,
+		sessionId,
+		limit:
+			value.limit === undefined
+				? undefined
+				: validatePositiveInteger(value.limit, "workspace file list limit", MAX_WORKSPACE_FILE_LIST_LIMIT),
 	};
 }
 

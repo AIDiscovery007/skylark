@@ -669,6 +669,27 @@ export interface DesktopWorkspacePreviewFileRequest extends DesktopReviewSnapsho
 	path: string;
 }
 
+export type DesktopWorkspaceFileType = "code" | "docs" | "images" | "data" | "other";
+
+export interface DesktopWorkspaceFileEntry {
+	path: string;
+	name: string;
+	type: DesktopWorkspaceFileType;
+	size: number;
+	updatedAt: string;
+}
+
+export interface DesktopWorkspaceFileListRequest extends DesktopReviewSnapshotRequest {
+	limit?: number;
+}
+
+export interface DesktopWorkspaceFileListResult {
+	rootPath?: string;
+	files: DesktopWorkspaceFileEntry[];
+	truncated: boolean;
+	errorMessage?: string;
+}
+
 export interface DesktopProjectSummary {
 	id: string;
 	name: string;

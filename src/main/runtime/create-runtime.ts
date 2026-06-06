@@ -740,6 +740,25 @@ class LocalDesktopRuntime implements DesktopAgentRuntime {
 		return this.session.state;
 	}
 
+	async applySessionProfile(update: {
+		model: Model<any>;
+		thinkingLevel: AgentState["thinkingLevel"];
+		apiKey?: string;
+	}): Promise<void> {
+		if (update.apiKey) {
+			this.services?.authStorage.setRuntimeApiKey(update.model.provider, update.apiKey);
+		}
+
+		const currentModel = this.session.state.model;
+		if (!isSameDesktopModel(currentModel, update.model)) {
+			this.session.agent.state.model = update.model;
+			this.session.sessionManager.appendModelChange(update.model.provider, update.model.id);
+		}
+		this.session.setThinkingLevel(update.thinkingLevel);
+		this.runtimePolicy = undefined;
+		this.refreshCustomTools();
+	}
+
 	prompt(request: DesktopPromptSubmission | string): Promise<void> {
 		const promptRequest = typeof request === "string" ? { text: request } : request;
 		const attachments = promptRequest.attachments ?? [];
@@ -1266,6 +1285,9 @@ export async function createDesktopAgentRuntime(
 		sessionResult.session.setActiveToolsByName(
 			runtimePolicy.resolveInitialActiveToolNames(sessionResult.session.getActiveToolNames()),
 		);
+	}
+	if (options.streamFn) {
+		sessionResult.session.agent.streamFn = options.streamFn;
 	}
 	applyDesktopModeGuidelines(sessionResult.session, agentMode);
 	installDesktopProviderRequestDefaults(sessionResult.session);

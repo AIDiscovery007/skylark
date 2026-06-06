@@ -44,21 +44,21 @@
 	--uix-flat-panel-surface: var(--surface-1);
 	--uix-flat-control-surface: var(--surface-2);
 	--uix-flat-control-hover-surface: var(--surface-3);
-	--uix-flat-focus-ring: color-mix(in oklch, var(--accent) 28%, transparent);
+	--uix-flat-focus-ring: color-mix(in oklch, var(--accent) 20%, transparent);
 	--uix-flat-radius-panel: 0.8125rem;
 	--uix-flat-radius-control: 0.625rem;
 	--uix-flat-field-padding-x: 0.875rem;
 	--uix-flat-field-padding-y: 0.75rem;
-	--uix-flat-shadow-floating: 0 24px 78px -46px color-mix(in oklch, var(--foreground) 56%, transparent);
+	--uix-flat-shadow-floating: 0 16px 42px -34px color-mix(in oklch, var(--foreground) 30%, transparent);
 	--text-primary: var(--foreground);
 	--text-secondary: color-mix(in oklch, var(--foreground) 68%, var(--background));
 	--text-tertiary: color-mix(in oklch, var(--foreground) 48%, var(--background));
 	--detail-label-foreground: color-mix(in oklch, var(--text-secondary) 82%, transparent);
-	--shadow-minimal: 0 1px 2px color-mix(in oklch, var(--foreground) 6%, transparent);
-	--shadow-middle: 0 12px 32px -24px color-mix(in oklch, var(--foreground) 42%, transparent);
-	--shadow-panel-focused: 0 0 0 1px var(--border-subtle), 0 18px 48px -34px
-		color-mix(in oklch, var(--foreground) 44%, transparent);
-	--shadow-modal: 0 24px 80px -36px color-mix(in oklch, var(--foreground) 58%, transparent);
+	--shadow-minimal: 0 1px 2px color-mix(in oklch, var(--foreground) 4%, transparent);
+	--shadow-middle: 0 10px 28px -24px color-mix(in oklch, var(--foreground) 28%, transparent);
+	--shadow-modal: 0 18px 52px -40px color-mix(in oklch, var(--foreground) 36%, transparent);
+	--control-focus-shadow: 0 0 0 2px var(--uix-flat-focus-ring);
+	--shadow-panel-focused: var(--control-focus-shadow);
 	--radius-xs: 0.25rem;
 	--radius-sm: 0.375rem;
 	--radius-md: 0.5rem;
@@ -108,7 +108,7 @@
 	--terminal-ansi-bright-magenta: oklch(0.64 0.13 315);
 	--terminal-ansi-bright-cyan: oklch(0.68 0.12 210);
 	--terminal-ansi-bright-white: var(--foreground);
-	--focus-ring: color-mix(in oklch, var(--accent) 34%, transparent);
+	--focus-ring: color-mix(in oklch, var(--accent) 24%, transparent);
 	--card: var(--surface-1);
 	--card-foreground: var(--text-primary);
 	--popover: var(--surface-1);
@@ -541,7 +541,7 @@
 
 	.uix-flat-field:focus-visible {
 		border-color: transparent;
-		box-shadow: 0 0 0 2px var(--uix-flat-focus-ring);
+		box-shadow: var(--control-focus-shadow);
 	}
 
 	.uix-flat-action {
@@ -605,6 +605,43 @@
 	}
 
 	:where(.native-scrollbar, .runtime-tool-section-scrollport)::-webkit-scrollbar-button {
+		display: none;
+		width: 0;
+		height: 0;
+	}
+
+	.composer-suggestion-scrollbar {
+		scrollbar-color: color-mix(in oklch, var(--foreground) 18%, transparent) transparent;
+		scrollbar-width: thin;
+	}
+
+	.composer-suggestion-scrollbar::-webkit-scrollbar {
+		width: 7px;
+		height: 7px;
+		background: transparent;
+	}
+
+	.composer-suggestion-scrollbar::-webkit-scrollbar-track,
+	.composer-suggestion-scrollbar::-webkit-scrollbar-track-piece,
+	.composer-suggestion-scrollbar::-webkit-scrollbar-corner {
+		background: transparent;
+		border: 0;
+		box-shadow: none;
+	}
+
+	.composer-suggestion-scrollbar::-webkit-scrollbar-thumb {
+		min-height: 2rem;
+		border: 3px solid transparent;
+		border-radius: 999px;
+		background-clip: padding-box;
+		background-color: color-mix(in oklch, var(--foreground) 16%, transparent);
+	}
+
+	.composer-suggestion-scrollbar::-webkit-scrollbar-thumb:hover {
+		background-color: color-mix(in oklch, var(--foreground) 26%, transparent);
+	}
+
+	.composer-suggestion-scrollbar::-webkit-scrollbar-button {
 		display: none;
 		width: 0;
 		height: 0;

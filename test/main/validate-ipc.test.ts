@@ -31,6 +31,7 @@ import {
 	validateTerminalDisposeRequest,
 	validateTerminalResizeRequest,
 	validateTerminalWriteRequest,
+	validateWorkspaceFileListRequest,
 	validateWorkspacePreviewFileRequest,
 	validateWorkspaceRuntimeCaptureRequest,
 	validateWorkspaceRuntimeCreateDebugRequest,
@@ -722,6 +723,24 @@ describe("validate-ipc", () => {
 		expect(() => validateWorkspacePreviewFileRequest({ path: "src/index.html" })).toThrow(TypeError);
 		expect(() => validateWorkspacePreviewFileRequest({ path: "", projectId: "project-1" })).toThrow(TypeError);
 		expect(() => validateWorkspacePreviewFileRequest(null)).toThrow(TypeError);
+	});
+
+	it("validates workspace file list requests", () => {
+		expect(validateWorkspaceFileListRequest({ projectId: "project-1", limit: 200 })).toEqual({
+			projectId: "project-1",
+			sessionId: undefined,
+			limit: 200,
+		});
+		expect(validateWorkspaceFileListRequest({ sessionId: "session-1" })).toEqual({
+			projectId: undefined,
+			sessionId: "session-1",
+			limit: undefined,
+		});
+
+		expect(() => validateWorkspaceFileListRequest({ cwd: "/workspace" })).toThrow(TypeError);
+		expect(() => validateWorkspaceFileListRequest({ projectId: "project-1", limit: 0 })).toThrow(TypeError);
+		expect(() => validateWorkspaceFileListRequest({ sessionId: "", limit: 10 })).toThrow(TypeError);
+		expect(() => validateWorkspaceFileListRequest(null)).toThrow(TypeError);
 	});
 
 	it("validates terminal create, write, and resize requests", () => {

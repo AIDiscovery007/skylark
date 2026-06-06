@@ -3,7 +3,13 @@ import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentState } from "@earendil-works/pi-agent-core";
-import { type FauxProviderRegistration, fauxAssistantMessage, fauxText, type Model } from "@earendil-works/pi-ai";
+import {
+	type FauxProviderRegistration,
+	fauxAssistantMessage,
+	fauxText,
+	getModels,
+	type Model,
+} from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CreateDesktopAgentRuntimeOptions } from "../../src/main/runtime/create-runtime.ts";
 import { createDesktopAgentRuntime } from "../../src/main/runtime/create-runtime.ts";
@@ -199,6 +205,12 @@ class FakeRuntime implements DesktopAgentRuntime {
 	readonly waitForIdle = vi.fn(async () => {
 		return undefined;
 	});
+	readonly applySessionProfile = vi.fn(
+		async (update: Parameters<NonNullable<DesktopAgentRuntime["applySessionProfile"]>>[0]) => {
+			this.mutableState.model = update.model;
+			this.mutableState.thinkingLevel = update.thinkingLevel;
+		},
+	);
 	readonly mutableState = createFakeState();
 
 	constructor(public readonly cwd: string) {}
@@ -1912,6 +1924,42 @@ describe("DesktopRuntimeHost", () => {
 		expect(persistedSession?.model.provider).toBe("kimi-coding");
 		expect(persistedSession?.model.id).toBe("kimi-for-coding");
 		expect(persistedSession?.thinkingLevel).toBe("high");
+	});
+
+	it("passes the selected provider key into the active runtime when updating the session profile", async () => {
+		const sessionStore = new InMemorySessionStore();
+		const settingsStore = new InMemorySettingsStore();
+		const opencodeModel = getModels("opencode")[0];
+		if (!opencodeModel) {
+			throw new Error("Expected OpenCode Zen test model.");
+		}
+		const persistedRuntime = new FakeRuntime("/workspace/project");
+		persistedRuntime.mutableState.model = fakeModel;
+		const sessionHost = new DesktopRuntimeHost(async () => persistedRuntime, {
+			defaultCwd: "/workspace/project",
+			getApiKey: async (provider) => (provider === opencodeModel.provider ? "opencode-key" : undefined),
+			sessionStore,
+			settingsStore,
+		});
+
+		const [session] = await sessionHost.listSessions();
+		await sessionHost.updateSessionProfile({
+			sessionId: session!.id,
+			provider: opencodeModel.provider,
+			modelId: opencodeModel.id,
+		});
+
+		expect(persistedRuntime.applySessionProfile).toHaveBeenCalledWith(
+			expect.objectContaining({
+				apiKey: "opencode-key",
+				model: expect.objectContaining({
+					id: opencodeModel.id,
+					provider: opencodeModel.provider,
+				}),
+				thinkingLevel: "off",
+			}),
+		);
+		expect((await sessionStore.get(session!.id))?.model.provider).toBe(opencodeModel.provider);
 	});
 
 	it("preserves xhigh thinking level for GPT-5.5 profile updates", async () => {

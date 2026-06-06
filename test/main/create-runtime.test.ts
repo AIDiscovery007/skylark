@@ -2,7 +2,12 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Context, FauxProviderRegistration, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
-import { fauxAssistantMessage, fauxToolCall, getModels } from "@earendil-works/pi-ai";
+import {
+	createAssistantMessageEventStream,
+	fauxAssistantMessage,
+	fauxToolCall,
+	getModels,
+} from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	createDesktopAgentRuntime,
@@ -1364,6 +1369,59 @@ describe("createDesktopAgentRuntime", () => {
 		expect(state.model.id).toBe("kimi-for-coding");
 		expect(state.model.api).toBe("anthropic-messages");
 		expect(state.model.baseUrl).toBe("https://api.kimi.com/coding");
+	});
+
+	it("prompts with a profile-updated provider whose key was not seeded at runtime creation", async () => {
+		const initialModel = getModels("openai")[0];
+		const switchedModel = getModels("opencode")[0];
+		if (!initialModel || !switchedModel) {
+			throw new Error("Expected built-in OpenAI and OpenCode Zen models.");
+		}
+		let observedProvider: string | undefined;
+		const runtime = await createDesktopAgentRuntime({
+			cwd: "/workspace/project",
+			getApiKey: async (provider) => (provider === initialModel.provider ? "initial-key" : undefined),
+			model: initialModel,
+			streamFn: (model) => {
+				observedProvider = model.provider;
+				const stream = createAssistantMessageEventStream();
+				queueMicrotask(() => {
+					const message = {
+						...fauxAssistantMessage("switched runtime ok"),
+						api: model.api,
+						provider: model.provider,
+						model: model.id,
+					};
+					stream.push({ type: "done", reason: "stop", message });
+					stream.end(message);
+				});
+				return stream;
+			},
+			tools: [],
+		});
+
+		await runtime.applySessionProfile?.({
+			apiKey: "switched-key",
+			model: switchedModel,
+			thinkingLevel: "off",
+		});
+		await runtime.prompt("Use the switched provider.");
+		await runtime.waitForIdle();
+
+		expect(observedProvider).toBe("opencode");
+		expect(runtime.getState().messages[0]).toEqual(
+			expect.objectContaining({
+				role: "user",
+			}),
+		);
+		expect(runtime.getState().messages[1]).toEqual(
+			expect.objectContaining({
+				role: "assistant",
+				content: [{ type: "text", text: "switched runtime ok" }],
+				provider: "opencode",
+			}),
+		);
+		await runtime.dispose?.();
 	});
 
 	it("falls back from an unauthenticated persisted session model to an authenticated configured model", async () => {

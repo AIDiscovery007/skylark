@@ -10,7 +10,11 @@ import { activityDrawerTransition } from "../../src/renderer/lib/motion.ts";
 import { agentStore } from "../../src/renderer/stores/agent-store.ts";
 import type { DesktopAgentBridge } from "../../src/shared/ipc-contract.ts";
 import type { DesktopAgentSnapshot } from "../../src/shared/serialized-agent-event.ts";
-import type { DesktopEnvironmentEvent, DesktopEnvironmentResource } from "../../src/shared/types.ts";
+import type {
+	DesktopEnvironmentEvent,
+	DesktopEnvironmentResource,
+	DesktopWorkspaceFileEntry,
+} from "../../src/shared/types.ts";
 
 const EMPTY_USAGE = {
 	input: 0,
@@ -305,6 +309,45 @@ function installEnvironmentBridge(resources: DesktopEnvironmentResource[] = envi
 	});
 	return bridge;
 }
+
+function installWorkspaceFileBridge(files: DesktopWorkspaceFileEntry[]) {
+	const bridge = {
+		listWorkspaceFiles: vi.fn(async () => ({
+			rootPath: "/workspace/project",
+			files,
+			truncated: false,
+		})),
+	} satisfies Pick<DesktopAgentBridge, "listWorkspaceFiles">;
+	Object.defineProperty(window, "desktopAgent", {
+		configurable: true,
+		value: bridge,
+	});
+	return bridge;
+}
+
+const workspaceFiles: DesktopWorkspaceFileEntry[] = [
+	{
+		path: "src/App.tsx",
+		name: "App.tsx",
+		type: "code",
+		size: 42,
+		updatedAt: "2026-06-01T10:00:00.000Z",
+	},
+	{
+		path: "docs/my file.md",
+		name: "my file.md",
+		type: "docs",
+		size: 24,
+		updatedAt: "2026-06-01T09:00:00.000Z",
+	},
+	{
+		path: "README.md",
+		name: "README.md",
+		type: "docs",
+		size: 12,
+		updatedAt: "2026-06-01T08:00:00.000Z",
+	},
+];
 
 beforeEach(() => {
 	resetAgentStore();
@@ -1526,7 +1569,7 @@ describe("ChatWorkbench", () => {
 		});
 	});
 
-	it("opens the slash command palette when only slash is typed", async () => {
+	it("opens the shared composer suggestion panel when only slash is typed", async () => {
 		const user = userEvent.setup();
 
 		render(
@@ -1560,7 +1603,12 @@ describe("ChatWorkbench", () => {
 
 		await user.type(screen.getByLabelText("Message Skylark"), "/");
 
-		expect(await screen.findByText("Slash commands")).toBeTruthy();
+		const panel = await screen.findByRole("listbox", { name: "Composer suggestions" });
+
+		expect(panel).toBeTruthy();
+		expect(panel.className).toContain("shadow-[var(--uix-flat-shadow-floating)]");
+		expect(screen.getByText("Skills")).toBeTruthy();
+		expect(screen.getByText("Prompt templates")).toBeTruthy();
 		expect(screen.getByText("/desktop-prompt")).toBeTruthy();
 		expect(screen.getByText("/skill:review")).toBeTruthy();
 	});
@@ -1589,7 +1637,7 @@ describe("ChatWorkbench", () => {
 			);
 
 			await user.type(screen.getByLabelText("Message Skylark"), "/");
-			expect(await screen.findByText("Slash commands")).toBeTruthy();
+			expect(await screen.findByRole("listbox", { name: "Composer suggestions" })).toBeTruthy();
 			scrollIntoView.mockClear();
 
 			await user.keyboard("{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}");
@@ -1600,6 +1648,164 @@ describe("ChatWorkbench", () => {
 		} finally {
 			HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
 		}
+	});
+
+	it("opens the shared composer suggestion panel with workspace files when at is typed", async () => {
+		const user = userEvent.setup();
+		const bridge = installWorkspaceFileBridge(workspaceFiles);
+
+		render(
+			<ChatWorkbench
+				activeProjectId="project-1"
+				onAbort={vi.fn(async () => undefined)}
+				onSubmitPrompt={vi.fn(async () => undefined)}
+				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
+				showThinkingBlocks={false}
+			/>,
+		);
+
+		await user.type(screen.getByLabelText("Message Skylark"), "@");
+
+		expect(await screen.findByRole("listbox", { name: "Composer suggestions" })).toBeTruthy();
+		expect(await screen.findByText("App.tsx")).toBeTruthy();
+		expect(screen.getByText("docs/my file.md")).toBeTruthy();
+		expect(bridge.listWorkspaceFiles).toHaveBeenCalledWith({
+			projectId: "project-1",
+			sessionId: "session-1",
+			limit: 1000,
+		});
+	});
+
+	it("filters workspace file suggestions by the current at token", async () => {
+		const user = userEvent.setup();
+		installWorkspaceFileBridge(workspaceFiles);
+
+		render(
+			<ChatWorkbench
+				activeProjectId="project-1"
+				onAbort={vi.fn(async () => undefined)}
+				onSubmitPrompt={vi.fn(async () => undefined)}
+				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
+				showThinkingBlocks={false}
+			/>,
+		);
+
+		await user.type(screen.getByLabelText("Message Skylark"), "@read");
+
+		expect((await screen.findAllByText("README.md")).length).toBeGreaterThan(0);
+		expect(screen.queryByText("App.tsx")).toBeNull();
+	});
+
+	it("previews a workspace file when its suggestion row is clicked", async () => {
+		const user = userEvent.setup();
+		const onOpenWorkspacePreviewFile = vi.fn();
+		installWorkspaceFileBridge(workspaceFiles);
+
+		render(
+			<ChatWorkbench
+				activeProjectId="project-1"
+				onAbort={vi.fn(async () => undefined)}
+				onOpenWorkspacePreviewFile={onOpenWorkspacePreviewFile}
+				onSubmitPrompt={vi.fn(async () => undefined)}
+				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
+				showThinkingBlocks={false}
+			/>,
+		);
+
+		const input = screen.getByLabelText("Message Skylark") as HTMLTextAreaElement;
+		await user.type(input, "@");
+		await user.click(await screen.findByText("App.tsx"));
+
+		expect(onOpenWorkspacePreviewFile).toHaveBeenCalledWith("src/App.tsx");
+		expect(input.value).toBe("@");
+	});
+
+	it("inserts the selected workspace file reference on Enter", async () => {
+		const user = userEvent.setup();
+		installWorkspaceFileBridge(workspaceFiles);
+
+		render(
+			<ChatWorkbench
+				activeProjectId="project-1"
+				onAbort={vi.fn(async () => undefined)}
+				onSubmitPrompt={vi.fn(async () => undefined)}
+				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
+				showThinkingBlocks={false}
+			/>,
+		);
+
+		const input = screen.getByLabelText("Message Skylark") as HTMLTextAreaElement;
+		await user.type(input, "@app");
+		expect(await screen.findByText("App.tsx")).toBeTruthy();
+		await user.keyboard("{Enter}");
+
+		expect(input.value).toBe("@src/App.tsx");
+		expect(screen.queryByRole("listbox", { name: "Composer suggestions" })).toBeNull();
+	});
+
+	it("quotes inserted workspace file references when the path has spaces", async () => {
+		const user = userEvent.setup();
+		installWorkspaceFileBridge(workspaceFiles);
+
+		render(
+			<ChatWorkbench
+				activeProjectId="project-1"
+				onAbort={vi.fn(async () => undefined)}
+				onSubmitPrompt={vi.fn(async () => undefined)}
+				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
+				showThinkingBlocks={false}
+			/>,
+		);
+
+		const input = screen.getByLabelText("Message Skylark") as HTMLTextAreaElement;
+		await user.type(input, "@my");
+		expect(await screen.findByText("my file.md")).toBeTruthy();
+		await user.keyboard("{Enter}");
+
+		expect(input.value).toBe('@"docs/my file.md"');
+	});
+
+	it("closes the workspace file suggestion panel on Escape without changing text", async () => {
+		const user = userEvent.setup();
+		installWorkspaceFileBridge(workspaceFiles);
+
+		render(
+			<ChatWorkbench
+				activeProjectId="project-1"
+				onAbort={vi.fn(async () => undefined)}
+				onSubmitPrompt={vi.fn(async () => undefined)}
+				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
+				showThinkingBlocks={false}
+			/>,
+		);
+
+		const input = screen.getByLabelText("Message Skylark") as HTMLTextAreaElement;
+		await user.type(input, "@");
+		expect(await screen.findByRole("listbox", { name: "Composer suggestions" })).toBeTruthy();
+		await user.keyboard("{Escape}");
+
+		expect(input.value).toBe("@");
+		expect(screen.queryByRole("listbox", { name: "Composer suggestions" })).toBeNull();
+	});
+
+	it("does not open workspace file suggestions for email-like at characters", async () => {
+		const user = userEvent.setup();
+		const bridge = installWorkspaceFileBridge(workspaceFiles);
+
+		render(
+			<ChatWorkbench
+				activeProjectId="project-1"
+				onAbort={vi.fn(async () => undefined)}
+				onSubmitPrompt={vi.fn(async () => undefined)}
+				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
+				showThinkingBlocks={false}
+			/>,
+		);
+
+		await user.type(screen.getByLabelText("Message Skylark"), "me@example.com package@1.0.0");
+
+		expect(screen.queryByRole("listbox", { name: "Composer suggestions" })).toBeNull();
+		expect(bridge.listWorkspaceFiles).not.toHaveBeenCalled();
 	});
 
 	it("renders sent capability chips without exposing expanded prompt or skill content", () => {
@@ -2529,7 +2735,7 @@ describe("ChatWorkbench", () => {
 		expect(consoleRoot?.className).toContain("overflow-visible");
 		expect(consoleRoot?.className).not.toContain("overflow-hidden");
 		expect(inputSurface).toBeTruthy();
-		expect(inputSurface?.className).toContain("focus-within:shadow-[var(--shadow-panel-focused)]");
+		expect(inputSurface?.className).toContain("focus-within:shadow-[var(--control-focus-shadow)]");
 		expect(inputSurface?.className).toContain("overflow-visible");
 		expect(inputSurface?.className).not.toContain("overflow-hidden");
 		expect(toolbar).toBeTruthy();

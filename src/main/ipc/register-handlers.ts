@@ -40,6 +40,7 @@ import type { DesktopSessionStore } from "../storage/session-store.ts";
 import type { DesktopSettingsStore } from "../storage/settings-store.ts";
 import type { DesktopPtyManager } from "../terminal/pty-manager.ts";
 import type { DesktopWindowManager } from "../window/desktop-window-manager.ts";
+import { listWorkspaceFiles } from "../workspace/workspace-file-list-service.ts";
 import { registerDesktopBridgeGroup } from "./desktop-bridge-registry.ts";
 import { openAgentStream } from "./open-agent-stream.ts";
 import { openApprovalStream } from "./open-approval-stream.ts";
@@ -92,6 +93,7 @@ import {
 	validateTerminalDisposeRequest,
 	validateTerminalResizeRequest,
 	validateTerminalWriteRequest,
+	validateWorkspaceFileListRequest,
 	validateWorkspacePreviewFileRequest,
 } from "./validate-ipc.ts";
 import {
@@ -210,6 +212,7 @@ export function registerDesktopAgentHandlers(
 	ipcMain.removeHandler(IPC_CHANNELS.getReviewSnapshot);
 	ipcMain.removeHandler(IPC_CHANNELS.openPreviewFiles);
 	ipcMain.removeHandler(IPC_CHANNELS.openWorkspacePreviewFile);
+	ipcMain.removeHandler(IPC_CHANNELS.listWorkspaceFiles);
 	ipcMain.removeHandler(IPC_CHANNELS.refreshPreviewFile);
 	ipcMain.removeHandler(IPC_CHANNELS.getSettings);
 	ipcMain.removeHandler(IPC_CHANNELS.setSetting);
@@ -609,6 +612,11 @@ export function registerDesktopAgentHandlers(
 			previewFilePaths.add(file.path);
 		}
 		return file;
+	});
+	ipcMain.handle(IPC_CHANNELS.listWorkspaceFiles, async (_event, request: unknown) => {
+		const listRequest = validateWorkspaceFileListRequest(request);
+		const cwd = await host.resolveReviewWorkspaceCwd(listRequest);
+		return listWorkspaceFiles(cwd, { limit: listRequest.limit });
 	});
 	ipcMain.handle(IPC_CHANNELS.refreshPreviewFile, async (_event, request: unknown) => {
 		const { path } = validatePreviewFileRequest(request);

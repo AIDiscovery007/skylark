@@ -65,6 +65,11 @@ export interface DesktopAgentRuntime {
 	readonly taskProgress?: DesktopTaskProgress;
 	getState(): AgentState;
 	setAgentMode(agentMode: DesktopAgentMode): void;
+	applySessionProfile?(update: {
+		model: Model<any>;
+		thinkingLevel: AgentState["thinkingLevel"];
+		apiKey?: string;
+	}): Promise<void>;
 	prompt(request: DesktopPromptSubmission | string): Promise<void>;
 	compact(customInstructions?: string): Promise<CompactionResult>;
 	abort(): void;
@@ -420,9 +425,9 @@ export class DesktopRuntimeHost {
 	private async resolveSessionProfileModel(
 		currentModel: Model<any>,
 		update: DesktopSessionProfileUpdateRequest,
-	): Promise<Model<any>> {
+	): Promise<{ apiKey?: string; model: Model<any> }> {
 		if (update.provider === undefined && update.modelId === undefined) {
-			return currentModel;
+			return { model: currentModel };
 		}
 
 		const provider = normalizeDesktopProviderIdentifier(update.provider ?? currentModel.provider);
@@ -437,7 +442,7 @@ export class DesktopRuntimeHost {
 			throw new Error(`Provider '${provider}' has no usable API key in desktop settings or environment.`);
 		}
 
-		return hydrateDesktopModelMetadata(model);
+		return { apiKey, model: hydrateDesktopModelMetadata(model) };
 	}
 
 	private sessionBelongsToProject(
@@ -1025,12 +1030,22 @@ export class DesktopRuntimeHost {
 			throw new Error(`Session '${entry.sessionId}' is already running.`);
 		}
 
-		const nextModel = await this.resolveSessionProfileModel(state.model, request);
-		state.model = nextModel;
-		state.thinkingLevel =
+		const nextProfileModel = await this.resolveSessionProfileModel(state.model, request);
+		const nextModel = nextProfileModel.model;
+		const nextThinkingLevel =
 			request.thinkingLevel === undefined
 				? clampDesktopThinkingLevelForModel(state.thinkingLevel, nextModel)
 				: clampDesktopThinkingLevelForModel(request.thinkingLevel, nextModel);
+		if (runtime.applySessionProfile) {
+			await runtime.applySessionProfile({
+				...(nextProfileModel.apiKey ? { apiKey: nextProfileModel.apiKey } : {}),
+				model: nextModel,
+				thinkingLevel: nextThinkingLevel,
+			});
+		} else {
+			state.model = nextModel;
+			state.thinkingLevel = nextThinkingLevel;
+		}
 
 		await this.persistSessionEntry(entry);
 		return this.createSnapshotForEntry(entry, runtime);
@@ -1098,7 +1113,10 @@ export class DesktopRuntimeHost {
 
 	async resolveReviewWorkspaceCwd(request: DesktopReviewSnapshotRequest): Promise<string | undefined> {
 		if (request.projectId) {
-			return (await this.findProject(request.projectId))?.cwd;
+			const projectCwd = (await this.findProject(request.projectId))?.cwd;
+			if (projectCwd) {
+				return projectCwd;
+			}
 		}
 
 		if (request.sessionId) {

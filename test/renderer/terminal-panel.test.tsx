@@ -236,6 +236,7 @@ function installBridge() {
 		openPreviewFiles: vi.fn(async () => []),
 		openExternalUrl: vi.fn(async () => undefined),
 		openSettingsWindow: vi.fn(async () => undefined),
+		listWorkspaceFiles: vi.fn(async () => ({ files: [], truncated: false })),
 		openWorkspacePreviewFile: vi.fn(async () => {
 			throw new Error("unused");
 		}),
