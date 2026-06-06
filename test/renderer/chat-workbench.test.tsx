@@ -2270,6 +2270,74 @@ describe("ChatWorkbench", () => {
 		}
 	});
 
+	it("does not run a pending streaming auto-scroll after the viewport has already moved upward", async () => {
+		vi.useFakeTimers();
+		const frameCallbacks = new Map<number, FrameRequestCallback>();
+		let nextFrameId = 1;
+		const requestAnimationFrame = vi
+			.spyOn(window, "requestAnimationFrame")
+			.mockImplementation((callback: FrameRequestCallback) => {
+				const frameId = nextFrameId;
+				nextFrameId += 1;
+				frameCallbacks.set(frameId, callback);
+				return frameId;
+			});
+		const cancelAnimationFrame = vi.spyOn(window, "cancelAnimationFrame").mockImplementation((frameId: number) => {
+			frameCallbacks.delete(frameId);
+		});
+		try {
+			agentStore.setState({
+				activeSessionId: "session-1",
+				isStreaming: true,
+				messages: [userMessage("Explain the plan", 1)],
+				streamingMessage: assistantMessage([{ type: "text", text: "First chunk" }], 2),
+			});
+
+			const { container } = render(
+				<ChatWorkbench
+					onAbort={vi.fn(async () => undefined)}
+					onSubmitPrompt={vi.fn(async () => undefined)}
+					runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
+					showThinkingBlocks={false}
+				/>,
+			);
+			const viewport = getAssistantViewport(container);
+			const scrollTo = vi.fn();
+			Object.defineProperty(viewport, "scrollTo", {
+				configurable: true,
+				value: scrollTo,
+			});
+			setAssistantViewportMetrics(viewport, { clientHeight: 100, scrollHeight: 1000, scrollTop: 900 });
+			fireEvent.scroll(viewport);
+			frameCallbacks.clear();
+			scrollTo.mockClear();
+
+			await act(async () => {
+				agentStore.setState({
+					streamingMessage: assistantMessage(
+						[{ type: "text", text: "First chunk with a second streamed word" }],
+						3,
+					),
+				});
+			});
+			await act(async () => {
+				vi.advanceTimersByTime(160);
+			});
+			expect(frameCallbacks.size).toBeGreaterThan(0);
+
+			viewport.scrollTop = 850;
+			for (const callback of frameCallbacks.values()) {
+				callback(0);
+			}
+
+			expect(scrollTo).not.toHaveBeenCalled();
+			expect(viewport.scrollTop).toBe(850);
+		} finally {
+			cancelAnimationFrame.mockRestore();
+			requestAnimationFrame.mockRestore();
+		}
+	});
+
 	it("does not force active assistant streaming back to bottom after the user scrolls away", async () => {
 		vi.useFakeTimers();
 		const requestAnimationFrame = vi
@@ -3613,6 +3681,46 @@ describe("ChatWorkbench", () => {
 		expect(screen.queryByText("run-1")).toBeNull();
 		expect(screen.queryByText("reading README.md")).toBeNull();
 		expect(document.querySelector("[data-slot='assistant-tool-call-details']")).toBeNull();
+	});
+
+	it("shows current running tool activity immediately when the tool event arrives before the assistant tool-call part", async () => {
+		vi.useFakeTimers();
+		const startedAt = Date.parse("2026-04-28T00:00:00.000Z");
+		vi.setSystemTime(new Date(startedAt));
+		agentStore.setState({
+			isStreaming: true,
+			messages: [
+				assistantMessage([{ type: "thinking", thinking: "**Thinking**" }], 1, {
+					stopReason: "toolUse",
+				}),
+			],
+			runActivityTiming: {
+				runId: "run-tool-before-part",
+				startedAt,
+			},
+			toolCalls: [
+				{
+					toolCallId: "call-read-before-part",
+					toolName: "read",
+					args: { path: "README.md" },
+					status: "running",
+					startedAt,
+					updatedAt: startedAt,
+					partialResult: { content: [{ type: "text", text: "reading README.md" }] },
+				},
+			],
+		});
+
+		renderChatWorkbench({ showThinkingBlocks: true });
+
+		await act(async () => undefined);
+		const activityTrigger = screen.getByRole("button", { name: /Working Running 0s 1 tool/i });
+		expect(activityTrigger.getAttribute("aria-expanded")).toBe("true");
+		expect(screen.getByText("Read").closest("[data-slot='assistant-tool-call-step']")).not.toBeNull();
+		expect(screen.getByText("README.md").closest("[data-slot='task-item-file']")).not.toBeNull();
+		expect(screen.queryByText("Reasoning")).toBeNull();
+		expect(screen.queryByText("Thinking")).toBeNull();
+		expect(screen.queryByText("reading README.md")).toBeNull();
 	});
 
 	it("keeps active tool activity content available after collapsing and reopening during streaming", async () => {

@@ -525,6 +525,20 @@ function convertAssistantRunToThreadMessage(
 			}
 		}
 	}
+	if (context.isStreaming && lastMessage.stopReason === "toolUse") {
+		for (const activity of context.toolActivityById.values()) {
+			if (
+				activity.status !== "running" ||
+				toolCallIds.has(activity.toolCallId) ||
+				isHiddenThreadToolName(activity.toolName)
+			) {
+				continue;
+			}
+			toolCallIds.add(activity.toolCallId);
+			toolCallRecords.push({ args: activity.args, toolCallId: activity.toolCallId, toolName: activity.toolName });
+			activityParts.push(convertToolActivity(activity));
+		}
+	}
 	const runActivityMetadata = createRunActivityMetadata({
 		hasReasoning,
 		isStreaming: context.isStreaming,
@@ -982,6 +996,19 @@ function convertToolCallPart(
 		result,
 		isError,
 		artifact: activity ? ({ desktopToolCall: activity } satisfies DesktopToolCallArtifact) : undefined,
+	};
+}
+
+function convertToolActivity(activity: ToolCallActivity): ThreadToolCallPart {
+	return {
+		type: "tool-call",
+		toolCallId: activity.toolCallId,
+		toolName: activity.toolName,
+		args: normalizeToolArgs(activity.args),
+		argsText: stringifyJson(activity.args),
+		result: activity.result,
+		isError: activity.status === "error",
+		artifact: { desktopToolCall: activity } satisfies DesktopToolCallArtifact,
 	};
 }
 

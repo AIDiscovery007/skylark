@@ -16,6 +16,7 @@ export interface ToolTaskActivityProps {
 	isRunActive?: boolean;
 	itemSlot?: string;
 	preserveOrder?: boolean;
+	showInitialItemsImmediately?: boolean;
 	statusLocale?: "en" | "zh";
 }
 
@@ -660,6 +661,7 @@ export function ToolTaskActivity({
 	isRunActive = false,
 	itemSlot = "tool-task-item",
 	preserveOrder = false,
+	showInitialItemsImmediately = false,
 	statusLocale = "zh",
 }: ToolTaskActivityProps) {
 	const activityListRef = useRef<HTMLUListElement | null>(null);
@@ -669,7 +671,11 @@ export function ToolTaskActivity({
 		[preserveOrder, toolCalls],
 	);
 	const displayItems = useMemo(() => getToolTaskDisplayItems(sortedToolCalls), [sortedToolCalls]);
-	const presentedDisplayItems = useStreamingPresentationFrame(displayItems, isRunActive);
+	const streamedDisplayItems = useStreamingPresentationFrame(displayItems, isRunActive);
+	const presentedDisplayItems =
+		showInitialItemsImmediately && isRunActive && streamedDisplayItems.length === 0 && displayItems.length > 0
+			? displayItems
+			: streamedDisplayItems;
 
 	useEffect(() => {
 		const activityList = activityListRef.current;

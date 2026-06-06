@@ -592,6 +592,43 @@ describe("assistant runtime adapter", () => {
 		});
 	});
 
+	it("synthesizes current streaming tool activity before the assistant tool-call part arrives", () => {
+		const startedAt = Date.parse("2026-04-28T00:00:00.000Z");
+		const runningTool: ToolCallActivity = {
+			args: { path: "README.md" },
+			partialResult: { content: [{ type: "text", text: "reading README.md" }] },
+			startedAt,
+			status: "running",
+			toolCallId: "call-read",
+			toolName: "read",
+			updatedAt: startedAt,
+		};
+		const [running] = createAssistantUiRuntimeMessages({
+			isStreaming: true,
+			messages: [
+				assistantMessage([{ type: "thinking", thinking: "**Thinking**" }], 10, {
+					stopReason: "toolUse",
+				}),
+			],
+			runActivityTiming: { runId: "run-streaming-tool", startedAt },
+			showThinkingBlocks: true,
+			toolCalls: [runningTool],
+		});
+
+		const parts = getParts(running);
+		expect(parts.map((part) => part.type)).toEqual(["reasoning", "tool-call"]);
+		expect(parts[1]).toMatchObject({
+			args: { path: "README.md" },
+			toolCallId: "call-read",
+			toolName: "read",
+			type: "tool-call",
+		});
+		expect(running.metadata?.custom?.desktopRunActivity).toMatchObject({
+			runId: "run-streaming-tool",
+			toolCount: 1,
+		});
+	});
+
 	it("adds an immediate assistant activity while waiting for the first model response", () => {
 		const startedAt = Date.parse("2026-04-28T00:00:00.000Z");
 		const converted = createAssistantUiRuntimeMessages({

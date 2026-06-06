@@ -756,6 +756,31 @@ function usePinnedAssistantViewportAutoScroll({
 		animationFrameRef.current = undefined;
 	}, []);
 
+	const pauseAutoScrollForUser = useCallback(() => {
+		userPausedAutoScrollRef.current = true;
+		shouldAutoScrollRef.current = false;
+		cancelScheduledScroll();
+	}, [cancelScheduledScroll]);
+
+	const captureUpwardScrollFromViewport = useCallback(
+		(viewport: HTMLDivElement): boolean => {
+			const currentScrollTop = viewport.scrollTop;
+			const previousScrollTop = lastScrollTopRef.current;
+			lastScrollTopRef.current = currentScrollTop;
+
+			if (
+				previousScrollTop !== undefined &&
+				currentScrollTop < previousScrollTop - ASSISTANT_USER_SCROLL_DIRECTION_EPSILON_PX
+			) {
+				pauseAutoScrollForUser();
+				return true;
+			}
+
+			return false;
+		},
+		[pauseAutoScrollForUser],
+	);
+
 	useLayoutEffect(() => {
 		if (!enabled) {
 			shouldAutoScrollRef.current = true;
@@ -770,12 +795,6 @@ function usePinnedAssistantViewportAutoScroll({
 			return;
 		}
 		const viewportElement = viewport;
-
-		function pauseAutoScrollForUser(): void {
-			userPausedAutoScrollRef.current = true;
-			shouldAutoScrollRef.current = false;
-			cancelScheduledScroll();
-		}
 
 		function handleScroll(): void {
 			const currentScrollTop = viewportElement.scrollTop;
@@ -821,7 +840,7 @@ function usePinnedAssistantViewportAutoScroll({
 			viewportElement.removeEventListener("scroll", handleScroll);
 			viewportElement.removeEventListener("wheel", handleWheel);
 		};
-	}, [cancelScheduledScroll, enabled, viewportRef]);
+	}, [enabled, pauseAutoScrollForUser, viewportRef]);
 
 	useLayoutEffect(() => {
 		if (!enabled) {
@@ -850,6 +869,10 @@ function usePinnedAssistantViewportAutoScroll({
 			return;
 		}
 
+		if (captureUpwardScrollFromViewport(viewport)) {
+			return;
+		}
+
 		if (!shouldAutoScrollRef.current) {
 			cancelScheduledScroll();
 			return;
@@ -858,9 +881,20 @@ function usePinnedAssistantViewportAutoScroll({
 		cancelScheduledScroll();
 		animationFrameRef.current = window.requestAnimationFrame(() => {
 			animationFrameRef.current = undefined;
+			if (captureUpwardScrollFromViewport(viewport) || !shouldAutoScrollRef.current) {
+				return;
+			}
 			scrollAssistantViewportToBottom(viewport, "auto");
 		});
-	}, [cancelScheduledScroll, enabled, forcePinned, forcePinnedDependency, scrollDependency, viewportRef]);
+	}, [
+		cancelScheduledScroll,
+		captureUpwardScrollFromViewport,
+		enabled,
+		forcePinned,
+		forcePinnedDependency,
+		scrollDependency,
+		viewportRef,
+	]);
 
 	useEffect(() => {
 		return () => cancelScheduledScroll();

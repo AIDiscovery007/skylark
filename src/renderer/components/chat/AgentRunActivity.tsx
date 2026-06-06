@@ -276,6 +276,10 @@ function AgentReasoningPart({ part, status }: { part: AgentReasoningChainOfThoug
 	);
 }
 
+function hasVisibleReasoningText(part: AgentReasoningChainOfThoughtPart): boolean {
+	return stripStandaloneReasoningHeadings(part.text).length > 0;
+}
+
 function isActivityPartRunning(part: AgentChainOfThoughtPart, status: AgentActivityStatus): boolean {
 	const toolCall = part.type === "tool-call" ? getToolCallArtifact(part.artifact) : undefined;
 	return toolCall?.status === "running" || status.type === "running" || status.type === "requires-action";
@@ -372,6 +376,7 @@ export function AgentRunActivity({
 	const activityContentId = metadata?.runId ?? messageId;
 	const status = getActivityStatus(messageStatus);
 	const reasoningParts = parts.filter((part): part is AgentReasoningChainOfThoughtPart => part.type === "reasoning");
+	const visibleReasoningParts = reasoningParts.filter(hasVisibleReasoningText);
 	const toolCallParts = parts.filter((part): part is AgentToolCallChainOfThoughtPart => part.type === "tool-call");
 	const toolCalls = toolCallParts.map((part, index) => getToolCallFromPart(part, index, status));
 	const imagePreviewItems = useMemo(() => getToolCallImagePreviewItems(toolCalls), [toolCalls]);
@@ -413,6 +418,9 @@ export function AgentRunActivity({
 		.filter((label): label is string => label !== undefined)
 		.join(" ");
 	const contentMotionOrigin = pushDirection === "up" ? "bottom" : "top";
+	const hasRenderableActivityContent =
+		visibleReasoningParts.length > 0 || toolCalls.length > 0 || imagePreviewItems.length > 0;
+	const shouldShowRunningPlaceholder = isRunning && !hasRenderableActivityContent;
 	const shouldShowActivityContent = isOpen || shouldRenderActivityContent;
 
 	useEffect(() => {
@@ -533,6 +541,10 @@ export function AgentRunActivity({
 		[clearAutoCollapseTimeout, pushDirection],
 	);
 
+	if (!isRunning && !hasRenderableActivityContent) {
+		return null;
+	}
+
 	return (
 		<div
 			className="my-3 min-w-0 max-w-full overflow-x-hidden [overflow-anchor:none]"
@@ -601,19 +613,28 @@ export function AgentRunActivity({
 									data-slot="assistant-run-activity-content"
 									key={`${activityContentId}-content`}
 								>
-									{reasoningParts.map((part) => (
+									{visibleReasoningParts.map((part) => (
 										<AgentReasoningPart
 											key={`${activityContentId}-reasoning-${part.text.slice(0, 120)}`}
 											part={part}
 											status={status}
 										/>
 									))}
+									{shouldShowRunningPlaceholder ? (
+										<div
+											className="text-muted-foreground text-sm"
+											data-slot="assistant-run-activity-working-placeholder"
+										>
+											Working
+										</div>
+									) : null}
 									<ToolTaskActivity
 										className="max-h-none overflow-visible pr-0 [scrollbar-gutter:auto]"
 										isAutoCollapsing={isAutoCollapsing}
 										isRunActive={isRunning}
 										itemSlot="assistant-tool-call-step"
 										preserveOrder
+										showInitialItemsImmediately
 										statusLocale="en"
 										toolCalls={toolCalls}
 									/>
