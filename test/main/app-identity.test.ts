@@ -20,9 +20,9 @@ describe("desktop application identity", () => {
 	it("uses Skylark release metadata as the packaged desktop app version source", () => {
 		expect(SKYLARK_RELEASE).toEqual({
 			appId: "com.qiaochao.skylark",
-			buildVersion: "0.3.1",
+			buildVersion: "0.3.2",
 			productName: "Skylark",
-			version: "0.3.1",
+			version: "0.3.2",
 		});
 		expect(DESKTOP_PRODUCT_NAME).toBe("Skylark");
 	});

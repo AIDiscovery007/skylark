@@ -12,9 +12,9 @@ describe("electron-builder.config", () => {
 	it("uses Skylark release metadata as the packaged app version source", () => {
 		expect(skylarkRelease).toEqual({
 			appId: "com.qiaochao.skylark",
-			buildVersion: "0.3.1",
+			buildVersion: "0.3.2",
 			productName: "Skylark",
-			version: "0.3.1",
+			version: "0.3.2",
 		});
 		expect(builderConfig.extraMetadata).toEqual({ version: skylarkRelease.version });
 		expect(builderConfig.buildVersion).toBe(skylarkRelease.buildVersion);

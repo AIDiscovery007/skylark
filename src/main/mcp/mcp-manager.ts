@@ -8,6 +8,7 @@ import type {
 	DesktopMcpServerSummary,
 	DesktopMcpToolSummary,
 } from "../../shared/types.ts";
+import { SKYLARK_RELEASE } from "../app-identity.ts";
 import type { DesktopApprovalRequester } from "../security/approval-broker.ts";
 import type { DesktopMcpServerConfig, DesktopMcpStore } from "./mcp-store.ts";
 
@@ -376,7 +377,7 @@ export class DesktopMcpManager {
 			cwd: config.cwd,
 			stderr: "pipe",
 		});
-		const client = new Client({ name: "skylark", version: "0.2.0" });
+		const client = new Client({ name: "skylark", version: SKYLARK_RELEASE.version });
 		try {
 			await runWithTimeout("MCP connection", this.connectionTimeoutMs, () => client.connect(transport));
 			const { tools } = await runWithTimeout("MCP listTools", this.connectionTimeoutMs, () => client.listTools());

@@ -6,12 +6,12 @@ npm packages as third-party dependencies.
 
 ## Download
 
-The current public test release is Skylark `0.2.0` for macOS Apple Silicon.
+The current public test release is Skylark `0.3.2` for macOS Apple Silicon.
 Download the DMG from the GitHub release assets:
 
-- `Skylark-0.2.0-mac-arm64.dmg`
-- `Skylark-0.2.0-mac-arm64.zip`
-- `Skylark-0.2.0-mac-arm64.sha256.txt`
+- `Skylark-0.3.2-mac-arm64.dmg`
+- `Skylark-0.3.2-mac-arm64.zip`
+- `Skylark-0.3.2-mac-arm64.sha256.txt`
 
 This build is ad-hoc signed for Apple Silicon startup, but it is not Developer ID
 signed or notarized. macOS Gatekeeper warnings are expected. For local testing,
