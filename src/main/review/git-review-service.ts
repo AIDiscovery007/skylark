@@ -25,6 +25,7 @@ const DISABLED_GIT_ACTIONS: DesktopReviewActionAvailability = {
 export type GitReviewCommandRunner = (cwd: string, args: string[]) => Promise<string>;
 
 export interface CreateGitReviewSnapshotOptions {
+	includePatches?: boolean;
 	runGit?: GitReviewCommandRunner;
 	now?: () => Date;
 }
@@ -41,6 +42,7 @@ interface PatchStats {
 	additions: number;
 	deletions: number;
 	isBinary: boolean;
+	isTooLarge?: boolean;
 	patch?: string;
 }
 
@@ -170,6 +172,45 @@ function collectPatchStats(patch: string): Map<string, PatchStats> {
 	return stats;
 }
 
+function resolveNumstatPath(path: string): string {
+	const braceRename = path.match(/^(.*)\{(.+) => (.+)\}(.*)$/);
+	if (braceRename) {
+		return `${braceRename[1]}${braceRename[3]}${braceRename[4]}`;
+	}
+
+	if (path.includes(" => ")) {
+		return path.split(" => ").at(-1) ?? path;
+	}
+
+	return path;
+}
+
+function collectNumstatStats(output: string): Map<string, PatchStats> {
+	const stats = new Map<string, PatchStats>();
+	for (const line of output.split(/\r?\n/)) {
+		if (!line.trim()) {
+			continue;
+		}
+		const [rawAdditions, rawDeletions, ...pathParts] = line.split("\t");
+		const path = resolveNumstatPath(pathParts.join("\t"));
+		if (!rawAdditions || !rawDeletions || !path) {
+			continue;
+		}
+		const isBinary = rawAdditions === "-" || rawDeletions === "-";
+		const additions = Number.parseInt(rawAdditions, 10);
+		const deletions = Number.parseInt(rawDeletions, 10);
+		if (!isBinary && (!Number.isFinite(additions) || !Number.isFinite(deletions))) {
+			continue;
+		}
+		stats.set(path, {
+			additions: isBinary ? 0 : additions,
+			deletions: isBinary ? 0 : deletions,
+			isBinary,
+		});
+	}
+	return stats;
+}
+
 function isSafeRelativePath(repositoryRoot: string, filePath: string): boolean {
 	const absolutePath = resolve(repositoryRoot, filePath);
 	const relativePath = relative(repositoryRoot, absolutePath);
@@ -196,7 +237,7 @@ async function createUntrackedPatch(repositoryRoot: string, path: string): Promi
 	const absolutePath = resolve(repositoryRoot, path);
 	const fileStat = await stat(absolutePath);
 	if (!fileStat.isFile() || fileStat.size > MAX_UNTRACKED_FILE_BYTES) {
-		return { additions: 0, deletions: 0, isBinary: false };
+		return { additions: 0, deletions: 0, isBinary: false, isTooLarge: true };
 	}
 
 	const buffer = await readFile(absolutePath);
@@ -214,6 +255,33 @@ async function createUntrackedPatch(repositoryRoot: string, path: string): Promi
 		deletions: 0,
 		isBinary: false,
 		patch,
+	};
+}
+
+async function createUntrackedMetadata(repositoryRoot: string, path: string): Promise<PatchStats> {
+	if (!isSafeRelativePath(repositoryRoot, path)) {
+		return { additions: 0, deletions: 0, isBinary: false };
+	}
+
+	const absolutePath = resolve(repositoryRoot, path);
+	const fileStat = await stat(absolutePath);
+	if (!fileStat.isFile() || fileStat.size > MAX_UNTRACKED_FILE_BYTES) {
+		return { additions: 0, deletions: 0, isBinary: false, isTooLarge: true };
+	}
+
+	const buffer = await readFile(absolutePath);
+	if (isBinaryBuffer(buffer)) {
+		return { additions: 0, deletions: 0, isBinary: true };
+	}
+
+	const content = buffer.toString("utf8");
+	return {
+		additions:
+			content.length === 0
+				? 0
+				: content.split(/\r?\n/).filter((line, index, lines) => line || index < lines.length - 1).length,
+		deletions: 0,
+		isBinary: false,
 	};
 }
 
@@ -235,11 +303,28 @@ async function attachUntrackedPatches(
 	}
 }
 
+async function attachUntrackedMetadata(
+	repositoryRoot: string,
+	statusEntries: StatusEntry[],
+	patchStats: Map<string, PatchStats>,
+): Promise<void> {
+	for (const entry of statusEntries) {
+		if (entry.status !== "untracked") {
+			continue;
+		}
+
+		try {
+			patchStats.set(entry.path, await createUntrackedMetadata(repositoryRoot, entry.path));
+		} catch {
+			patchStats.set(entry.path, { additions: 0, deletions: 0, isBinary: false });
+		}
+	}
+}
+
 function createReviewFiles(statusEntries: StatusEntry[], patchStats: Map<string, PatchStats>): DesktopReviewFile[] {
 	return statusEntries
 		.map((entry) => {
 			const stats = patchStats.get(entry.path);
-			const isTooLarge = entry.status === "untracked" && !stats?.patch && !stats?.isBinary;
 			return {
 				path: entry.path,
 				previousPath: entry.previousPath,
@@ -249,7 +334,7 @@ function createReviewFiles(statusEntries: StatusEntry[], patchStats: Map<string,
 				staged: entry.staged,
 				unstaged: entry.unstaged,
 				isBinary: stats?.isBinary ?? false,
-				isTooLarge,
+				isTooLarge: stats?.isTooLarge ?? false,
 				patch: stats?.patch,
 			};
 		})
@@ -287,6 +372,38 @@ async function createTrackedPatch(repositoryRoot: string, runGit: GitReviewComma
 	}
 }
 
+async function createTrackedPatchStats(
+	repositoryRoot: string,
+	runGit: GitReviewCommandRunner,
+): Promise<Map<string, PatchStats>> {
+	const commonArgs = ["--numstat", "--no-ext-diff", "--find-renames"];
+	try {
+		await runGit(repositoryRoot, ["rev-parse", "--verify", "HEAD"]);
+		return collectNumstatStats(await runGit(repositoryRoot, ["diff", "HEAD", ...commonArgs]));
+	} catch {
+		return collectNumstatStats(await runGit(repositoryRoot, ["diff", "--cached", ...commonArgs]));
+	}
+}
+
+async function createTrackedFilePatch(
+	repositoryRoot: string,
+	path: string,
+	runGit: GitReviewCommandRunner,
+): Promise<string> {
+	const commonArgs = ["--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "--find-renames"];
+	try {
+		await runGit(repositoryRoot, ["rev-parse", "--verify", "HEAD"]);
+		return runGit(repositoryRoot, ["diff", "HEAD", ...commonArgs, "--", path]);
+	} catch {
+		return runGit(repositoryRoot, ["diff", "--cached", ...commonArgs, "--", path]);
+	}
+}
+
+function stripReviewFilePatch(file: DesktopReviewFile): DesktopReviewFile {
+	const { patch: _patch, ...metadata } = file;
+	return metadata;
+}
+
 export async function createGitReviewSnapshot(
 	cwd: string | undefined,
 	options: CreateGitReviewSnapshotOptions = {},
@@ -322,29 +439,40 @@ export async function createGitReviewSnapshot(
 	}
 
 	try {
-		const [branch, statusOutput, trackedPatch] = await Promise.all([
+		const includePatches = options.includePatches !== false;
+		const [branch, statusOutput, trackedPatchOrStats] = await Promise.all([
 			resolveBranch(repositoryRoot, runGit),
 			runGit(repositoryRoot, ["status", "--porcelain=v1", "--untracked-files=all"]),
-			createTrackedPatch(repositoryRoot, runGit),
+			includePatches ? createTrackedPatch(repositoryRoot, runGit) : createTrackedPatchStats(repositoryRoot, runGit),
 		]);
 		const statusEntries = parseStatus(statusOutput);
-		const patchStats = collectPatchStats(trackedPatch);
-		await attachUntrackedPatches(repositoryRoot, statusEntries, patchStats);
+		const patchStats =
+			typeof trackedPatchOrStats === "string" ? collectPatchStats(trackedPatchOrStats) : trackedPatchOrStats;
+		if (includePatches) {
+			await attachUntrackedPatches(repositoryRoot, statusEntries, patchStats);
+		} else {
+			await attachUntrackedMetadata(repositoryRoot, statusEntries, patchStats);
+		}
 		const files = createReviewFiles(statusEntries, patchStats);
-		const untrackedPatch = files
-			.filter((file) => file.status === "untracked" && file.patch)
-			.map((file) => file.patch)
-			.join("\n");
-		const patch = [trackedPatch.trimEnd(), untrackedPatch.trimEnd()].filter(Boolean).join("\n");
+		const untrackedPatch = includePatches
+			? files
+					.filter((file) => file.status === "untracked" && file.patch)
+					.map((file) => file.patch)
+					.join("\n")
+			: "";
+		const patch =
+			includePatches && typeof trackedPatchOrStats === "string"
+				? [trackedPatchOrStats.trimEnd(), untrackedPatch.trimEnd()].filter(Boolean).join("\n")
+				: "";
 
 		return {
 			status: files.length > 0 ? "changed" : "clean",
 			cwd,
 			repositoryRoot,
 			branch,
-			files,
+			files: includePatches ? files : files.map(stripReviewFilePatch),
 			totals: createTotals(files),
-			patch: patch || undefined,
+			patch: includePatches ? patch || undefined : undefined,
 			generatedAt,
 			actions: DISABLED_GIT_ACTIONS,
 		};
@@ -356,4 +484,51 @@ export async function createGitReviewSnapshot(
 			errorMessage: getErrorMessage(error),
 		};
 	}
+}
+
+export async function createGitReviewFilePatch(
+	cwd: string | undefined,
+	path: string,
+	options: Pick<CreateGitReviewSnapshotOptions, "now" | "runGit"> = {},
+): Promise<DesktopReviewFile> {
+	const snapshot = await createGitReviewSnapshot(cwd, { ...options, includePatches: false });
+	const file = snapshot.files.find((entry) => entry.path === path);
+	if (!file || !snapshot.repositoryRoot) {
+		return {
+			path,
+			status: "modified",
+			additions: 0,
+			deletions: 0,
+			staged: false,
+			unstaged: false,
+			isBinary: false,
+			isTooLarge: false,
+		};
+	}
+
+	if (file.isBinary || file.isTooLarge) {
+		return file;
+	}
+
+	const runGit = options.runGit ?? defaultRunGit;
+	if (file.status === "untracked") {
+		try {
+			return {
+				...file,
+				...(await createUntrackedPatch(snapshot.repositoryRoot, file.path)),
+			};
+		} catch {
+			return file;
+		}
+	}
+
+	const patch = await createTrackedFilePatch(snapshot.repositoryRoot, file.path, runGit);
+	const stats = collectPatchStats(patch).get(file.path);
+	return {
+		...file,
+		additions: stats?.additions ?? file.additions,
+		deletions: stats?.deletions ?? file.deletions,
+		isBinary: stats?.isBinary ?? file.isBinary,
+		patch: stats?.patch,
+	};
 }

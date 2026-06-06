@@ -843,6 +843,7 @@ function DesktopApp({ desktopAgent }: { desktopAgent: DesktopAgentBridge }) {
 							onCreatePrimarySession={handleCreatePrimarySession}
 							onCreateSession={createSessionForProject}
 							onDeleteSession={canDeleteSessions ? handleDeleteSession : undefined}
+							onEnsureProjectSessions={projects.ensureProjectSessions}
 							onOpenCapabilities={openCapabilitiesView}
 							onOpenEventAttachments={events.openEventAttachments}
 							onOpenEvents={openEventsView}

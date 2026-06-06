@@ -23,7 +23,9 @@ import {
 	validatePromptTemplateUpsertRequest,
 	validateProviderId,
 	validateProviderKey,
+	validateReviewFilePatchRequest,
 	validateReviewSnapshotRequest,
+	validateSessionMessagesRequest,
 	validateSessionModeUpdateRequest,
 	validateSessionProfileUpdateRequest,
 	validateSettingInput,
@@ -40,6 +42,27 @@ import {
 import { DEFAULT_DESKTOP_APPEARANCE_SETTINGS } from "../../src/shared/types.ts";
 
 describe("validate-ipc", () => {
+	it("accepts bounded session message paging requests and rejects malformed payloads", () => {
+		expect(validateSessionMessagesRequest({ sessionId: "session-1", before: 120, limit: 80 })).toEqual({
+			sessionId: "session-1",
+			before: 120,
+			limit: 80,
+		});
+		expect(validateSessionMessagesRequest({ sessionId: "session-1", before: 0 })).toEqual({
+			sessionId: "session-1",
+			before: 0,
+		});
+		expect(() => validateSessionMessagesRequest({ sessionId: "session-1", before: -1 })).toThrow(
+			/session messages before/,
+		);
+		expect(() => validateSessionMessagesRequest({ sessionId: "session-1", before: 1, limit: 0 })).toThrow(
+			/session messages limit/,
+		);
+		expect(() => validateSessionMessagesRequest({ sessionId: "session-1", before: 1, limit: 501 })).toThrow(
+			/session messages limit/,
+		);
+	});
+
 	it("accepts well-formed prompt requests and rejects malformed payloads", () => {
 		const inlineImageData = "a".repeat(600_000);
 		expect(validatePromptRequest({ sessionId: "session-1", text: "hello" })).toEqual({
@@ -685,6 +708,18 @@ describe("validate-ipc", () => {
 		expect(() => validateReviewSnapshotRequest({ cwd: "/workspace" })).toThrow(TypeError);
 		expect(() => validateReviewSnapshotRequest({ projectId: "" })).toThrow(TypeError);
 		expect(() => validateReviewSnapshotRequest(null)).toThrow(TypeError);
+	});
+
+	it("validates review file patch requests with scoped workspace identity", () => {
+		expect(validateReviewFilePatchRequest({ path: "src/App.tsx", projectId: "project-1" })).toEqual({
+			path: "src/App.tsx",
+			projectId: "project-1",
+			sessionId: undefined,
+		});
+
+		expect(() => validateReviewFilePatchRequest({ path: "src/App.tsx" })).toThrow(TypeError);
+		expect(() => validateReviewFilePatchRequest({ path: "", projectId: "project-1" })).toThrow(TypeError);
+		expect(() => validateReviewFilePatchRequest(null)).toThrow(TypeError);
 	});
 
 	it("validates preview file refresh requests", () => {

@@ -1,7 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { VirtualStack } from "@/components/ui/virtual-stack";
 import { useStreamingPresentationFrame } from "@/hooks/use-streaming-presentation-frame";
 import type { ToolCallActivity } from "../../lib/conversation-timeline-projection.ts";
 import { cn } from "../../lib/utils.ts";
+
+const IMAGE_GRID_GAP_PX = 12;
+const IMAGE_GRID_MIN_TILE_WIDTH_PX = 260;
+const IMAGE_PREVIEW_TILE_HEIGHT_PX = 220;
+const IMAGE_PREVIEW_VIRTUALIZATION_THRESHOLD = 12;
 
 export interface ThreadImagePreview {
 	alt: string;
@@ -53,6 +59,11 @@ interface ThreadImagePreviewTileProps {
 	resolveWorkspaceImage?: WorkspaceImagePreviewResolver;
 }
 
+interface ThreadImagePreviewVirtualRow {
+	id: string;
+	items: ThreadImagePreviewGridItem[];
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -93,6 +104,28 @@ function getToolCallDisplayName(toolCall: ToolCallActivity): string | undefined 
 			.filter(Boolean)
 			.at(-1) ?? source
 	);
+}
+
+function getImageGridColumnCount(width: number): number {
+	if (!Number.isFinite(width) || width <= 0) {
+		return 2;
+	}
+	return Math.max(1, Math.floor((width + IMAGE_GRID_GAP_PX) / (IMAGE_GRID_MIN_TILE_WIDTH_PX + IMAGE_GRID_GAP_PX)));
+}
+
+function getImagePreviewRows(
+	items: readonly ThreadImagePreviewGridItem[],
+	columnCount: number,
+): ThreadImagePreviewVirtualRow[] {
+	const rows: ThreadImagePreviewVirtualRow[] = [];
+	for (let index = 0; index < items.length; index += columnCount) {
+		const rowItems = items.slice(index, index + columnCount);
+		rows.push({
+			id: rowItems.map((item) => item.id).join("|"),
+			items: rowItems,
+		});
+	}
+	return rows;
 }
 
 function getImagePartName(part: unknown, fallbackName?: string): string {
@@ -255,8 +288,65 @@ export function ThreadImagePreviewGrid({
 }: ThreadImagePreviewGridProps) {
 	const visibleItems = useMemo(() => items.filter((item) => item.alt.trim().length > 0), [items]);
 	const presentedItems = useStreamingPresentationFrame(visibleItems, isRunActive);
+	const [viewportElement, setViewportElement] = useState<HTMLDivElement | null>(null);
+	const [columnCount, setColumnCount] = useState(2);
+	const previewRows = useMemo(() => getImagePreviewRows(presentedItems, columnCount), [presentedItems, columnCount]);
+
+	useLayoutEffect(() => {
+		if (!viewportElement) {
+			return;
+		}
+
+		const updateColumnCount = () => {
+			setColumnCount((current) => {
+				const next = getImageGridColumnCount(viewportElement.clientWidth);
+				return current === next ? current : next;
+			});
+		};
+
+		updateColumnCount();
+		if (typeof ResizeObserver === "undefined") {
+			return;
+		}
+		const resizeObserver = new ResizeObserver(updateColumnCount);
+		resizeObserver.observe(viewportElement);
+		return () => resizeObserver.disconnect();
+	}, [viewportElement]);
+
 	if (presentedItems.length === 0) {
 		return null;
+	}
+
+	if (presentedItems.length > IMAGE_PREVIEW_VIRTUALIZATION_THRESHOLD) {
+		return (
+			<VirtualStack
+				ariaLabel="Image previews"
+				className={cn("native-scrollbar max-h-[min(64vh,36rem)] overflow-y-auto pr-1", className)}
+				dataSlot="thread-image-preview-grid"
+				estimateSize={() => IMAGE_PREVIEW_TILE_HEIGHT_PX}
+				gap={IMAGE_GRID_GAP_PX}
+				getKey={(row) => row.id}
+				initialViewportHeight={576}
+				items={previewRows}
+				overscan={2}
+				renderItem={({ item: row }) => (
+					<div
+						className="grid max-w-full items-start gap-3"
+						style={{ gridTemplateColumns: `repeat(${columnCount}, minmax(0, 1fr))` }}
+					>
+						{row.items.map((item) => (
+							<ThreadImagePreviewTile
+								item={item}
+								key={item.id}
+								onPreviewImage={onPreviewImage}
+								resolveWorkspaceImage={resolveWorkspaceImage}
+							/>
+						))}
+					</div>
+				)}
+				viewportRef={setViewportElement}
+			/>
+		);
 	}
 
 	return (

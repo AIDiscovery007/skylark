@@ -1,4 +1,5 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { DesktopSessionMessagesRequest } from "../../shared/serialized-agent-event.ts";
 import type {
 	DesktopAgentMode,
 	DesktopAppearanceSettings,
@@ -39,6 +40,7 @@ import type {
 	DesktopPromptRequest,
 	DesktopPromptTemplateDeleteRequest,
 	DesktopPromptTemplateUpsertRequest,
+	DesktopReviewFilePatchRequest,
 	DesktopReviewSnapshotRequest,
 	DesktopSessionModeUpdateRequest,
 	DesktopSessionProfileUpdateRequest,
@@ -78,6 +80,7 @@ const MAX_CAPABILITY_INVOCATIONS = 24;
 const MAX_PROMPT_ATTACHMENTS = 10;
 const MAX_ATTACHMENT_SIZE = 128 * 1024 * 1024;
 const MAX_WORKSPACE_FILE_LIST_LIMIT = 5000;
+const MAX_SESSION_MESSAGES_PAGE_LIMIT = 500;
 const MAX_INLINE_IMAGE_DATA_LENGTH = Math.ceil(MAX_ATTACHMENT_SIZE / 3) * 4;
 const MAX_TERMINAL_WRITE_LENGTH = 1_048_576;
 const MAX_CWD_LENGTH = 4096;
@@ -392,6 +395,21 @@ function validateTerminalDimension(value: unknown, label: string): number {
 
 export function validateSessionId(value: unknown): string {
 	return validateIdentifier(value, "session id");
+}
+
+export function validateSessionMessagesRequest(value: unknown): DesktopSessionMessagesRequest {
+	if (!isRecord(value)) {
+		reject("session messages request", "expected an object");
+	}
+	return {
+		sessionId: validateSessionId(value.sessionId),
+		before: validateNonNegativeInteger(value.before, "session messages before", Number.MAX_SAFE_INTEGER),
+		...(value.limit !== undefined
+			? {
+					limit: validatePositiveInteger(value.limit, "session messages limit", MAX_SESSION_MESSAGES_PAGE_LIMIT),
+				}
+			: {}),
+	};
 }
 
 export function validateTerminalId(value: unknown): string {
@@ -1175,6 +1193,17 @@ export function validateReviewSnapshotRequest(value: unknown): DesktopReviewSnap
 	return {
 		projectId,
 		sessionId,
+	};
+}
+
+export function validateReviewFilePatchRequest(value: unknown): DesktopReviewFilePatchRequest {
+	if (!isRecord(value)) {
+		reject("review file patch request", "expected an object");
+	}
+	const reviewRequest = validateReviewSnapshotRequest(value);
+	return {
+		...reviewRequest,
+		path: validateNonEmptyString(value.path, "review file patch path", MAX_CWD_LENGTH),
 	};
 }
 

@@ -1,10 +1,9 @@
 import { ChevronRight, FileTextIcon } from "lucide-react";
-import { AnimatePresence, motion } from "motion/react";
 import type { CSSProperties, ReactNode, UIEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { VirtualStack } from "@/components/ui/virtual-stack";
 import { useStreamingPresentationFrame } from "@/hooks/use-streaming-presentation-frame";
-import { subtleReveal } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import type { ToolCallActivity } from "../../lib/conversation-timeline-projection.ts";
 import { TaskItem, TaskItemFile } from "../ai-elements/task.tsx";
@@ -664,7 +663,7 @@ export function ToolTaskActivity({
 	showInitialItemsImmediately = false,
 	statusLocale = "zh",
 }: ToolTaskActivityProps) {
-	const activityListRef = useRef<HTMLUListElement | null>(null);
+	const activityListRef = useRef<HTMLDivElement | null>(null);
 	const shouldFollowActivityRef = useRef(true);
 	const sortedToolCalls = useMemo(
 		() => (preserveOrder ? [...toolCalls] : sortToolCalls(toolCalls)),
@@ -690,50 +689,41 @@ export function ToolTaskActivity({
 		return null;
 	}
 
-	function handleActivityScroll(event: UIEvent<HTMLUListElement>): void {
+	function handleActivityScroll(event: UIEvent<HTMLDivElement>): void {
 		const activityList = event.currentTarget;
 		shouldFollowActivityRef.current =
 			activityList.scrollHeight - activityList.clientHeight - activityList.scrollTop <= 48;
 	}
 
 	return (
-		<ul
-			aria-label="Tool activity"
+		<VirtualStack
+			ariaLabel="Tool activity"
 			className={cn(
-				"native-scrollbar grid max-h-[min(48vh,32rem)] list-none gap-2 overflow-y-auto overscroll-contain pr-1 [overflow-anchor:none]",
+				"native-scrollbar max-h-[min(48vh,32rem)] overflow-y-auto overscroll-contain [overflow-anchor:none]",
 				className,
 			)}
+			dataSlot="tool-task-activity-virtual-list"
+			estimateSize={() => 78}
+			gap={8}
+			getKey={(displayItem) => displayItem.key}
+			initialViewportHeight={384}
+			itemClassName="grid gap-2 pr-1"
+			items={presentedDisplayItems}
+			measureItems
 			onScroll={handleActivityScroll}
-			ref={activityListRef}
-		>
-			{isRunActive ? (
-				presentedDisplayItems.map((displayItem, index) => (
-					<li className="grid gap-2" key={displayItem.key}>
-						<ToolTaskDisplayItemView
-							autoCollapseIndex={index}
-							displayItem={displayItem}
-							isAutoCollapsing={isAutoCollapsing}
-							itemSlot={itemSlot}
-							statusLocale={statusLocale}
-						/>
-					</li>
-				))
-			) : (
-				<AnimatePresence initial={false}>
-					{presentedDisplayItems.map((displayItem, index) => (
-						<motion.li className="grid gap-2" key={displayItem.key} {...subtleReveal}>
-							<ToolTaskDisplayItemView
-								autoCollapseIndex={index}
-								displayItem={displayItem}
-								isAutoCollapsing={isAutoCollapsing}
-								itemSlot={itemSlot}
-								statusLocale={statusLocale}
-							/>
-						</motion.li>
-					))}
-				</AnimatePresence>
+			overscan={5}
+			paddingEnd={4}
+			renderItem={({ index, item }) => (
+				<ToolTaskDisplayItemView
+					autoCollapseIndex={index}
+					displayItem={item}
+					isAutoCollapsing={isAutoCollapsing}
+					itemSlot={itemSlot}
+					statusLocale={statusLocale}
+				/>
 			)}
-		</ul>
+			viewportRef={activityListRef}
+		/>
 	);
 }
 

@@ -20,6 +20,7 @@ export interface UseProjectsResult {
 	isSwitching: boolean;
 	errorMessage?: string;
 	createProjectFromFolder: () => Promise<void>;
+	ensureProjectSessions: (projectId: string) => Promise<void>;
 	refreshProjects: () => Promise<void>;
 	switchProject: (projectId: string) => Promise<void>;
 	upsertProjectSession: (projectId: string, session: DesktopSessionSummary) => void;
@@ -33,6 +34,7 @@ export function useProjects(options: UseProjectsOptions = {}): UseProjectsResult
 	const isCreating = useProjectStore((state) => state.isCreating);
 	const isLoading = useProjectStore((state) => state.isLoading);
 	const isSwitching = useProjectStore((state) => state.isSwitching);
+	const ensureProjectSessions = useProjectStore((state) => state.ensureProjectSessions);
 	const loadProjects = useProjectStore((state) => state.loadProjects);
 	const projects = useProjectStore((state) => state.projects);
 	const sessionsByProjectId = useProjectStore((state) => state.sessionsByProjectId);
@@ -78,6 +80,13 @@ export function useProjects(options: UseProjectsOptions = {}): UseProjectsResult
 		[bridge, switchProject],
 	);
 
+	const handleEnsureProjectSessions = useCallback(
+		async (projectId: string) => {
+			await ensureProjectSessions(bridge, projectId);
+		},
+		[bridge, ensureProjectSessions],
+	);
+
 	return {
 		projects,
 		sessionsByProjectId,
@@ -88,6 +97,7 @@ export function useProjects(options: UseProjectsOptions = {}): UseProjectsResult
 		isSwitching,
 		errorMessage,
 		createProjectFromFolder: handleCreateProjectFromFolder,
+		ensureProjectSessions: handleEnsureProjectSessions,
 		refreshProjects,
 		switchProject: handleSwitchProject,
 		upsertProjectSession,

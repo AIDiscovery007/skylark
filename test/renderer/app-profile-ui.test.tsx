@@ -253,6 +253,11 @@ function installDesktopAgentBridge(overrides: Partial<DesktopAgentBridge> = {}) 
 	const bridge: DesktopAgentBridge = {
 		getWorkspaceOverview,
 		getSnapshot,
+		getSessionMessages: vi.fn(async () => ({
+			sessionId: "session-1",
+			messages: [],
+			window: { start: 0, end: 0, total: 0, hasMoreBefore: false },
+		})),
 		getRuntimeCatalog: vi.fn(async () => ({
 			defaultTools: ["read", "bash", "edit", "write"],
 			providers: [
@@ -288,6 +293,17 @@ function installDesktopAgentBridge(overrides: Partial<DesktopAgentBridge> = {}) 
 			providerKeysEncrypted: true,
 		})),
 		getReviewSnapshot: vi.fn(async () => cleanReviewSnapshot),
+		getReviewFilePatch: vi.fn(async (request) => ({
+			path: request.path,
+			status: "modified" as const,
+			additions: 0,
+			deletions: 0,
+			staged: false,
+			unstaged: false,
+			isBinary: false,
+			isTooLarge: false,
+			patch: "",
+		})),
 		getSubagentSnapshot: vi.fn(async () => {
 			throw new Error("unused");
 		}),

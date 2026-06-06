@@ -1,4 +1,9 @@
-import type { DesktopAgentSnapshot, SerializedAgentEvent } from "./serialized-agent-event.ts";
+import type {
+	DesktopAgentSnapshot,
+	DesktopSessionMessagesRequest,
+	DesktopSessionMessagesResult,
+	SerializedAgentEvent,
+} from "./serialized-agent-event.ts";
 import type { SerializedTerminalEvent } from "./serialized-terminal-event.ts";
 import type {
 	DesktopApprovalDecision,
@@ -50,6 +55,8 @@ import type {
 	DesktopPromptTemplateUpsertRequest,
 	DesktopProviderKeyStatus,
 	DesktopProviderKeyTestResult,
+	DesktopReviewFile,
+	DesktopReviewFilePatchRequest,
 	DesktopReviewSnapshot,
 	DesktopReviewSnapshotRequest,
 	DesktopRuntimeCatalog,
@@ -84,6 +91,7 @@ import type {
 export const IPC_CHANNELS = {
 	getWorkspaceOverview: "desktop-agent:get-workspace-overview",
 	getSnapshot: "desktop-agent:get-snapshot",
+	getSessionMessages: "desktop-agent:get-session-messages",
 	getSubagentSnapshot: "desktop-agent:get-subagent-snapshot",
 	getRuntimeCatalog: "desktop-agent:get-runtime-catalog",
 	prompt: "desktop-agent:prompt",
@@ -110,6 +118,7 @@ export const IPC_CHANNELS = {
 	executePlan: "desktop-agent:execute-plan",
 	abort: "desktop-agent:abort",
 	getReviewSnapshot: "desktop-agent:get-review-snapshot",
+	getReviewFilePatch: "desktop-agent:get-review-file-patch",
 	openPreviewFiles: "desktop-agent:open-preview-files",
 	openWorkspacePreviewFile: "desktop-agent:open-workspace-preview-file",
 	listWorkspaceFiles: "desktop-agent:list-workspace-files",
@@ -180,6 +189,7 @@ export const IPC_CHANNELS = {
 export interface DesktopAgentBridge {
 	getWorkspaceOverview(): Promise<DesktopWorkspaceOverview>;
 	getSnapshot(sessionId: string): Promise<DesktopAgentSnapshot>;
+	getSessionMessages(request: DesktopSessionMessagesRequest): Promise<DesktopSessionMessagesResult>;
 	getSubagentSnapshot(request: DesktopSubagentSnapshotRequest): Promise<DesktopSubagentSnapshot>;
 	getRuntimeCatalog(): Promise<DesktopRuntimeCatalog>;
 	getSettings(): Promise<DesktopSettingsData>;
@@ -275,6 +285,7 @@ export interface DesktopAgentBridge {
 	executePlan(request: DesktopExecutePlanRequest): Promise<DesktopAgentSnapshot>;
 	abort(sessionId: string): Promise<void>;
 	getReviewSnapshot(request: DesktopReviewSnapshotRequest): Promise<DesktopReviewSnapshot>;
+	getReviewFilePatch(request: DesktopReviewFilePatchRequest): Promise<DesktopReviewFile>;
 	openPreviewFiles(request: DesktopReviewSnapshotRequest): Promise<DesktopPreviewFile[]>;
 	openWorkspacePreviewFile(request: DesktopWorkspacePreviewFileRequest): Promise<DesktopPreviewFile>;
 	listWorkspaceFiles(request: DesktopWorkspaceFileListRequest): Promise<DesktopWorkspaceFileListResult>;

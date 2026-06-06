@@ -4,7 +4,7 @@ import type { DesktopRuntimeCatalog } from "../../shared/types.ts";
 import { readDesktopPreviewFile } from "../preview/preview-file-service.ts";
 import { readWorkspacePreviewFile } from "../preview/workspace-preview-file-service.ts";
 import { prepareDesktopPromptAttachments } from "../prompt/prompt-attachment-service.ts";
-import { createGitReviewSnapshot } from "../review/git-review-service.ts";
+import { createGitReviewFilePatch, createGitReviewSnapshot } from "../review/git-review-service.ts";
 import type { DesktopRuntimeHost } from "../runtime/desktop-runtime-host.ts";
 import type { DesktopInstructionStore } from "../storage/instruction-store.ts";
 import type { DesktopSettingsStore } from "../storage/settings-store.ts";
@@ -22,8 +22,10 @@ import {
 	validatePreviewFileRequest,
 	validateProjectId,
 	validatePromptRequest,
+	validateReviewFilePatchRequest,
 	validateReviewSnapshotRequest,
 	validateSessionId,
+	validateSessionMessagesRequest,
 	validateSessionModeUpdateRequest,
 	validateSessionProfileUpdateRequest,
 	validateWorkspaceFileListRequest,
@@ -62,6 +64,7 @@ export interface DesktopSessionBridgeGroupOptions {
 		| "consumeProposedPlan"
 		| "executePlan"
 		| "getSnapshot"
+		| "getSessionMessages"
 		| "getWorkspaceOverview"
 		| "setSessionMode"
 		| "updateSessionProfile"
@@ -191,7 +194,15 @@ export function createPreviewBridgeGroup(options: DesktopPreviewBridgeGroupOptio
 				handle: async (_event, request: unknown) => {
 					const reviewRequest = validateReviewSnapshotRequest(request);
 					const cwd = await options.host.resolveReviewWorkspaceCwd(reviewRequest);
-					return createGitReviewSnapshot(cwd);
+					return createGitReviewSnapshot(cwd, { includePatches: false });
+				},
+			},
+			{
+				channel: IPC_CHANNELS.getReviewFilePatch,
+				handle: async (_event, request: unknown) => {
+					const reviewRequest = validateReviewFilePatchRequest(request);
+					const cwd = await options.host.resolveReviewWorkspaceCwd(reviewRequest);
+					return createGitReviewFilePatch(cwd, reviewRequest.path);
 				},
 			},
 			{
@@ -273,6 +284,11 @@ export function createSessionBridgeGroup(options: DesktopSessionBridgeGroupOptio
 			{
 				channel: IPC_CHANNELS.getSnapshot,
 				handle: async (_event, sessionId: unknown) => options.host.getSnapshot(validateSessionId(sessionId)),
+			},
+			{
+				channel: IPC_CHANNELS.getSessionMessages,
+				handle: async (_event, request: unknown) =>
+					options.host.getSessionMessages(validateSessionMessagesRequest(request)),
 			},
 			{
 				channel: IPC_CHANNELS.getRuntimeCatalog,

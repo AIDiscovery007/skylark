@@ -665,6 +665,10 @@ export interface DesktopReviewSnapshotRequest {
 	sessionId?: string;
 }
 
+export interface DesktopReviewFilePatchRequest extends DesktopReviewSnapshotRequest {
+	path: string;
+}
+
 export interface DesktopWorkspacePreviewFileRequest extends DesktopReviewSnapshotRequest {
 	path: string;
 }

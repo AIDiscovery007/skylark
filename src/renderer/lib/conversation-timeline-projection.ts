@@ -2,8 +2,10 @@ import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core"
 import { stripPromptFileBlocks } from "../../shared/prompt-file-blocks.ts";
 import type {
 	DesktopAgentDiagnostic,
+	DesktopAgentMessageWindow,
 	DesktopAgentModel,
 	DesktopAgentSnapshot,
+	DesktopSessionMessagesResult,
 	SerializedAgentEvent,
 	SerializedCompactionReason,
 } from "../../shared/serialized-agent-event.ts";
@@ -48,6 +50,7 @@ export interface AgentRendererState {
 	availableTools: string[];
 	contextMessages: AgentMessage[];
 	messages: AgentMessage[];
+	messageWindow?: DesktopAgentMessageWindow;
 	streamingMessage?: AgentMessage;
 	pendingToolCalls: string[];
 	isStreaming: boolean;
@@ -70,6 +73,7 @@ export const INITIAL_AGENT_RENDERER_STATE: AgentRendererState = {
 	availableTools: [],
 	contextMessages: [],
 	messages: [],
+	messageWindow: undefined,
 	streamingMessage: undefined,
 	pendingToolCalls: [],
 	isStreaming: false,
@@ -245,6 +249,36 @@ function mergeVisibleMessagesForSnapshot(
 	return appendMissingMessages(previousState.messages, snapshotMessages);
 }
 
+function mergeWindowedMessagesForSnapshot(
+	previousState: AgentRendererState | undefined,
+	snapshotMessages: AgentMessage[],
+	snapshotWindow: DesktopAgentMessageWindow | undefined,
+): { messages: AgentMessage[]; window?: DesktopAgentMessageWindow } {
+	if (!snapshotWindow) {
+		return {
+			messages: mergeVisibleMessagesForSnapshot(previousState, snapshotMessages),
+		};
+	}
+
+	if (!previousState?.messageWindow || previousState.messageWindow.start >= snapshotWindow.start) {
+		return {
+			messages: [...snapshotMessages],
+			window: { ...snapshotWindow },
+		};
+	}
+
+	const olderCount = Math.max(0, snapshotWindow.start - previousState.messageWindow.start);
+	const preservedOlderMessages = previousState.messages.slice(0, olderCount);
+	return {
+		messages: [...preservedOlderMessages, ...snapshotMessages],
+		window: {
+			...snapshotWindow,
+			start: previousState.messageWindow.start,
+			hasMoreBefore: previousState.messageWindow.start > 0,
+		},
+	};
+}
+
 function appendMissingAgentEndMessages(messages: AgentMessage[], newMessages: AgentMessage[]): AgentMessage[] {
 	if (newMessages.length === 0) {
 		return messages;
@@ -263,6 +297,28 @@ function appendMissingAgentEndMessages(messages: AgentMessage[], newMessages: Ag
 	}
 
 	return [...messages, ...newMessages];
+}
+
+function advanceMessageWindowOnAppend(
+	messageWindow: DesktopAgentMessageWindow | undefined,
+	previousVisibleLength: number,
+	nextVisibleLength: number,
+): DesktopAgentMessageWindow | undefined {
+	if (!messageWindow) {
+		return undefined;
+	}
+
+	const appendedCount = Math.max(0, nextVisibleLength - previousVisibleLength);
+	if (appendedCount === 0) {
+		return messageWindow;
+	}
+
+	return {
+		...messageWindow,
+		end: messageWindow.end + appendedCount,
+		total: messageWindow.total + appendedCount,
+		hasMoreBefore: messageWindow.start > 0,
+	};
 }
 
 function findAssistantErrorMessage(messages: AgentMessage[]): string | undefined {
@@ -343,9 +399,13 @@ export function createAgentRendererState(
 ): AgentRendererState {
 	const snapshotTimestamp = Date.now();
 	const snapshotMessages = [...snapshot.messages];
-	const messages = mergeVisibleMessagesForSnapshot(previousState, snapshotMessages);
-	const contextMessages =
-		previousState && haveSameMessageSequence(previousState.contextMessages, snapshotMessages)
+	const windowedMessages = mergeWindowedMessagesForSnapshot(previousState, snapshotMessages, snapshot.messageWindow);
+	const messages = windowedMessages.messages;
+	const contextMessages = snapshot.messageWindow
+		? previousState && haveSameMessageSequence(previousState.contextMessages, messages)
+			? previousState.contextMessages
+			: messages
+		: previousState && haveSameMessageSequence(previousState.contextMessages, snapshotMessages)
 			? previousState.contextMessages
 			: snapshotMessages;
 
@@ -360,6 +420,7 @@ export function createAgentRendererState(
 		availableTools: [...snapshot.availableTools],
 		contextMessages,
 		messages,
+		messageWindow: windowedMessages.window,
 		streamingMessage: snapshot.streamingMessage,
 		pendingToolCalls: [...snapshot.pendingToolCalls],
 		isStreaming: snapshot.isStreaming,
@@ -374,6 +435,33 @@ export function createAgentRendererState(
 		hasHydrated: true,
 		bridgeError: undefined,
 		compactionActivity: undefined,
+	};
+}
+
+export function prependOlderMessagesToRendererState(
+	state: AgentRendererState,
+	result: DesktopSessionMessagesResult,
+): AgentRendererState {
+	if (result.messages.length === 0 && !state.messageWindow) {
+		return state;
+	}
+
+	const existingFingerprints = new Set(state.messages.map(messageFingerprint));
+	const olderMessages = result.messages.filter((message) => !existingFingerprints.has(messageFingerprint(message)));
+	const nextMessages = olderMessages.length > 0 ? [...olderMessages, ...state.messages] : state.messages;
+	const existingWindow = state.messageWindow;
+	const nextWindow: DesktopAgentMessageWindow = {
+		start: result.window.start,
+		end: existingWindow?.end ?? result.window.end,
+		total: result.window.total,
+		hasMoreBefore: result.window.start > 0,
+	};
+
+	return {
+		...state,
+		contextMessages: nextMessages,
+		messages: nextMessages,
+		messageWindow: nextWindow,
 	};
 }
 
@@ -394,6 +482,8 @@ export function reduceAgentEvent(state: AgentRendererState, event: SerializedAge
 			const terminalErrorMessage = findAssistantErrorMessage(event.messages);
 			const didFail = terminalErrorMessage !== undefined;
 			const completedAt = Date.now();
+			const nextContextMessages = appendMissingAgentEndMessages(state.contextMessages, event.messages);
+			const nextMessages = appendMissingAgentEndMessages(state.messages, event.messages);
 			const runActivityTiming = {
 				runId: state.runActivityTiming?.runId ?? `run-${completedAt}`,
 				startedAt: state.runActivityTiming?.startedAt ?? completedAt,
@@ -404,8 +494,13 @@ export function reduceAgentEvent(state: AgentRendererState, event: SerializedAge
 
 			return {
 				...state,
-				contextMessages: appendMissingAgentEndMessages(state.contextMessages, event.messages),
-				messages: appendMissingAgentEndMessages(state.messages, event.messages),
+				contextMessages: nextContextMessages,
+				messages: nextMessages,
+				messageWindow: advanceMessageWindowOnAppend(
+					state.messageWindow,
+					state.messages.length,
+					nextMessages.length,
+				),
 				streamingMessage: undefined,
 				toolCalls: finalizePendingToolCalls(
 					state.toolCalls,
@@ -448,17 +543,25 @@ export function reduceAgentEvent(state: AgentRendererState, event: SerializedAge
 				runActivityTiming: updateRunActivityTimingForMessageUpdate(state.runActivityTiming, event),
 			};
 
-		case "message_end":
+		case "message_end": {
+			const nextContextMessages = [...state.contextMessages, event.message];
+			const nextMessages = [...state.messages, event.message];
 			return {
 				...state,
-				contextMessages: [...state.contextMessages, event.message],
-				messages: [...state.messages, event.message],
+				contextMessages: nextContextMessages,
+				messages: nextMessages,
+				messageWindow: advanceMessageWindowOnAppend(
+					state.messageWindow,
+					state.messages.length,
+					nextMessages.length,
+				),
 				streamingMessage: undefined,
 				errorMessage:
 					event.message.role === "assistant" && event.message.errorMessage
 						? event.message.errorMessage
 						: state.errorMessage,
 			};
+		}
 
 		case "tool_execution_start": {
 			const startedAt = Date.now();

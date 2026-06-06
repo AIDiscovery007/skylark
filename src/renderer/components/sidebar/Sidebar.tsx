@@ -27,6 +27,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { StatusDot } from "@/components/ui/status-dot";
 import { Textarea } from "@/components/ui/textarea";
+import { VirtualStack } from "@/components/ui/virtual-stack";
 import { sidebarContentTransition, subtleReveal } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import type {
@@ -61,6 +62,7 @@ interface SidebarProps {
 	onCreatePrimarySession?: () => Promise<void>;
 	onCreateSession: (projectId?: string) => Promise<DesktopSessionSummary | undefined>;
 	onDeleteSession?: (sessionId: string, projectId?: string) => Promise<void>;
+	onEnsureProjectSessions?: (projectId: string) => Promise<void>;
 	onOpenCapabilities?: () => void;
 	onOpenEventAttachments?: (
 		request?: DesktopOpenEventAttachmentsRequest,
@@ -271,7 +273,7 @@ function SidebarSearchDialog({
 				搜索
 			</h2>
 			<div
-				className="uix-flat-field max-h-[min(62vh,520px)] min-h-52 overflow-y-auto py-2"
+				className="uix-flat-field max-h-[min(62vh,520px)] min-h-52 overflow-hidden"
 				data-slot="sidebar-search-results"
 			>
 				{!hasQuery ? (
@@ -283,65 +285,74 @@ function SidebarSearchDialog({
 						没有找到匹配结果。
 					</div>
 				) : (
-					<ul className="grid gap-1 px-2">
-						{results.map((result) => {
+					<VirtualStack
+						className="native-scrollbar max-h-[min(62vh,520px)] min-h-52"
+						dataSlot="sidebar-search-virtual-results"
+						estimateSize={() => 48}
+						gap={4}
+						getKey={(result) =>
+							result.type === "project"
+								? `project-${result.project.id}`
+								: `session-${result.project.id}-${result.session.id}`
+						}
+						initialViewportHeight={360}
+						itemClassName="px-2"
+						items={results}
+						overscan={6}
+						paddingEnd={8}
+						paddingStart={8}
+						renderItem={({ item: result }) => {
 							if (result.type === "project") {
 								return (
-									<li key={`project-${result.project.id}`}>
-										<button
-											aria-label={`打开项目 ${result.project.name}`}
-											className="grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-[var(--uix-flat-radius-control)] px-3 py-2 text-left transition-colors hover:bg-background/75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--uix-flat-focus-ring)]"
-											onClick={() => {
-												void handleProjectSelect(result.project.id);
-											}}
-											type="button"
-										>
-											<Folder className="size-4 text-[color:var(--text-tertiary)]" />
-											<span className="min-w-0">
-												<span className="block truncate font-medium text-foreground">
-													{result.project.name}
-												</span>
-												<span className="block truncate text-[color:var(--text-tertiary)]">
-													{result.project.cwd}
-												</span>
+									<button
+										aria-label={`打开项目 ${result.project.name}`}
+										className="grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-[var(--uix-flat-radius-control)] px-3 py-2 text-left transition-colors hover:bg-background/75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--uix-flat-focus-ring)]"
+										onClick={() => {
+											void handleProjectSelect(result.project.id);
+										}}
+										type="button"
+									>
+										<Folder className="size-4 text-[color:var(--text-tertiary)]" />
+										<span className="min-w-0">
+											<span className="block truncate font-medium text-foreground">
+												{result.project.name}
 											</span>
-											<span className="shrink-0 tabular-nums text-[color:var(--text-tertiary)]">
-												{result.sessionCount} 对话
+											<span className="block truncate text-[color:var(--text-tertiary)]">
+												{result.project.cwd}
 											</span>
-										</button>
-									</li>
+										</span>
+										<span className="shrink-0 tabular-nums text-[color:var(--text-tertiary)]">
+											{result.sessionCount} 对话
+										</span>
+									</button>
 								);
 							}
 
 							return (
-								<li key={`session-${result.project.id}-${result.session.id}`}>
-									<button
-										aria-label={`打开对话 ${getSearchableSessionTitle(result.session)}，项目 ${
-											result.project.name
-										}`}
-										className="grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-[var(--uix-flat-radius-control)] px-3 py-2 text-left transition-colors hover:bg-background/75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--uix-flat-focus-ring)]"
-										onClick={() => {
-											void handleSessionSelect(result.session.id, result.project.id);
-										}}
-										type="button"
-									>
-										<MessageSquare className="size-4 text-[color:var(--text-tertiary)]" />
-										<span className="min-w-0">
-											<span className="block truncate font-medium text-foreground">
-												{getSearchableSessionTitle(result.session)}
-											</span>
-											<span className="block truncate text-[color:var(--text-tertiary)]">
-												{result.project.name}
-											</span>
+								<button
+									aria-label={`打开对话 ${getSearchableSessionTitle(result.session)}，项目 ${result.project.name}`}
+									className="grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-[var(--uix-flat-radius-control)] px-3 py-2 text-left transition-colors hover:bg-background/75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--uix-flat-focus-ring)]"
+									onClick={() => {
+										void handleSessionSelect(result.session.id, result.project.id);
+									}}
+									type="button"
+								>
+									<MessageSquare className="size-4 text-[color:var(--text-tertiary)]" />
+									<span className="min-w-0">
+										<span className="block truncate font-medium text-foreground">
+											{getSearchableSessionTitle(result.session)}
 										</span>
-										<span className="shrink-0 tabular-nums text-[color:var(--text-tertiary)]">
-											{formatRelativeUpdatedAt(result.session.updatedAt)}
+										<span className="block truncate text-[color:var(--text-tertiary)]">
+											{result.project.name}
 										</span>
-									</button>
-								</li>
+									</span>
+									<span className="shrink-0 tabular-nums text-[color:var(--text-tertiary)]">
+										{formatRelativeUpdatedAt(result.session.updatedAt)}
+									</span>
+								</button>
 							);
-						})}
-					</ul>
+						}}
+					/>
 				)}
 			</div>
 		</FloatingDialog>
@@ -493,6 +504,7 @@ export function Sidebar({
 	onCreatePrimarySession,
 	onCreateSession,
 	onDeleteSession,
+	onEnsureProjectSessions,
 	onOpenCapabilities = () => undefined,
 	onOpenEventAttachments,
 	onOpenEvents = () => undefined,
@@ -546,6 +558,7 @@ export function Sidebar({
 	};
 
 	const toggleSessionsForProject = (projectId: string) => {
+		const isExpanding = !expandedSessionProjectIds.has(projectId);
 		setExpandedSessionProjectIds((current) => {
 			const next = new Set(current);
 			if (next.has(projectId)) {
@@ -555,6 +568,9 @@ export function Sidebar({
 			}
 			return next;
 		});
+		if (isExpanding) {
+			void onEnsureProjectSessions?.(projectId);
+		}
 	};
 
 	function closeSearch(): void {

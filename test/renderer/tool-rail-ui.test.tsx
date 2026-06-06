@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { InlineToolRail } from "../../src/renderer/components/chat/InlineToolRail.tsx";
@@ -79,6 +79,39 @@ describe("InlineToolRail UI", () => {
 		expect(screen.getByRole("list", { name: "Tool activity" }).className).toContain("max-h-[min(48vh,32rem)]");
 	});
 
+	it("virtualizes long tool activity lists", async () => {
+		render(
+			<InlineToolRail
+				toolCalls={Array.from({ length: 80 }, (_, index) => ({
+					toolCallId: `write-${index}`,
+					toolName: "write",
+					args: { path: `src/file-${String(index).padStart(3, "0")}.ts` },
+					status: "completed" as const,
+					startedAt: index,
+					updatedAt: index + 1,
+					completedAt: index + 1,
+					result: { content: [{ type: "text", text: "done" }] },
+				}))}
+			/>,
+		);
+
+		const activityList = screen.getByRole("list", { name: "Tool activity" });
+		expect(activityList.getAttribute("data-slot")).toBe("tool-task-activity-virtual-list");
+
+		await waitFor(() => {
+			expect(screen.getByText("file-000.ts")).toBeTruthy();
+		});
+		expect(screen.queryByText("file-079.ts")).toBeNull();
+		expect(document.querySelectorAll("[data-slot='tool-task-item']").length).toBeLessThan(80);
+
+		activityList.scrollTop = 6_200;
+		fireEvent.scroll(activityList);
+
+		await waitFor(() => {
+			expect(screen.getByText("file-072.ts")).toBeTruthy();
+		});
+	});
+
 	it("summarizes contiguous image reads while keeping preview images visible", () => {
 		render(<InlineToolRail toolCalls={Array.from({ length: 7 }, (_, index) => createImageReadToolCall(index))} />);
 
@@ -87,6 +120,26 @@ describe("InlineToolRail UI", () => {
 		expect(screen.queryByText("Read image file [image/png]")).toBeNull();
 		expect(screen.getByAltText("panel-0.png").closest("[data-slot='thread-image-preview-grid']")).not.toBeNull();
 		expect(screen.getByAltText("panel-6.png").closest("[data-slot='thread-image-preview-grid']")).not.toBeNull();
+	});
+
+	it("virtualizes large image preview grids", async () => {
+		render(<InlineToolRail toolCalls={Array.from({ length: 48 }, (_, index) => createImageReadToolCall(index))} />);
+
+		const imagePreviewList = screen.getByRole("list", { name: "Image previews" });
+		expect(imagePreviewList.getAttribute("data-slot")).toBe("thread-image-preview-grid");
+
+		await waitFor(() => {
+			expect(screen.getByAltText("panel-0.png")).toBeTruthy();
+		});
+		expect(screen.queryByAltText("panel-47.png")).toBeNull();
+		expect(document.querySelectorAll("[data-slot='thread-image-preview-frame']").length).toBeLessThan(48);
+
+		imagePreviewList.scrollTop = 5_200;
+		fireEvent.scroll(imagePreviewList);
+
+		await waitFor(() => {
+			expect(screen.getByAltText("panel-46.png")).toBeTruthy();
+		});
 	});
 
 	it("buffers active image read bursts before showing the grouped task row and preview grid", async () => {

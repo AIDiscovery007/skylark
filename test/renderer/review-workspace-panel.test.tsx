@@ -15,6 +15,7 @@ import type {
 	DesktopEnvironmentEvent,
 	DesktopPreviewFile,
 	DesktopPreviewFileRequest,
+	DesktopReviewFilePatchRequest,
 	DesktopReviewSnapshot,
 	DesktopReviewSnapshotRequest,
 	DesktopSubagentRuntimeEvent,
@@ -231,10 +232,25 @@ function installBridge(snapshot: ReviewSnapshotSource = changedSnapshot, preview
 	const agentEvents = createRendererBridgeEventChannel<SerializedAgentEvent>();
 	const environmentEvents = createRendererBridgeEventChannel<DesktopEnvironmentEvent>();
 	const subagentEvents = createRendererBridgeEventChannel<DesktopSubagentRuntimeEvent>();
+	const resolveSnapshot = async (request: DesktopReviewSnapshotRequest): Promise<DesktopReviewSnapshot> =>
+		typeof snapshot === "function" ? snapshot(request) : snapshot;
+	const stripSnapshotPatches = (sourceSnapshot: DesktopReviewSnapshot): DesktopReviewSnapshot => ({
+		...sourceSnapshot,
+		patch: undefined,
+		files: sourceSnapshot.files.map(({ patch: _patch, ...file }) => file),
+	});
 	const bridge = {
 		getReviewSnapshot: vi.fn(async (request: DesktopReviewSnapshotRequest) =>
-			typeof snapshot === "function" ? snapshot(request) : snapshot,
+			stripSnapshotPatches(await resolveSnapshot(request)),
 		),
+		getReviewFilePatch: vi.fn(async (request: DesktopReviewFilePatchRequest) => {
+			const sourceSnapshot = await resolveSnapshot(request);
+			const file = sourceSnapshot.files.find((entry) => entry.path === request.path);
+			if (!file) {
+				throw new Error("Review file not found");
+			}
+			return file;
+		}),
 		getSubagentSnapshot: vi.fn(async () => subagentSnapshot),
 		openPreviewFiles: vi.fn(async () => previewFiles),
 		openWorkspacePreviewFile: vi.fn(async (request: DesktopWorkspacePreviewFileRequest) => {
@@ -259,6 +275,7 @@ function installBridge(snapshot: ReviewSnapshotSource = changedSnapshot, preview
 	} as Pick<
 		DesktopAgentBridge,
 		| "getSubagentSnapshot"
+		| "getReviewFilePatch"
 		| "getReviewSnapshot"
 		| "openPreviewFiles"
 		| "openWorkspacePreviewFile"
@@ -383,6 +400,10 @@ describe("ReviewWorkspacePanel", () => {
 		expect(await screen.findByText("feature/review / 2 个文件")).toBeTruthy();
 		expect(await screen.findByText("App.tsx")).toBeTruthy();
 		expect(await screen.findByText("const review = true;")).toBeTruthy();
+		expect(bridge.getReviewFilePatch).toHaveBeenCalledWith({
+			path: "src/App.tsx",
+			projectId: "project-1",
+		});
 		const header = document.querySelector('[data-slot="review-workspace-header"]');
 		const titleBlock = document.querySelector('[data-slot="review-workspace-title-block"]');
 		const titleTextRegion = document.querySelector('[data-slot="review-workspace-title-text-region"]');
@@ -480,6 +501,47 @@ describe("ReviewWorkspacePanel", () => {
 			expect(sourceCode?.textContent).toContain("export");
 			expect(sourceCode?.textContent).toContain("ready");
 		});
+	});
+
+	it("bounds retained workspace file preview tabs to the most recent files", async () => {
+		const user = userEvent.setup();
+		const previewFiles = Array.from(
+			{ length: 10 },
+			(_, index): DesktopPreviewFile => ({
+				path: `/workspace/project/preview-${String(index).padStart(2, "0")}.txt`,
+				name: `preview-${String(index).padStart(2, "0")}.txt`,
+				mimeType: "text/plain",
+				size: 12,
+				kind: "text",
+				content: `preview ${index}`,
+				updatedAt: "2026-05-01T00:00:00.000Z",
+			}),
+		);
+		installBridge(changedSnapshot, previewFiles);
+		render(
+			<TooltipProvider>
+				<div className="relative h-[720px]">
+					<ReviewWorkspacePanel
+						isFullscreen={false}
+						onClose={vi.fn()}
+						onFullscreenChange={vi.fn()}
+						open
+						projectId="project-1"
+						sessionId="session-1"
+						workspaceLabel="/workspace/project"
+					/>
+				</div>
+			</TooltipProvider>,
+		);
+
+		await screen.findByText("综合面板");
+		await user.click(await findWorkspaceCreateMenuItem(user, "打开文件"));
+
+		expect(await screen.findByRole("tab", { name: /preview-09\.txt/i })).toBeTruthy();
+		expect(screen.queryByRole("tab", { name: /preview-00\.txt/i })).toBeNull();
+		expect(screen.queryByRole("tab", { name: /preview-01\.txt/i })).toBeNull();
+		expect(screen.getByRole("tab", { name: /preview-02\.txt/i })).toBeTruthy();
+		expect(screen.getByText("preview 9")).toBeTruthy();
 	});
 
 	it("opens a subagent detail tab with persisted transcript and live runtime updates", async () => {
@@ -752,6 +814,36 @@ describe("ReviewWorkspacePanel", () => {
 
 		expect(screen.queryByText("App.tsx")).toBeNull();
 		expect(screen.getByText("review-store.ts")).toBeTruthy();
+	});
+
+	it("virtualizes large changed file trees", async () => {
+		const files = Array.from({ length: 120 }, (_, index) => {
+			const fileNumber = String(index + 1).padStart(3, "0");
+			return {
+				...changedSnapshot.files[0]!,
+				path: `src/generated/File${fileNumber}.tsx`,
+				patch: "",
+			};
+		});
+
+		renderPanel({
+			...changedSnapshot,
+			files,
+			totals: { additions: 120, deletions: 0, files: files.length },
+		});
+
+		expect(await screen.findByText("File001.tsx")).toBeTruthy();
+		const tree = screen.getByLabelText("Changed files tree");
+		expect(tree.querySelectorAll("[data-slot='virtual-stack-item']").length).toBeLessThan(files.length);
+		expect(screen.queryByText("File120.tsx")).toBeNull();
+
+		tree.scrollTop = 32 * 115;
+		fireEvent.scroll(tree);
+
+		await waitFor(() => {
+			expect(screen.getByText("File118.tsx")).toBeTruthy();
+		});
+		expect(screen.queryByText("File001.tsx")).toBeNull();
 	});
 
 	it("collapses and expands folders without losing filtered matches", async () => {

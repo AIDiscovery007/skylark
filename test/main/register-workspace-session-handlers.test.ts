@@ -1,7 +1,9 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { promisify } from "node:util";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DesktopAuthService } from "../../src/main/auth/desktop-auth-service.ts";
 import type { DesktopEventStore } from "../../src/main/events/event-store.ts";
 import { registerDesktopAgentHandlers } from "../../src/main/ipc/register-handlers.ts";
@@ -17,6 +19,19 @@ import { IPC_CHANNELS } from "../../src/shared/ipc-contract.ts";
 import { DEFAULT_DESKTOP_PERMISSION_APPROVAL_SETTINGS } from "../../src/shared/types.ts";
 
 type IpcHandler = (event: unknown, ...args: unknown[]) => unknown;
+const execFileAsync = promisify(execFile);
+const tempDirectories: string[] = [];
+
+async function createTempDirectory(prefix: string): Promise<string> {
+	const directoryPath = await mkdtemp(join(tmpdir(), prefix));
+	tempDirectories.push(directoryPath);
+	return directoryPath;
+}
+
+async function git(cwd: string, args: string[]): Promise<string> {
+	const { stdout } = await execFileAsync("git", ["-C", cwd, ...args], { maxBuffer: 8 * 1024 * 1024 });
+	return stdout;
+}
 
 const electronMocks = vi.hoisted(() => {
 	const handlers = new Map<string, IpcHandler>();
@@ -41,6 +56,12 @@ vi.mock("electron", () => ({
 	ipcMain: electronMocks.ipcMain,
 	shell: { openExternal: vi.fn() },
 }));
+
+afterEach(async () => {
+	await Promise.all(
+		tempDirectories.splice(0).map((directoryPath) => rm(directoryPath, { recursive: true, force: true })),
+	);
+});
 
 function getHandler(channel: string): IpcHandler {
 	const handler = electronMocks.handlers.get(channel);
@@ -123,8 +144,62 @@ describe("session, project, prompt, and preview IPC handlers", () => {
 		});
 	});
 
+	it("forwards validated session message page requests", async () => {
+		const getSessionMessages = vi.fn(async () => ({
+			sessionId: "session-1",
+			messages: [],
+			window: { start: 40, end: 80, total: 120, hasMoreBefore: true },
+		}));
+		registerHandlers({ host: { getSessionMessages } });
+
+		const result = await getHandler(IPC_CHANNELS.getSessionMessages)(undefined, {
+			sessionId: "session-1",
+			before: 80,
+			limit: 40,
+		});
+
+		expect(getSessionMessages).toHaveBeenCalledWith({ sessionId: "session-1", before: 80, limit: 40 });
+		expect(result).toEqual({
+			sessionId: "session-1",
+			messages: [],
+			window: { start: 40, end: 80, total: 120, hasMoreBefore: true },
+		});
+	});
+
+	it("returns review snapshots without patch strings and loads selected file patches lazily", async () => {
+		const repo = await createTempDirectory("desktop-review-ipc-");
+		await git(repo, ["init", "-b", "main"]);
+		await git(repo, ["config", "user.email", "desktop@example.com"]);
+		await git(repo, ["config", "user.name", "Desktop Agent"]);
+		await writeFile(join(repo, "tracked.ts"), "const value = 1;\n", "utf8");
+		await git(repo, ["add", "tracked.ts"]);
+		await git(repo, ["commit", "-m", "initial"]);
+		await writeFile(join(repo, "tracked.ts"), "const value = 2;\nconst next = true;\n", "utf8");
+		const resolveReviewWorkspaceCwd = vi.fn(async () => repo);
+		registerHandlers({ host: { resolveReviewWorkspaceCwd } });
+
+		const snapshot = (await getHandler(IPC_CHANNELS.getReviewSnapshot)(undefined, {
+			projectId: "project-1",
+		})) as { files: Array<{ path: string; patch?: string }>; patch?: string };
+		const file = (await getHandler(IPC_CHANNELS.getReviewFilePatch)(undefined, {
+			projectId: "project-1",
+			path: "tracked.ts",
+		})) as { path: string; patch?: string };
+
+		expect(snapshot.patch).toBeUndefined();
+		expect(snapshot.files.find((entry) => entry.path === "tracked.ts")?.patch).toBeUndefined();
+		expect(file.path).toBe("tracked.ts");
+		expect(file.patch).toContain("const next = true;");
+		expect(resolveReviewWorkspaceCwd).toHaveBeenCalledWith({ projectId: "project-1", sessionId: undefined });
+		expect(resolveReviewWorkspaceCwd).toHaveBeenCalledWith({
+			path: "tracked.ts",
+			projectId: "project-1",
+			sessionId: undefined,
+		});
+	});
+
 	it("authorizes preview refresh only after the file was opened in this app session", async () => {
-		const workspaceDir = await mkdtemp(join(tmpdir(), "desktop-preview-ipc-"));
+		const workspaceDir = await createTempDirectory("desktop-preview-ipc-");
 		await writeFile(join(workspaceDir, "README.md"), "# Preview\n\nRendered from workspace.");
 		const resolveReviewWorkspaceCwd = vi.fn(async () => workspaceDir);
 		registerHandlers({ host: { resolveReviewWorkspaceCwd } });

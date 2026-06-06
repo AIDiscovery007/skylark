@@ -74,8 +74,10 @@ describe("createDesktopAgentBridge", () => {
 			"getEvent",
 			"getEventManagementCriteria",
 			"getNativeAppearance",
+			"getReviewFilePatch",
 			"getReviewSnapshot",
 			"getRuntimeCatalog",
+			"getSessionMessages",
 			"getSettings",
 			"getSnapshot",
 			"getStorageSecurityState",
@@ -146,6 +148,26 @@ describe("createDesktopAgentBridge", () => {
 		expect("invoke" in bridge).toBe(false);
 	});
 
+	it("invokes the session messages channel with the paging request", async () => {
+		const ipcRenderer: BridgeIpcRenderer = {
+			invoke: vi.fn(async () => ({
+				sessionId: "session-1",
+				messages: [],
+				window: { start: 0, end: 0, total: 0, hasMoreBefore: false },
+			})),
+			postMessage: vi.fn(),
+		};
+		const bridge = createDesktopAgentBridge(ipcRenderer, () => ({
+			port1: new FakeMessagePort<SerializedAgentEvent>(),
+			port2: {},
+		}));
+
+		const request = { sessionId: "session-1", before: 120, limit: 80 };
+		await bridge.getSessionMessages(request);
+
+		expect(ipcRenderer.invoke).toHaveBeenCalledWith(IPC_CHANNELS.getSessionMessages, request);
+	});
+
 	it("opens the stream channel once and forwards events", async () => {
 		const port = new FakeMessagePort<SerializedAgentEvent>();
 		const ipcRenderer = {
@@ -206,6 +228,26 @@ describe("createDesktopAgentBridge", () => {
 
 		await expect(bridge.getWorkspaceOverview()).resolves.toBe(overview);
 		expect(ipcRenderer.invoke).toHaveBeenCalledWith(IPC_CHANNELS.getWorkspaceOverview);
+	});
+
+	it("invokes the review file patch channel", async () => {
+		const ipcRenderer: BridgeIpcRenderer = {
+			invoke: vi.fn(async () => ({ path: "src/App.tsx", patch: "diff --git" })),
+			postMessage: vi.fn(),
+		};
+		const bridge = createDesktopAgentBridge(ipcRenderer, () => ({
+			port1: new FakeMessagePort<SerializedAgentEvent>(),
+			port2: {},
+		}));
+
+		await expect(bridge.getReviewFilePatch({ path: "src/App.tsx", projectId: "project-1" })).resolves.toEqual({
+			path: "src/App.tsx",
+			patch: "diff --git",
+		});
+		expect(ipcRenderer.invoke).toHaveBeenCalledWith(IPC_CHANNELS.getReviewFilePatch, {
+			path: "src/App.tsx",
+			projectId: "project-1",
+		});
 	});
 
 	it("opens the terminal stream channel once and forwards terminal events", () => {

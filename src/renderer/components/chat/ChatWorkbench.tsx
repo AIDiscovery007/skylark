@@ -51,6 +51,7 @@ import { EntityRow } from "@/components/ui/entity-row";
 import { ErrorNotice } from "@/components/ui/error-notice";
 import { Spinner } from "@/components/ui/spinner";
 import { StatusDot, type StatusDotStatus } from "@/components/ui/status-dot";
+import { VirtualStack } from "@/components/ui/virtual-stack";
 import { activityDrawerTransition, softRevealTransition, subtleReveal } from "@/lib/motion";
 import { markRendererPerformance, measureRendererPerformance } from "@/lib/performance-marks";
 import type { DesktopAgentBridge } from "../../../shared/ipc-contract.ts";
@@ -138,6 +139,8 @@ const COMPOSER_SCROLL_GAP_PX = 24;
 const COMPOSER_INPUT_MIN_HEIGHT_PX = 80;
 const COMPOSER_INPUT_MAX_HEIGHT_PX = 224;
 const ASSISTANT_AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 96;
+const ASSISTANT_HISTORY_LOAD_TOP_THRESHOLD_PX = 96;
+const ASSISTANT_HISTORY_PAGE_LIMIT = 80;
 const ASSISTANT_USER_SCROLL_DIRECTION_EPSILON_PX = 1;
 const PROPOSED_PLAN_COLLAPSED_HEIGHT_PX = 360;
 const PROPOSED_PLAN_COLLAPSED_LINES = 12;
@@ -1278,6 +1281,25 @@ interface SlashCommandSection {
 	commands: DesktopSlashCommandSummary[];
 }
 
+type ComposerSuggestionListItem =
+	| {
+			key: string;
+			title: string;
+			type: "section";
+	  }
+	| {
+			command: DesktopSlashCommandSummary;
+			key: string;
+			suggestionIndex: number;
+			type: "slash";
+	  }
+	| {
+			file: DesktopWorkspaceFileEntry;
+			key: string;
+			suggestionIndex: number;
+			type: "file";
+	  };
+
 interface AtReferenceToken {
 	start: number;
 	end: number;
@@ -1344,14 +1366,11 @@ function filterWorkspaceFileSuggestions(
 ): DesktopWorkspaceFileEntry[] {
 	const normalizedQuery = query.replace(/^"/, "").toLowerCase();
 	if (!normalizedQuery) {
-		return files.slice(0, 12);
+		return files;
 	}
-	return files
-		.filter(
-			(file) =>
-				file.name.toLowerCase().includes(normalizedQuery) || file.path.toLowerCase().includes(normalizedQuery),
-		)
-		.slice(0, 12);
+	return files.filter(
+		(file) => file.name.toLowerCase().includes(normalizedQuery) || file.path.toLowerCase().includes(normalizedQuery),
+	);
 }
 
 function formatWorkspaceFileReference(path: string): string {
@@ -1390,7 +1409,15 @@ function getSlashCommandIcon(command: DesktopSlashCommandSummary): ReactNode {
 	return <SquareSlash className="size-3.5" />;
 }
 
-function ComposerSuggestionPanel({ children, label }: { children: ReactNode; label: string }) {
+function ComposerSuggestionPanel({
+	children,
+	label,
+	scrollable = true,
+}: {
+	children: ReactNode;
+	label: string;
+	scrollable?: boolean;
+}) {
 	return (
 		<motion.div
 			animate={{ opacity: 1, y: 0 }}
@@ -1401,17 +1428,56 @@ function ComposerSuggestionPanel({ children, label }: { children: ReactNode; lab
 			role="listbox"
 			transition={softRevealTransition}
 		>
-			<div className="composer-suggestion-scrollbar max-h-[min(360px,48vh)] overflow-y-auto py-2">{children}</div>
+			{scrollable ? (
+				<div className="composer-suggestion-scrollbar max-h-[min(360px,48vh)] overflow-y-auto py-2">{children}</div>
+			) : (
+				children
+			)}
 		</motion.div>
 	);
+}
+
+function ComposerSuggestionSectionTitle({ title }: { title: string }) {
+	return <div className="px-2 pb-1 text-[12px] font-medium leading-5 text-[color:var(--text-tertiary)]">{title}</div>;
 }
 
 function ComposerSuggestionSection({ children, title }: { children: ReactNode; title: string }) {
 	return (
 		<section className="px-2 py-1" data-slot="composer-suggestion-section">
-			<div className="px-2 pb-1 text-[12px] font-medium leading-5 text-[color:var(--text-tertiary)]">{title}</div>
+			<ComposerSuggestionSectionTitle title={title} />
 			<div className="grid gap-0.5">{children}</div>
 		</section>
+	);
+}
+
+function ComposerSuggestionVirtualList({
+	items,
+	renderItem,
+	selectedSuggestionIndex,
+}: {
+	items: ComposerSuggestionListItem[];
+	renderItem: (item: ComposerSuggestionListItem) => ReactNode;
+	selectedSuggestionIndex: number;
+}) {
+	const selectedVirtualIndex = items.findIndex(
+		(item) => item.type !== "section" && item.suggestionIndex === selectedSuggestionIndex,
+	);
+
+	return (
+		<VirtualStack
+			className="composer-suggestion-scrollbar max-h-[min(360px,48vh)] overflow-y-auto overflow-x-hidden py-2"
+			dataSlot="composer-suggestion-virtual-list"
+			estimateSize={(index) => (items[index]?.type === "section" ? 28 : 44)}
+			gap={2}
+			getKey={(item) => item.key}
+			initialViewportHeight={360}
+			itemClassName="px-2"
+			items={items}
+			overscan={6}
+			renderItem={({ item }) => renderItem(item)}
+			role="presentation"
+			scrollToIndex={selectedVirtualIndex >= 0 ? selectedVirtualIndex : undefined}
+		/>
 	);
 }
 
@@ -2536,6 +2602,75 @@ function SystemMessage({ message }: { message: DesktopThreadMessage }) {
 	return null;
 }
 
+type AssistantTimelineItem =
+	| {
+			key: string;
+			message: DesktopThreadMessage;
+			type: "message";
+	  }
+	| {
+			key: string;
+			type: "compaction-running";
+	  };
+
+function shouldRenderTimelineMessage(message: DesktopThreadMessage): boolean {
+	if (message.role !== "system") {
+		return true;
+	}
+	const messageCustomMetadata = message.metadata?.custom;
+	return Boolean(getCompactionNotice(messageCustomMetadata?.[DESKTOP_COMPACTION_NOTICE_METADATA_KEY]));
+}
+
+function estimateTimelineMessageSize(message: DesktopThreadMessage): number {
+	if (message.role === "user") {
+		const imageCount = getThreadImageParts(message).length;
+		const attachmentCount = getUserPromptAttachments(message.metadata?.custom).length;
+		const textLength = getThreadTextParts(message).reduce((total, part) => total + part.text.length, 0);
+		return Math.max(92, 76 + imageCount * 112 + attachmentCount * 44 + Math.ceil(textLength / 90) * 18);
+	}
+	if (message.role === "assistant") {
+		const activityCount = getThreadActivityParts(message).length;
+		const imageCount = getThreadImageParts(message).length;
+		const textLength = getThreadTextParts(message).reduce((total, part) => total + part.text.length, 0);
+		return Math.max(116, 88 + activityCount * 72 + imageCount * 112 + Math.ceil(textLength / 80) * 20);
+	}
+	return 56;
+}
+
+function estimateAssistantTimelineItemSize(item: AssistantTimelineItem): number {
+	if (item.type === "compaction-running") {
+		return 56;
+	}
+	return estimateTimelineMessageSize(item.message);
+}
+
+function AssistantTimelineItemView({
+	item,
+	onPreviewImage,
+	resolveWorkspaceImage,
+}: {
+	item: AssistantTimelineItem;
+	onPreviewImage?: (image: ThreadImagePreview) => void;
+	resolveWorkspaceImage?: WorkspaceImagePreviewResolver;
+}) {
+	if (item.type === "compaction-running") {
+		return <CompactionTimelineDivider status="running" />;
+	}
+	if (item.message.role === "user") {
+		return <UserMessage message={item.message} onPreviewImage={onPreviewImage} />;
+	}
+	if (item.message.role === "assistant") {
+		return (
+			<AssistantMessage
+				message={item.message}
+				onPreviewImage={onPreviewImage}
+				resolveWorkspaceImage={resolveWorkspaceImage}
+			/>
+		);
+	}
+	return <SystemMessage message={item.message} />;
+}
+
 function useDelayedVisibleFlag(active: boolean, delayMs: number): boolean {
 	const [visible, setVisible] = useState(false);
 
@@ -3187,25 +3322,44 @@ function AssistantComposer({
 
 	function renderSlashSuggestionRows(): ReactNode {
 		let rowIndex = 0;
-		return slashSections.map((section) => (
-			<ComposerSuggestionSection key={section.key} title={section.title}>
-				{section.commands.map((command) => {
-					const currentIndex = rowIndex;
-					rowIndex += 1;
+		const items = slashSections.flatMap<ComposerSuggestionListItem>((section) => [
+			{ key: `section:${section.key}`, title: section.title, type: "section" },
+			...section.commands.map((command) => {
+				const currentIndex = rowIndex;
+				rowIndex += 1;
+				return {
+					command,
+					key: `slash:${command.source}:${command.name}`,
+					suggestionIndex: currentIndex,
+					type: "slash" as const,
+				};
+			}),
+		]);
+		return (
+			<ComposerSuggestionVirtualList
+				items={items}
+				renderItem={(item) => {
+					if (item.type === "section") {
+						return <ComposerSuggestionSectionTitle title={item.title} />;
+					}
+					if (item.type !== "slash") {
+						return null;
+					}
+					const command = item.command;
 					return (
 						<ComposerSuggestionRow
 							description={command.description ?? command.source}
 							icon={getSlashCommandIcon(command)}
-							key={`${command.source}:${command.name}`}
 							onSelect={() => selectSlashCommand(command)}
-							selected={currentIndex === selectedSuggestionIndex}
+							selected={item.suggestionIndex === selectedSuggestionIndex}
 							title={`/${command.name}`}
 							trailing={command.source}
 						/>
 					);
-				})}
-			</ComposerSuggestionSection>
-		));
+				}}
+				selectedSuggestionIndex={selectedSuggestionIndex}
+			/>
+		);
 	}
 
 	function renderFileSuggestionRows(): ReactNode {
@@ -3228,24 +3382,43 @@ function AssistantComposer({
 				</ComposerSuggestionSection>
 			);
 		}
+		const items: ComposerSuggestionListItem[] = [
+			{ key: "section:files", title: "Files", type: "section" },
+			...fileSuggestions.map((file, index) => ({
+				file,
+				key: `file:${file.path}`,
+				suggestionIndex: index,
+				type: "file" as const,
+			})),
+		];
 		return (
-			<ComposerSuggestionSection title="Files">
-				{fileSuggestions.map((file, index) => (
-					<ComposerSuggestionRow
-						description={file.path}
-						icon={getWorkspaceFileIcon(file)}
-						key={file.path}
-						onSelect={() => {
-							setSelectedSuggestionIndex(index);
-							onOpenWorkspacePreviewFile?.(file.path);
-							getRefTextareaElement(inputRef)?.focus();
-						}}
-						selected={index === selectedSuggestionIndex}
-						title={file.name}
-						trailing={file.type}
-					/>
-				))}
-			</ComposerSuggestionSection>
+			<ComposerSuggestionVirtualList
+				items={items}
+				renderItem={(item) => {
+					if (item.type === "section") {
+						return <ComposerSuggestionSectionTitle title={item.title} />;
+					}
+					if (item.type !== "file") {
+						return null;
+					}
+					const file = item.file;
+					return (
+						<ComposerSuggestionRow
+							description={file.path}
+							icon={getWorkspaceFileIcon(file)}
+							onSelect={() => {
+								setSelectedSuggestionIndex(item.suggestionIndex);
+								onOpenWorkspacePreviewFile?.(file.path);
+								getRefTextareaElement(inputRef)?.focus();
+							}}
+							selected={item.suggestionIndex === selectedSuggestionIndex}
+							title={file.name}
+							trailing={file.type}
+						/>
+					);
+				}}
+				selectedSuggestionIndex={selectedSuggestionIndex}
+			/>
 		);
 	}
 
@@ -3335,7 +3508,7 @@ function AssistantComposer({
 		>
 			<AnimatePresence>
 				{activeSuggestionKind ? (
-					<ComposerSuggestionPanel label="Composer suggestions">
+					<ComposerSuggestionPanel label="Composer suggestions" scrollable={false}>
 						{activeSuggestionKind === "slash" ? renderSlashSuggestionRows() : renderFileSuggestionRows()}
 					</ComposerSuggestionPanel>
 				) : null}
@@ -3375,10 +3548,12 @@ export function ChatWorkbench({
 	const isStreaming = useAgentStore((state) => state.isStreaming);
 	const contextMessages = useAgentStore((state) => state.contextMessages);
 	const messages = useAgentStore((state) => state.messages);
+	const messageWindow = useAgentStore((state) => state.messageWindow);
 	const consumedProposedPlanMessageIds = useAgentStore((state) => state.consumedProposedPlanMessageIds);
 	const model = useAgentStore((state) => state.model);
 	const activeAgentSessionId = useAgentStore((state) => state.activeSessionId);
 	const pendingActiveSessionId = useAgentStore((state) => state.pendingActiveSessionId);
+	const prependOlderMessages = useAgentStore((state) => state.prependOlderMessages);
 	const runActivityTiming = useAgentStore((state) => state.runActivityTiming);
 	const streamingMessage = useAgentStore((state) => state.streamingMessage);
 	const taskProgress = useAgentStore((state) => state.taskProgress);
@@ -3395,6 +3570,7 @@ export function ChatWorkbench({
 	const composerRef = useRef<HTMLTextAreaElement | null>(null);
 	const composerDockRef = useRef<HTMLDivElement | null>(null);
 	const threadViewportRef = useRef<HTMLDivElement | null>(null);
+	const olderMessagesRequestKeyRef = useRef<string | undefined>(undefined);
 	const [threadViewportElement, setThreadViewportElement] = useState<HTMLDivElement | null>(null);
 	const handledComposerFocusNonceRef = useRef<number | undefined>(undefined);
 	const [selectedCapabilityInvocations, setSelectedCapabilityInvocations] = useState<
@@ -3426,6 +3602,20 @@ export function ChatWorkbench({
 		[isStreaming, messages, runActivityTiming, showThinkingBlocks, visibleStreamingMessage, toolCalls],
 	);
 	const isCompactionRunning = compactionActivity !== undefined;
+	const assistantTimelineItems = useMemo<AssistantTimelineItem[]>(() => {
+		const items: AssistantTimelineItem[] = assistantMessages.filter(shouldRenderTimelineMessage).map((message) => ({
+			key: `${activeAgentSessionId ?? "no-active-session"}:${message.id}`,
+			message,
+			type: "message",
+		}));
+		if (isCompactionRunning) {
+			items.push({
+				key: `${activeAgentSessionId ?? "no-active-session"}:compaction-running`,
+				type: "compaction-running",
+			});
+		}
+		return items;
+	}, [activeAgentSessionId, assistantMessages, isCompactionRunning]);
 	const handleOpenImagePreview = useCallback((image: ThreadImagePreview): void => {
 		setPreviewImage(image);
 	}, []);
@@ -3492,8 +3682,8 @@ export function ChatWorkbench({
 		});
 	}, [contextMessages, messages, modelContextWindow, streamingMessage]);
 	const assistantViewportScrollDependency = useMemo(
-		() => ({ assistantMessages, composerInset }),
-		[assistantMessages, composerInset],
+		() => ({ assistantTimelineItems, composerInset }),
+		[assistantTimelineItems, composerInset],
 	);
 	const setThreadViewportRef = useCallback((element: HTMLDivElement | null) => {
 		threadViewportRef.current = element;
@@ -3502,6 +3692,82 @@ export function ChatWorkbench({
 	const isSwitchingSession = pendingActiveSessionId !== undefined;
 	const hasActiveConversation = activeAgentSessionId !== undefined;
 	const isConversationHydrating = hasActiveConversation && !hasHydrated;
+
+	useEffect(() => {
+		const viewport = threadViewportElement;
+		if (
+			!viewport ||
+			!activeAgentSessionId ||
+			!messageWindow?.hasMoreBefore ||
+			isConversationHydrating ||
+			isSwitchingSession
+		) {
+			return;
+		}
+
+		const viewportElement = viewport;
+		const sessionId = activeAgentSessionId;
+		const currentWindow = messageWindow;
+		let cancelled = false;
+		function handleScroll(): void {
+			if (viewportElement.scrollTop > ASSISTANT_HISTORY_LOAD_TOP_THRESHOLD_PX) {
+				return;
+			}
+
+			const requestKey = `${sessionId}:${currentWindow.start}`;
+			if (olderMessagesRequestKeyRef.current === requestKey) {
+				return;
+			}
+
+			const desktopBridge = (window as Partial<Window>).desktopAgent as Partial<DesktopAgentBridge> | undefined;
+			if (typeof desktopBridge?.getSessionMessages !== "function") {
+				return;
+			}
+
+			olderMessagesRequestKeyRef.current = requestKey;
+			const previousScrollHeight = viewportElement.scrollHeight;
+			const previousScrollTop = viewportElement.scrollTop;
+
+			void desktopBridge
+				.getSessionMessages({
+					before: currentWindow.start,
+					limit: ASSISTANT_HISTORY_PAGE_LIMIT,
+					sessionId,
+				})
+				.then((result) => {
+					if (cancelled || result.sessionId !== sessionId) {
+						return;
+					}
+					prependOlderMessages(result);
+					window.requestAnimationFrame(() => {
+						if (cancelled) {
+							return;
+						}
+						const heightDelta = Math.max(0, viewportElement.scrollHeight - previousScrollHeight);
+						viewportElement.scrollTop = previousScrollTop + heightDelta;
+					});
+				})
+				.catch(() => undefined)
+				.finally(() => {
+					if (olderMessagesRequestKeyRef.current === requestKey) {
+						olderMessagesRequestKeyRef.current = undefined;
+					}
+				});
+		}
+
+		viewportElement.addEventListener("scroll", handleScroll, { passive: true });
+		return () => {
+			cancelled = true;
+			viewportElement.removeEventListener("scroll", handleScroll);
+		};
+	}, [
+		activeAgentSessionId,
+		isConversationHydrating,
+		isSwitchingSession,
+		messageWindow,
+		prependOlderMessages,
+		threadViewportElement,
+	]);
 	const isComposerDisabled = !hasActiveConversation || !hasHydrated || Boolean(bridgeError) || isSwitchingSession;
 	const proposedPlanExecutionContext = useMemo(
 		() => ({
@@ -3554,7 +3820,7 @@ export function ChatWorkbench({
 		composerRef.current?.focus();
 		handledComposerFocusNonceRef.current = composerFocusRequest.nonce;
 	}, [activeAgentSessionId, bridgeError, composerFocusRequest, hasHydrated, isSwitchingSession]);
-	useEffect(() => {
+	useLayoutEffect(() => {
 		const composerDock = composerDockRef.current;
 		if (!composerDock) {
 			return;
@@ -3562,7 +3828,12 @@ export function ChatWorkbench({
 		const composerDockElement = composerDock;
 
 		function updateComposerInset(): void {
-			const nextInset = Math.ceil(composerDockElement.getBoundingClientRect().height) + COMPOSER_SCROLL_GAP_PX;
+			const measuredHeight = Math.max(
+				composerDockElement.getBoundingClientRect().height,
+				composerDockElement.offsetHeight,
+				composerDockElement.scrollHeight,
+			);
+			const nextInset = Math.max(DEFAULT_COMPOSER_INSET_PX, Math.ceil(measuredHeight) + COMPOSER_SCROLL_GAP_PX);
 			setComposerInset((currentInset) => (currentInset === nextInset ? currentInset : nextInset));
 		}
 
@@ -3590,6 +3861,17 @@ export function ChatWorkbench({
 			window.clearTimeout(timeoutId);
 		};
 	}, [abortNoticeKey]);
+	const scrollToBottomAnchor =
+		hasHydrated && !isConversationHydrating && !isSwitchingSession ? (
+			<div
+				className="pointer-events-none absolute inset-x-0 bottom-full z-10 mb-3 flex h-8 justify-center"
+				data-slot="assistant-scroll-to-bottom-anchor"
+			>
+				<div className="pointer-events-auto">
+					<AssistantScrollToBottomButton viewport={threadViewportElement} />
+				</div>
+			</div>
+		) : null;
 
 	return (
 		<WorkspacePreviewLinkContext.Provider value={onOpenWorkspacePreviewFile}>
@@ -3648,7 +3930,7 @@ export function ChatWorkbench({
 								<QuietHydrationState bottomInset={composerInset} />
 							) : isSwitchingSession ? (
 								<QuietSessionSwitchState bottomInset={composerInset} />
-							) : (
+							) : assistantMessages.length === 0 ? (
 								<ConversationContent
 									className="gap-0 p-0"
 									scrollClassName="native-scrollbar h-full overflow-y-auto overscroll-contain pb-6 pt-6"
@@ -3659,51 +3941,47 @@ export function ChatWorkbench({
 									}}
 									stickToBottom={false}
 								>
-									{assistantMessages.length === 0 ? (
-										<AssistantEmptyState
-											detail={
-												bridgeError
-													? (cwd ?? "Session snapshot unavailable.")
-													: (cwd ?? "Workspace path will appear here when the session is ready.")
-											}
-											onAction={() => composerRef.current?.focus()}
-											tone={bridgeError ? "error" : "idle"}
-										/>
-									) : (
-										assistantMessages.map((message) => {
-											const messageKey = `${activeAgentSessionId ?? "no-active-session"}:${message.id}`;
-											if (message.role === "user") {
-												return (
-													<UserMessage
-														key={messageKey}
-														message={message}
-														onPreviewImage={handleOpenImagePreview}
-													/>
-												);
-											}
-											if (message.role === "assistant") {
-												return (
-													<AssistantMessage
-														key={messageKey}
-														message={message}
-														onPreviewImage={handleOpenImagePreview}
-														resolveWorkspaceImage={resolveWorkspaceImagePreview}
-													/>
-												);
-											}
-											return <SystemMessage key={messageKey} message={message} />;
-										})
-									)}
+									<AssistantEmptyState
+										detail={
+											bridgeError
+												? (cwd ?? "Session snapshot unavailable.")
+												: (cwd ?? "Workspace path will appear here when the session is ready.")
+										}
+										onAction={() => composerRef.current?.focus()}
+										tone={bridgeError ? "error" : "idle"}
+									/>
 									{isCompactionRunning ? <CompactionTimelineDivider status="running" /> : null}
-									<div
-										className="pointer-events-none sticky bottom-4 z-10 flex h-8 justify-center"
-										data-slot="assistant-scroll-to-bottom-anchor"
-									>
-										<div className="pointer-events-auto">
-											<AssistantScrollToBottomButton viewport={threadViewportElement} />
-										</div>
-									</div>
 								</ConversationContent>
+							) : (
+								<VirtualStack
+									className="native-scrollbar h-full overflow-y-auto overscroll-contain"
+									dataSlot="assistant-thread-viewport"
+									estimateSize={(index) =>
+										estimateAssistantTimelineItemSize(
+											assistantTimelineItems[index] ??
+												assistantTimelineItems[0] ?? {
+													key: "fallback",
+													type: "compaction-running",
+												},
+										)
+									}
+									getKey={(item) => item.key}
+									initialViewportHeight={640}
+									items={assistantTimelineItems}
+									measureItems
+									overscan={6}
+									paddingEnd={composerInset + 24}
+									paddingStart={24}
+									renderItem={({ item }) => (
+										<AssistantTimelineItemView
+											item={item}
+											onPreviewImage={handleOpenImagePreview}
+											resolveWorkspaceImage={resolveWorkspaceImagePreview}
+										/>
+									)}
+									role="presentation"
+									viewportRef={setThreadViewportRef}
+								/>
 							)}
 						</Conversation>
 					</AssistantTimelineErrorBoundary>
@@ -3715,7 +3993,8 @@ export function ChatWorkbench({
 						data-slot="composer-dock"
 						ref={composerDockRef}
 					>
-						<div className="pointer-events-auto w-full max-w-[880px]">
+						<div className="pointer-events-auto relative w-full max-w-[880px]" data-slot="composer-dock-frame">
+							{scrollToBottomAnchor}
 							<AssistantComposer
 								activeProjectId={activeProjectId}
 								activeSessionId={activeAgentSessionId}

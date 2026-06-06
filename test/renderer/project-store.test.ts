@@ -81,6 +81,35 @@ describe("projectStore", () => {
 		expect(bridge.switchProject).not.toHaveBeenCalled();
 	});
 
+	it("loads full project sessions on demand when overview only has a preview", async () => {
+		const store = createProjectStore();
+		const projectOne = { ...createProject("project-1", "2026-04-21T09:00:00.000Z", "one"), sessionCount: 10 };
+		const previewSessions = Array.from({ length: 8 }, (_, index) => createSession(`session-${index}`, "one"));
+		const fullSessions = Array.from({ length: 10 }, (_, index) => createSession(`session-${index}`, "one"));
+		const bridge = {
+			getWorkspaceOverview: vi.fn(async () =>
+				createOverview({
+					activeProjectId: "project-1",
+					projects: [projectOne],
+					sessionsByProjectId: {
+						"project-1": previewSessions,
+					},
+				}),
+			),
+			listProjects: vi.fn(),
+			listSessions: vi.fn(async () => fullSessions),
+			createProjectFromFolder: vi.fn(),
+			switchProject: vi.fn(),
+		};
+
+		await store.getState().loadProjects(bridge);
+		await store.getState().ensureProjectSessions(bridge, "project-1");
+
+		expect(bridge.listSessions).toHaveBeenCalledWith("project-1");
+		expect(store.getState().sessionsByProjectId["project-1"]).toHaveLength(10);
+		expect(store.getState().projects[0]?.sessionCount).toBe(10);
+	});
+
 	it("creates a project from a folder and marks it active", async () => {
 		const store = createProjectStore();
 		const existingProject = createProject("project-1", "2026-04-21T09:00:00.000Z", "one");

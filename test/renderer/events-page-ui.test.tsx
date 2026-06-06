@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -391,6 +391,43 @@ describe("EventsPage", () => {
 
 		await user.click(within(proposalPanel).getByRole("button", { name: "取消" }));
 		expect(onClearEventManagementProposal).toHaveBeenCalledTimes(1);
+	});
+
+	it("virtualizes high-volume event columns", async () => {
+		const activeEvent = createEvent({
+			id: "event-000",
+			title: "Ready event 000",
+			updatedAt: "2026-05-21T01:20:00.000Z",
+		});
+		const events = Array.from({ length: 80 }, (_, index) =>
+			toSummary(
+				createEvent({
+					id: `event-${String(index).padStart(3, "0")}`,
+					title: `Ready event ${String(index).padStart(3, "0")}`,
+					status: "ready",
+					updatedAt: new Date(Date.parse("2026-05-21T01:20:00.000Z") - index * 60_000).toISOString(),
+				}),
+			),
+		);
+		renderEventsPage({ activeEvent, activeEventId: activeEvent.id, events });
+
+		const readyList = document.querySelector("[data-slot='event-column-ready-virtual-list']");
+		if (!(readyList instanceof HTMLElement)) {
+			throw new Error("Expected virtualized ready event column.");
+		}
+
+		await waitFor(() => {
+			expect(within(readyList).getByRole("button", { name: /Ready event 000/i })).toBeTruthy();
+		});
+		expect(within(readyList).queryByRole("button", { name: /Ready event 079/i })).toBeNull();
+		expect(readyList.querySelectorAll("[data-slot='virtual-stack-item']").length).toBeLessThan(events.length);
+
+		readyList.scrollTop = 7_600;
+		fireEvent.scroll(readyList);
+
+		await waitFor(() => {
+			expect(within(readyList).getByRole("button", { name: /Ready event 070/i })).toBeTruthy();
+		});
 	});
 
 	it("edits the event problem from the run section, runs an event, and opens session history", async () => {

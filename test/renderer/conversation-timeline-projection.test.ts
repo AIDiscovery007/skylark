@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	createAgentRendererState,
 	getMessageToolCalls,
+	prependOlderMessagesToRendererState,
 	reduceAgentEvent,
 	updateProjectSessionSummariesForAgentEvent,
 	updateSessionSummariesForAgentEvent,
@@ -175,6 +176,48 @@ describe("conversationTimelineProjection", () => {
 				updatedAt: expect.any(Number),
 			}),
 		]);
+	});
+
+	it("preserves previously loaded older messages when a windowed snapshot refreshes", () => {
+		const messages = Array.from({ length: 10 }, (_, index) => createUserMessage(`message ${index + 1}`, index + 1));
+		const initialState = createAgentRendererState({
+			...createSnapshot(),
+			messages: messages.slice(6, 10),
+			messageWindow: { start: 6, end: 10, total: 10, hasMoreBefore: true },
+		});
+		const loadedState = prependOlderMessagesToRendererState(initialState, {
+			sessionId: "session-1",
+			messages: messages.slice(2, 6),
+			window: { start: 2, end: 6, total: 10, hasMoreBefore: true },
+		});
+
+		const refreshedState = createAgentRendererState(
+			{
+				...createSnapshot(),
+				messages: messages.slice(6, 10),
+				messageWindow: { start: 6, end: 10, total: 10, hasMoreBefore: true },
+			},
+			loadedState,
+		);
+
+		expect(refreshedState.messages).toEqual(messages.slice(2, 10));
+		expect(refreshedState.contextMessages).toEqual(messages.slice(2, 10));
+		expect(refreshedState.messageWindow).toEqual({ start: 2, end: 10, total: 10, hasMoreBefore: true });
+	});
+
+	it("advances a windowed transcript when new messages are appended", () => {
+		const messages = Array.from({ length: 4 }, (_, index) => createUserMessage(`message ${index + 1}`, index + 1));
+		let state = createAgentRendererState({
+			...createSnapshot(),
+			messages: messages.slice(2, 4),
+			messageWindow: { start: 2, end: 4, total: 4, hasMoreBefore: true },
+		});
+		const nextMessage = createAssistantMessage("new answer", 5);
+
+		state = reduceAgentEvent(state, createEvent({ type: "message_end", message: nextMessage }));
+
+		expect(state.messages).toEqual([...messages.slice(2, 4), nextMessage]);
+		expect(state.messageWindow).toEqual({ start: 2, end: 5, total: 5, hasMoreBefore: true });
 	});
 
 	it("keeps visible transcript messages when a compacted snapshot updates context messages", () => {

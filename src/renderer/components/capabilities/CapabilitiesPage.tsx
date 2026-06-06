@@ -24,6 +24,7 @@ import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
+import { VirtualStack } from "@/components/ui/virtual-stack";
 import { subtleReveal } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import type {
@@ -86,6 +87,54 @@ function parseEnv(value: string): Record<string, string> | undefined {
 		env[trimmed.slice(0, separatorIndex).trim()] = trimmed.slice(separatorIndex + 1).trim();
 	}
 	return Object.keys(env).length > 0 ? env : undefined;
+}
+
+function createCapabilityRows<T>(items: readonly T[]): T[][] {
+	const rows: T[][] = [];
+	for (let index = 0; index < items.length; index += 2) {
+		rows.push(items.slice(index, index + 2));
+	}
+	return rows;
+}
+
+function CapabilityVirtualGrid<T>({
+	dataSlot,
+	estimateSize,
+	getKey,
+	items,
+	renderItem,
+}: {
+	dataSlot: string;
+	estimateSize: (rowIndex: number) => number;
+	getKey: (item: T, index: number) => string;
+	items: readonly T[];
+	renderItem: (item: T, index: number) => ReactNode;
+}) {
+	const rows = useMemo(() => createCapabilityRows(items), [items]);
+
+	return (
+		<VirtualStack
+			className="native-scrollbar max-h-[min(68vh,760px)] overflow-y-auto pr-1"
+			dataSlot={dataSlot}
+			estimateSize={estimateSize}
+			gap={12}
+			getKey={(row, rowIndex) =>
+				row.map((item, index) => getKey(item, rowIndex * 2 + index)).join("|") || `row-${rowIndex}`
+			}
+			initialViewportHeight={560}
+			items={rows}
+			measureItems
+			overscan={4}
+			paddingEnd={4}
+			renderItem={({ item: row, index: rowIndex }) => (
+				<div className="grid gap-x-10 gap-y-3 lg:grid-cols-2">
+					{row.map((item, index) => (
+						<div key={getKey(item, rowIndex * 2 + index)}>{renderItem(item, rowIndex * 2 + index)}</div>
+					))}
+				</div>
+			)}
+		/>
+	);
 }
 
 export function CapabilitiesPage({
@@ -281,18 +330,21 @@ export function CapabilitiesPage({
 								{filteredMcpServers.length === 0 ? (
 									<EmptyState label="暂无 MCP server。" />
 								) : (
-									<div className="grid gap-x-10 gap-y-3 lg:grid-cols-2">
-										{filteredMcpServers.map((server) => (
+									<CapabilityVirtualGrid
+										dataSlot="capabilities-mcp-virtual-grid"
+										estimateSize={() => 104}
+										getKey={(server) => server.id}
+										items={filteredMcpServers}
+										renderItem={(server) => (
 											<McpServerRow
 												isSaving={isSaving}
-												key={server.id}
 												onRestart={() => void onRestartMcpServer(server.id)}
 												onTest={() => void onTestMcpServer(server.id)}
 												onToggle={() => void onSetMcpServerEnabled(server.id, !server.enabled)}
 												server={server}
 											/>
-										))}
-									</div>
+										)}
+									/>
 								)}
 							</CapabilitySection>
 						) : null}
@@ -306,12 +358,15 @@ export function CapabilitiesPage({
 								{filteredSkills.length === 0 ? (
 									<EmptyState label="暂无 skill。" />
 								) : (
-									<div className="grid gap-x-10 gap-y-3 lg:grid-cols-2">
-										{filteredSkills.map((skill) => (
+									<CapabilityVirtualGrid
+										dataSlot="capabilities-skills-virtual-grid"
+										estimateSize={() => 76}
+										getKey={(skill) => skill.filePath}
+										items={filteredSkills}
+										renderItem={(skill) => (
 											<CapabilityRow
 												detail={skill.description}
 												icon={Sparkles}
-												key={skill.filePath}
 												meta={skill.source.scope ?? skill.source.label}
 												onPreview={() =>
 													void handlePreviewCapability(
@@ -321,8 +376,8 @@ export function CapabilitiesPage({
 												}
 												title={skill.name}
 											/>
-										))}
-									</div>
+										)}
+									/>
 								)}
 							</CapabilitySection>
 						) : null}
@@ -336,12 +391,15 @@ export function CapabilitiesPage({
 								{filteredPrompts.length === 0 ? (
 									<EmptyState label="暂无 prompt 模板。" />
 								) : (
-									<div className="grid gap-x-10 gap-y-3 lg:grid-cols-2">
-										{filteredPrompts.map((prompt) => (
+									<CapabilityVirtualGrid
+										dataSlot="capabilities-prompts-virtual-grid"
+										estimateSize={() => 76}
+										getKey={(prompt) => prompt.filePath}
+										items={filteredPrompts}
+										renderItem={(prompt) => (
 											<CapabilityRow
 												detail={prompt.description}
 												icon={SquareSlash}
-												key={prompt.filePath}
 												meta={prompt.argumentHint || prompt.source.scope || prompt.source.label}
 												onPreview={() =>
 													void handlePreviewCapability(
@@ -351,8 +409,8 @@ export function CapabilitiesPage({
 												}
 												title={`/${prompt.name}`}
 											/>
-										))}
-									</div>
+										)}
+									/>
 								)}
 							</CapabilitySection>
 						) : null}

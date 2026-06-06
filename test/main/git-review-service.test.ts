@@ -3,8 +3,8 @@ import { chmod, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { afterEach, describe, expect, it } from "vitest";
-import { createGitReviewSnapshot } from "../../src/main/review/git-review-service.ts";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createGitReviewFilePatch, createGitReviewSnapshot } from "../../src/main/review/git-review-service.ts";
 
 const execFileAsync = promisify(execFile);
 const tempDirectories: string[] = [];
@@ -98,6 +98,26 @@ describe("createGitReviewSnapshot", () => {
 		expect(snapshot.totals.files).toBe(4);
 		expect(snapshot.totals.additions).toBeGreaterThan(0);
 		expect(snapshot.totals.deletions).toBeGreaterThan(0);
+	});
+
+	it("can omit review patch strings from snapshots and load a selected file patch later", async () => {
+		const repo = await createRepository();
+		await writeFile(join(repo, "tracked.ts"), "const value = 2;\nconst next = true;\n", "utf8");
+		await writeFile(join(repo, "new-file.ts"), "export const added = true;\n", "utf8");
+		const runGit = vi.fn((cwd: string, args: string[]) => git(cwd, args));
+
+		const snapshot = await createGitReviewSnapshot(repo, { includePatches: false, runGit });
+		const trackedPatch = await createGitReviewFilePatch(repo, "tracked.ts");
+		const untrackedPatch = await createGitReviewFilePatch(repo, "new-file.ts");
+		const gitCommands = runGit.mock.calls.map(([, args]) => args.join(" "));
+
+		expect(snapshot.patch).toBeUndefined();
+		expect(snapshot.files.find((file) => file.path === "tracked.ts")?.patch).toBeUndefined();
+		expect(snapshot.files.find((file) => file.path === "new-file.ts")?.patch).toBeUndefined();
+		expect(gitCommands.some((command) => command.includes("--numstat"))).toBe(true);
+		expect(gitCommands.some((command) => command.includes("--src-prefix=a/"))).toBe(false);
+		expect(trackedPatch.patch).toContain("const next = true;");
+		expect(untrackedPatch.patch).toContain("new file mode");
 	});
 
 	it("marks non-git workspaces without throwing", async () => {

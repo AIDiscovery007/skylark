@@ -16,6 +16,13 @@ presentation logic.
 - Composer input surfaces should use the shared AI Elements Prompt Input shell
   in `components/chat/SkylarkPromptInputComposer.tsx`; keep slash/@ suggestion
   data flow and runtime submission behavior in the caller.
+- High-volume renderer lists and flattened trees should prefer the shared
+  `components/ui/virtual-stack.tsx` primitive before adding feature-local
+  virtualization code. Keep feature-specific row rendering, filtering,
+  selection, and tree flattening in the owning component.
+- Chat history state may be windowed. Preserve `messageWindow` when refreshing
+  snapshots, and load older messages through the preload bridge rather than
+  assuming `DesktopAgentSnapshot.messages` is the full transcript.
 - Do not add visible instructional text about implementation details, shortcuts,
   or styling unless the product workflow requires it.
 - When adding or materially changing a major workbench area, store contract,

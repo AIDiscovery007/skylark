@@ -599,6 +599,60 @@ describe("DesktopRuntimeHost", () => {
 		);
 	});
 
+	it("hydrates snapshots with only the latest message window for long persisted sessions", async () => {
+		const sessionStore = new InMemorySessionStore();
+		const settingsStore = new InMemorySettingsStore();
+		const messages = Array.from({ length: 200 }, (_, index) =>
+			createAssistantTextMessage(`message-${index + 1}`, index + 1),
+		);
+		await sessionStore.save({
+			...createPersistedSession("session-1", "Long history"),
+			messages,
+		});
+		const runtimeFactory = vi.fn<TestRuntimeFactory>(async (options) => {
+			const runtime = new FakeRuntime(options?.cwd ?? "/workspace/project");
+			runtime.mutableState.messages = options?.messages ?? [];
+			return runtime;
+		});
+		const sessionHost = new DesktopRuntimeHost(runtimeFactory, {
+			defaultCwd: "/workspace/project",
+			sessionStore,
+			settingsStore,
+		});
+
+		const snapshot = await sessionHost.getSnapshot("session-1");
+
+		expect(snapshot.messages).toHaveLength(120);
+		expect(snapshot.messages[0]).toEqual(messages[80]);
+		expect(snapshot.messages.at(-1)).toEqual(messages[199]);
+		expect(snapshot.messageWindow).toEqual({ start: 80, end: 200, total: 200, hasMoreBefore: true });
+	});
+
+	it("returns older persisted session message pages without creating a runtime", async () => {
+		const sessionStore = new InMemorySessionStore();
+		const settingsStore = new InMemorySettingsStore();
+		const messages = Array.from({ length: 120 }, (_, index) =>
+			createAssistantTextMessage(`message-${index + 1}`, index + 1),
+		);
+		await sessionStore.save({
+			...createPersistedSession("session-1", "Long history"),
+			messages,
+		});
+		const runtimeFactory = vi.fn<TestRuntimeFactory>(async () => new FakeRuntime("/workspace/project"));
+		const sessionHost = new DesktopRuntimeHost(runtimeFactory, {
+			defaultCwd: "/workspace/project",
+			sessionStore,
+			settingsStore,
+		});
+
+		const result = await sessionHost.getSessionMessages({ sessionId: "session-1", before: 80, limit: 20 });
+
+		expect(runtimeFactory).not.toHaveBeenCalled();
+		expect(result.sessionId).toBe("session-1");
+		expect(result.messages).toEqual(messages.slice(60, 80));
+		expect(result.window).toEqual({ start: 60, end: 80, total: 120, hasMoreBefore: true });
+	});
+
 	it("preserves the canonical session transcript path when persisting runtime updates", async () => {
 		const sessionStore = new InMemorySessionStore();
 		const settingsStore = new InMemorySettingsStore();
@@ -1412,6 +1466,59 @@ describe("DesktopRuntimeHost", () => {
 		expect(overview.sessionsByProjectId[secondProject.id]?.map((session) => session.id)).toEqual([secondSession.id]);
 		expect(await settingsStore.get("lastOpenedSessionId")).toBe(secondSession.id);
 		expect(listSessions).toHaveBeenCalledTimes(2);
+	});
+
+	it("limits non-active project sessions in workspace overview while full sessions remain listable", async () => {
+		const projectStore = new InMemoryProjectStore();
+		const sessionStore = new InMemorySessionStore();
+		const settingsStore = new InMemorySettingsStore();
+		const firstProject = await projectStore.createOrGet("/workspace/one");
+		const secondProject = await projectStore.createOrGet("/workspace/two");
+		const firstProjectSessions: DesktopPersistedSession[] = [];
+		for (let index = 0; index < 14; index += 1) {
+			firstProjectSessions.push(
+				await sessionStore.create({
+					cwd: firstProject.cwd,
+					model: fakeModel,
+					thinkingLevel: "off",
+					messages: [{ role: "user", content: `First ${index}`, timestamp: index + 1 }],
+					title: `First session ${index}`,
+				}),
+			);
+		}
+		const secondProjectSessions: DesktopPersistedSession[] = [];
+		for (let index = 0; index < 11; index += 1) {
+			secondProjectSessions.push(
+				await sessionStore.create({
+					cwd: secondProject.cwd,
+					model: fakeModel,
+					thinkingLevel: "off",
+					messages: [{ role: "user", content: `Second ${index}`, timestamp: index + 1 }],
+					title: `Second session ${index}`,
+				}),
+			);
+		}
+		await settingsStore.set("lastOpenedProjectId", secondProject.id);
+		await projectStore.updateLastOpenedSession(secondProject.id, secondProjectSessions[0]?.id);
+		const sessionHost = new DesktopRuntimeHost(async () => new FakeRuntime("/workspace/unreachable"), {
+			defaultCwd: "/workspace/one",
+			projectStore,
+			sessionStore,
+			settingsStore,
+		});
+
+		const overview = await sessionHost.getWorkspaceOverview();
+
+		expect(overview.activeProjectId).toBe(secondProject.id);
+		expect(overview.projects.find((project) => project.id === firstProject.id)?.sessionCount).toBe(
+			firstProjectSessions.length,
+		);
+		expect(overview.projects.find((project) => project.id === secondProject.id)?.sessionCount).toBe(
+			secondProjectSessions.length,
+		);
+		expect(overview.sessionsByProjectId[firstProject.id]).toHaveLength(8);
+		expect(overview.sessionsByProjectId[secondProject.id]).toHaveLength(secondProjectSessions.length);
+		expect(await sessionHost.listSessions(firstProject.id)).toHaveLength(firstProjectSessions.length);
 	});
 
 	it("starts with an empty workspace overview for a clean installed app", async () => {

@@ -1,5 +1,10 @@
 import { type DesktopAgentBridge, IPC_CHANNELS } from "../shared/ipc-contract.ts";
-import type { DesktopAgentSnapshot, SerializedAgentEvent } from "../shared/serialized-agent-event.ts";
+import type {
+	DesktopAgentSnapshot,
+	DesktopSessionMessagesRequest,
+	DesktopSessionMessagesResult,
+	SerializedAgentEvent,
+} from "../shared/serialized-agent-event.ts";
 import type { SerializedTerminalEvent } from "../shared/serialized-terminal-event.ts";
 import type {
 	DesktopApprovalDecision,
@@ -51,6 +56,8 @@ import type {
 	DesktopPromptTemplateUpsertRequest,
 	DesktopProviderKeyStatus,
 	DesktopProviderKeyTestResult,
+	DesktopReviewFile,
+	DesktopReviewFilePatchRequest,
 	DesktopReviewSnapshot,
 	DesktopReviewSnapshotRequest,
 	DesktopRuntimeCatalog,
@@ -249,6 +256,9 @@ export function createDesktopAgentBridge(
 		},
 		async getSnapshot(sessionId: string): Promise<DesktopAgentSnapshot> {
 			return (await ipcRenderer.invoke(IPC_CHANNELS.getSnapshot, sessionId)) as DesktopAgentSnapshot;
+		},
+		async getSessionMessages(request: DesktopSessionMessagesRequest): Promise<DesktopSessionMessagesResult> {
+			return (await ipcRenderer.invoke(IPC_CHANNELS.getSessionMessages, request)) as DesktopSessionMessagesResult;
 		},
 		async getSubagentSnapshot(request: DesktopSubagentSnapshotRequest): Promise<DesktopSubagentSnapshot> {
 			return (await ipcRenderer.invoke(IPC_CHANNELS.getSubagentSnapshot, request)) as DesktopSubagentSnapshot;
@@ -576,6 +586,9 @@ export function createDesktopAgentBridge(
 		},
 		async getReviewSnapshot(request: DesktopReviewSnapshotRequest): Promise<DesktopReviewSnapshot> {
 			return (await ipcRenderer.invoke(IPC_CHANNELS.getReviewSnapshot, request)) as DesktopReviewSnapshot;
+		},
+		async getReviewFilePatch(request: DesktopReviewFilePatchRequest): Promise<DesktopReviewFile> {
+			return (await ipcRenderer.invoke(IPC_CHANNELS.getReviewFilePatch, request)) as DesktopReviewFile;
 		},
 		async openPreviewFiles(request: DesktopReviewSnapshotRequest): Promise<DesktopPreviewFile[]> {
 			return (await ipcRenderer.invoke(IPC_CHANNELS.openPreviewFiles, request)) as DesktopPreviewFile[];

@@ -1,10 +1,15 @@
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import type { DesktopAgentSnapshot, SerializedAgentEvent } from "../../shared/serialized-agent-event.ts";
+import type {
+	DesktopAgentSnapshot,
+	DesktopSessionMessagesResult,
+	SerializedAgentEvent,
+} from "../../shared/serialized-agent-event.ts";
 import {
 	type AgentRendererState,
 	createAgentRendererState,
 	INITIAL_AGENT_RENDERER_STATE,
+	prependOlderMessagesToRendererState,
 	reduceAgentEvent,
 } from "../lib/conversation-timeline-projection.ts";
 
@@ -15,6 +20,7 @@ export interface AgentStoreState extends AgentRendererState {
 	sessionStateAccessedAt: Record<string, number>;
 	setActiveSession: (sessionId?: string) => void;
 	hydrateSnapshot: (snapshot: DesktopAgentSnapshot) => void;
+	prependOlderMessages: (result: DesktopSessionMessagesResult) => void;
 	applyEvent: (event: SerializedAgentEvent) => void;
 	setBridgeError: (message: string) => void;
 }
@@ -30,6 +36,7 @@ function getInitialAgentRendererState(): AgentRendererState {
 		availableTools: [...INITIAL_AGENT_RENDERER_STATE.availableTools],
 		contextMessages: [...INITIAL_AGENT_RENDERER_STATE.contextMessages],
 		messages: [...INITIAL_AGENT_RENDERER_STATE.messages],
+		messageWindow: INITIAL_AGENT_RENDERER_STATE.messageWindow,
 		pendingToolCalls: [...INITIAL_AGENT_RENDERER_STATE.pendingToolCalls],
 		toolCalls: [...INITIAL_AGENT_RENDERER_STATE.toolCalls],
 	};
@@ -179,6 +186,44 @@ export function createAgentStore() {
 					...getSessionState(prunedSessionCache.sessionStates, activeSessionId),
 					activeSessionId,
 					pendingActiveSessionId,
+					...prunedSessionCache,
+				};
+			});
+		},
+		prependOlderMessages: (result) => {
+			set((state) => {
+				const previousSessionState = state.sessionStates[result.sessionId];
+				if (!previousSessionState) {
+					return {};
+				}
+
+				const now = Date.now();
+				const nextSessionState = prependOlderMessagesToRendererState(previousSessionState, result);
+				const sessionStates = {
+					...state.sessionStates,
+					[result.sessionId]: nextSessionState,
+				};
+				const sessionStateAccessedAt = {
+					...state.sessionStateAccessedAt,
+					[result.sessionId]: now,
+				};
+				const prunedSessionCache = pruneSessionStateCache({
+					activeSessionId: state.activeSessionId,
+					now,
+					pendingActiveSessionId: state.pendingActiveSessionId,
+					sessionStateAccessedAt,
+					sessionStates,
+				});
+
+				if (state.activeSessionId !== result.sessionId) {
+					return {
+						...prunedSessionCache,
+					};
+				}
+
+				return {
+					...nextSessionState,
+					pendingActiveSessionId: state.pendingActiveSessionId,
 					...prunedSessionCache,
 				};
 			});

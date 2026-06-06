@@ -48,6 +48,7 @@ import { Button } from "../ui/button.tsx";
 import { Input } from "../ui/input.tsx";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover.tsx";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip.tsx";
+import { VirtualStack } from "../ui/virtual-stack.tsx";
 import { SubagentDetailPane } from "./SubagentDetailPane.tsx";
 
 interface ReviewWorkspacePanelProps {
@@ -81,6 +82,16 @@ interface FileTreeNode {
 	path: string;
 	children: FileTreeNode[];
 	file?: DesktopReviewFile;
+}
+
+interface FileTreeFlatRow {
+	depth: number;
+	expanded?: boolean;
+	file?: DesktopReviewFile;
+	id: string;
+	name: string;
+	path: string;
+	type: "file" | "folder";
 }
 
 type ParsedDiffFile = ReturnType<typeof parseDiff>[number];
@@ -129,6 +140,7 @@ const STATUS_LABELS: Record<DesktopReviewFile["status"], string> = {
 	untracked: "U",
 };
 const REVIEW_WORKSPACE_ITEM: WorkspacePanelItem = { id: "review", type: "review", title: "审查" };
+const MAX_WORKSPACE_PREVIEW_FILE_ITEMS = 8;
 const PREVIEW_ERROR_TIMESTAMP = new Date(0).toISOString();
 const PREVIEW_SOURCE_LANGUAGE_BY_EXTENSION: Record<string, CodeBlockLanguage> = {
 	bash: "bash",
@@ -268,6 +280,42 @@ function sortTree(nodes: FileTreeNode[]): FileTreeNode[] {
 			}
 			return left.name.localeCompare(right.name);
 		});
+}
+
+function flattenTreeRows(
+	nodes: FileTreeNode[],
+	collapsedPaths: ReadonlySet<string>,
+	forceExpanded: boolean,
+	depth = 0,
+): FileTreeFlatRow[] {
+	const rows: FileTreeFlatRow[] = [];
+	for (const node of nodes) {
+		if (node.file) {
+			rows.push({
+				depth,
+				file: node.file,
+				id: `file:${node.file.path}`,
+				name: node.name,
+				path: node.path,
+				type: "file",
+			});
+			continue;
+		}
+
+		const expanded = forceExpanded || !collapsedPaths.has(node.path);
+		rows.push({
+			depth,
+			expanded,
+			id: `folder:${node.path}`,
+			name: node.name,
+			path: node.path,
+			type: "folder",
+		});
+		if (expanded) {
+			rows.push(...flattenTreeRows(node.children, collapsedPaths, forceExpanded, depth + 1));
+		}
+	}
+	return rows;
 }
 
 function filterFiles(files: DesktopReviewFile[], query: string): DesktopReviewFile[] {
@@ -483,6 +531,22 @@ function getWorkspaceItemTitle(item: WorkspacePanelItem): string {
 	return item.file.name;
 }
 
+function retainRecentWorkspacePreviewFiles(items: WorkspacePanelItem[], activeItemId: string): WorkspacePanelItem[] {
+	const fileItems = items.filter((item) => item.type === "file");
+	if (fileItems.length <= MAX_WORKSPACE_PREVIEW_FILE_ITEMS) {
+		return items;
+	}
+
+	const removableCount = fileItems.length - MAX_WORKSPACE_PREVIEW_FILE_ITEMS;
+	const removableFileIds = new Set(
+		fileItems
+			.filter((item) => item.id !== activeItemId)
+			.slice(0, removableCount)
+			.map((item) => item.id),
+	);
+	return items.filter((item) => item.type !== "file" || !removableFileIds.has(item.id));
+}
+
 function WorkspacePanelTabs({
 	activeItemId,
 	isFullscreen,
@@ -577,83 +641,66 @@ function ReviewPanelBodyDeferredFallback() {
 }
 
 function FileTreeRow({
-	node,
-	collapsedPaths,
-	depth,
-	forceExpanded,
 	onSelect,
 	onToggle,
+	row,
 	selectedPath,
 }: {
-	node: FileTreeNode;
-	collapsedPaths: ReadonlySet<string>;
-	depth: number;
-	forceExpanded: boolean;
 	onSelect: (file: DesktopReviewFile) => void;
 	onToggle: (path: string) => void;
+	row: FileTreeFlatRow;
 	selectedPath?: string;
 }) {
-	if (!node.file) {
-		const expanded = forceExpanded || !collapsedPaths.has(node.path);
+	if (row.type === "folder") {
 		return (
-			<div>
-				<button
-					aria-expanded={expanded}
-					className="flex h-7 w-full items-center gap-1.5 rounded-md px-2 text-left text-[13px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
-					onClick={() => onToggle(node.path)}
-					style={{ paddingLeft: 4 + depth * FILE_TREE_INDENT }}
-					type="button"
-				>
-					{expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
-					<span className="truncate">{node.name}</span>
-				</button>
-				{expanded
-					? node.children.map((child) => (
-							<FileTreeRow
-								collapsedPaths={collapsedPaths}
-								depth={depth + 1}
-								forceExpanded={forceExpanded}
-								key={child.path}
-								node={child}
-								onSelect={onSelect}
-								onToggle={onToggle}
-								selectedPath={selectedPath}
-							/>
-						))
-					: null}
-			</div>
+			<button
+				aria-expanded={row.expanded}
+				className="flex h-7 w-full items-center gap-1.5 rounded-md px-2 text-left text-[13px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+				onClick={() => onToggle(row.path)}
+				style={{ paddingLeft: 4 + row.depth * FILE_TREE_INDENT }}
+				type="button"
+			>
+				{row.expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+				<span className="truncate">{row.name}</span>
+			</button>
 		);
 	}
 
-	const selected = selectedPath === node.file.path;
+	const file = row.file;
+	if (!file) {
+		return null;
+	}
+
+	const selected = selectedPath === file.path;
 	return (
 		<button
 			className={cn(
 				"grid h-8 w-full min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md px-2 text-left text-[13px] transition-colors",
 				selected ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
 			)}
-			onClick={() => node.file && onSelect(node.file)}
-			style={{ paddingLeft: 6 + depth * FILE_TREE_INDENT }}
+			onClick={() => onSelect(file)}
+			style={{ paddingLeft: 6 + row.depth * FILE_TREE_INDENT }}
 			type="button"
 		>
-			{getFileIcon(node.file.path)}
+			{getFileIcon(file.path)}
 			<span className="min-w-0 truncate" data-slot="review-file-name">
-				{node.name}
+				{row.name}
 			</span>
 			<span
 				className={cn(
 					"shrink-0 justify-self-end rounded px-1.5 py-0.5 text-[10px] font-medium",
-					getStatusClassName(node.file.status),
+					getStatusClassName(file.status),
 				)}
 				data-slot="review-file-status-badge"
 			>
-				{STATUS_LABELS[node.file.status]}
+				{STATUS_LABELS[file.status]}
 			</span>
 		</button>
 	);
 }
 
 function FileTree({
+	ariaLabel,
 	collapsedPaths,
 	files,
 	forceExpanded,
@@ -661,6 +708,7 @@ function FileTree({
 	onToggle,
 	selectedPath,
 }: {
+	ariaLabel?: string;
 	collapsedPaths: ReadonlySet<string>;
 	files: DesktopReviewFile[];
 	forceExpanded: boolean;
@@ -669,25 +717,29 @@ function FileTree({
 	selectedPath?: string;
 }) {
 	const nodes = useMemo(() => createTree(files), [files]);
+	const rows = useMemo(
+		() => flattenTreeRows(nodes, collapsedPaths, forceExpanded),
+		[collapsedPaths, forceExpanded, nodes],
+	);
 	if (nodes.length === 0) {
 		return <p className="px-2 py-3 text-sm text-muted-foreground">没有匹配的文件</p>;
 	}
 
 	return (
-		<div className="grid gap-0.5">
-			{nodes.map((node) => (
-				<FileTreeRow
-					collapsedPaths={collapsedPaths}
-					depth={0}
-					forceExpanded={forceExpanded}
-					key={node.path}
-					node={node}
-					onSelect={onSelect}
-					onToggle={onToggle}
-					selectedPath={selectedPath}
-				/>
-			))}
-		</div>
+		<VirtualStack
+			ariaLabel={ariaLabel}
+			className="native-scrollbar h-full overflow-y-auto overflow-x-hidden py-2 pr-3 pl-1"
+			dataSlot="review-file-tree-virtual-list"
+			estimateSize={(index) => (rows[index]?.type === "folder" ? 28 : 32)}
+			gap={2}
+			getKey={(row) => row.id}
+			initialViewportHeight={520}
+			items={rows}
+			overscan={8}
+			renderItem={({ item }) => (
+				<FileTreeRow onSelect={onSelect} onToggle={onToggle} row={item} selectedPath={selectedPath} />
+			)}
+		/>
 	);
 }
 
@@ -744,7 +796,15 @@ function getDiffChunkContext(content: string): string {
 	return content.replace(/^@@.*?@@\s*/, "").trim();
 }
 
-function DiffViewer({ file }: { file: DesktopReviewFile }) {
+function DiffViewer({
+	file,
+	isPatchLoading = false,
+	patchErrorMessage,
+}: {
+	file: DesktopReviewFile;
+	isPatchLoading?: boolean;
+	patchErrorMessage?: string;
+}) {
 	const diffViewportRef = useRef<HTMLElement | null>(null);
 	const parsedFiles = useMemo(() => (file.patch ? parseDiff(file.patch) : []), [file.patch]);
 	const parsedFile = parsedFiles[0];
@@ -787,6 +847,28 @@ function DiffViewer({ file }: { file: DesktopReviewFile }) {
 				<div className="grid justify-items-center gap-2 text-muted-foreground">
 					<Binary className="size-6" />
 					<p className="text-sm">二进制文件无法展示文本差异。</p>
+				</div>
+			</div>
+		);
+	}
+
+	if (isPatchLoading) {
+		return (
+			<div aria-busy="true" className="grid h-full place-items-center p-10 text-center">
+				<div className="grid justify-items-center gap-2 text-muted-foreground">
+					<RefreshCcw className="size-5 animate-spin" />
+					<p className="text-sm">正在加载 diff...</p>
+				</div>
+			</div>
+		);
+	}
+
+	if (patchErrorMessage) {
+		return (
+			<div className="grid h-full place-items-center p-10 text-center">
+				<div className="grid justify-items-center gap-2 text-muted-foreground">
+					<AlertCircle className="size-6" />
+					<p className="text-sm">{patchErrorMessage}</p>
 				</div>
 			</div>
 		);
@@ -1090,7 +1172,9 @@ function ReviewPanelBody({
 	fileTreeOpen,
 	fileTreeWidth,
 	isLoading,
+	isPatchLoading,
 	onRefresh,
+	patchErrorMessage,
 	query,
 	selectedFile,
 	setQuery,
@@ -1102,7 +1186,9 @@ function ReviewPanelBody({
 	fileTreeOpen: boolean;
 	fileTreeWidth: number;
 	isLoading: boolean;
+	isPatchLoading?: boolean;
 	onRefresh: () => Promise<void>;
+	patchErrorMessage?: string;
 	query: string;
 	selectedFile?: DesktopReviewFile;
 	setQuery: (query: string) => void;
@@ -1269,7 +1355,12 @@ function ReviewPanelBody({
 				) : null}
 				<div className="min-h-0 flex-1">
 					{selectedFile ? (
-						<DiffViewer file={selectedFile} key={selectedFile.path} />
+						<DiffViewer
+							file={selectedFile}
+							isPatchLoading={isPatchLoading}
+							key={selectedFile.path}
+							patchErrorMessage={patchErrorMessage}
+						/>
 					) : (
 						<ReviewEmptyState snapshot={snapshot} />
 					)}
@@ -1330,11 +1421,9 @@ function ReviewPanelBody({
 								/>
 							</div>
 						</div>
-						<section
-							aria-label={fileTreeOpen ? "Changed files tree" : undefined}
-							className="native-scrollbar min-h-0 flex-1 overflow-y-auto overflow-x-hidden py-2 pr-3 pl-1"
-						>
+						<section className="min-h-0 flex-1">
 							<FileTree
+								ariaLabel={fileTreeOpen ? "Changed files tree" : undefined}
 								collapsedPaths={collapsedTreePaths}
 								files={files}
 								forceExpanded={hasFileQuery}
@@ -1363,7 +1452,11 @@ export function ReviewWorkspacePanel({
 	onChromeSummaryChange,
 	onFullscreenChange,
 }: ReviewWorkspacePanelProps) {
-	const { errorMessage, isLoading, refresh, snapshot } = useReviewWorkspace({ open, projectId, sessionId });
+	const { errorMessage, isLoading, loadFilePatch, refresh, snapshot } = useReviewWorkspace({
+		open,
+		projectId,
+		sessionId,
+	});
 	const [fileTreeOpen, setFileTreeOpen] = useState(true);
 	const [fileTreeWidth, setFileTreeWidth] = useState<number>(FILE_TREE_WIDTH.default);
 	const [query, setQuery] = useState("");
@@ -1381,7 +1474,10 @@ export function ReviewWorkspacePanel({
 	const containerResizeFrameRef = useRef<number | undefined>(undefined);
 	const handledPreviewRequestNonceRef = useRef<number | undefined>(undefined);
 	const handledSubagentRequestNonceRef = useRef<number | undefined>(undefined);
+	const requestedPatchPathsRef = useRef<Set<string>>(new Set());
 	const workspaceContextKeyRef = useRef<string | undefined>(undefined);
+	const [loadingPatchPath, setLoadingPatchPath] = useState<string | undefined>();
+	const [patchErrorByPath, setPatchErrorByPath] = useState<Record<string, string>>({});
 	const selectedFile = snapshot?.files.find((file) => file.path === selectedPath) ?? snapshot?.files[0];
 	const allWorkspaceItems = useMemo(() => [REVIEW_WORKSPACE_ITEM, ...workspaceItems], [workspaceItems]);
 	const activeWorkspaceItem =
@@ -1443,14 +1539,15 @@ export function ReviewWorkspacePanel({
 				file,
 			}),
 		);
+		const nextActiveItemId = nextItems.at(-1)?.id ?? "review";
 		setWorkspaceItems((currentItems) => {
 			const nextItemsById = new Map(currentItems.map((item) => [item.id, item]));
 			for (const item of nextItems) {
 				nextItemsById.set(item.id, item);
 			}
-			return Array.from(nextItemsById.values());
+			return retainRecentWorkspacePreviewFiles(Array.from(nextItemsById.values()), nextActiveItemId);
 		});
-		setActiveWorkspaceItemId(nextItems.at(-1)?.id ?? "review");
+		setActiveWorkspaceItemId(nextActiveItemId);
 	}, []);
 
 	useEffect(() => {
@@ -1508,7 +1605,24 @@ export function ReviewWorkspacePanel({
 		setActiveWorkspaceItemId("review");
 		handledPreviewRequestNonceRef.current = undefined;
 		handledSubagentRequestNonceRef.current = undefined;
+		requestedPatchPathsRef.current = new Set();
+		setLoadingPatchPath(undefined);
+		setPatchErrorByPath({});
 	}, [projectId, sessionId]);
+
+	const snapshotGeneratedAt = snapshot?.generatedAt;
+
+	useEffect(() => {
+		if (snapshotGeneratedAt === undefined) {
+			requestedPatchPathsRef.current = new Set();
+			setLoadingPatchPath(undefined);
+			setPatchErrorByPath({});
+			return;
+		}
+		requestedPatchPathsRef.current = new Set();
+		setLoadingPatchPath(undefined);
+		setPatchErrorByPath({});
+	}, [snapshotGeneratedAt]);
 
 	useEffect(() => {
 		if (!open || !subagentRequest || handledSubagentRequestNonceRef.current === subagentRequest.nonce) {
@@ -1537,6 +1651,52 @@ export function ReviewWorkspacePanel({
 			setSelectedPath(snapshot.files[0]?.path);
 		}
 	}, [selectedPath, snapshot]);
+
+	useEffect(() => {
+		if (
+			!open ||
+			!selectedFile ||
+			selectedFile.patch ||
+			selectedFile.isBinary ||
+			selectedFile.isTooLarge ||
+			requestedPatchPathsRef.current.has(selectedFile.path)
+		) {
+			return;
+		}
+
+		let isDisposed = false;
+		requestedPatchPathsRef.current.add(selectedFile.path);
+		setLoadingPatchPath(selectedFile.path);
+		setPatchErrorByPath((currentErrors) => {
+			const { [selectedFile.path]: _previous, ...remainingErrors } = currentErrors;
+			return remainingErrors;
+		});
+		void loadFilePatch(selectedFile.path)
+			.then((file) => {
+				if (!isDisposed && !file?.patch && !file?.isBinary && !file?.isTooLarge) {
+					setPatchErrorByPath((currentErrors) => ({
+						...currentErrors,
+						[selectedFile.path]: "此文件没有可展示的文本 diff。",
+					}));
+				}
+			})
+			.catch((error: unknown) => {
+				if (!isDisposed) {
+					setPatchErrorByPath((currentErrors) => ({
+						...currentErrors,
+						[selectedFile.path]: getErrorMessage(error),
+					}));
+				}
+			})
+			.finally(() => {
+				if (!isDisposed) {
+					setLoadingPatchPath((currentPath) => (currentPath === selectedFile.path ? undefined : currentPath));
+				}
+			});
+		return () => {
+			isDisposed = true;
+		};
+	}, [loadFilePatch, open, selectedFile]);
 
 	useEffect(() => {
 		if (!open) {
@@ -1966,7 +2126,9 @@ export function ReviewWorkspacePanel({
 									fileTreeOpen={fileTreeOpen}
 									fileTreeWidth={fileTreeWidth}
 									isLoading={isLoading}
+									isPatchLoading={loadingPatchPath === selectedFile?.path}
 									onRefresh={refresh}
+									patchErrorMessage={selectedFile ? patchErrorByPath[selectedFile.path] : undefined}
 									query={query}
 									selectedFile={selectedFile}
 									setQuery={setQuery}

@@ -1,13 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { unlink } from "node:fs/promises";
 import { join } from "node:path";
-import type { AgentState } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, AgentState } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
 import type { CompactionResult } from "@earendil-works/pi-coding-agent";
 import type {
 	DesktopAgentDiagnostic,
+	DesktopAgentMessageWindow,
 	DesktopAgentModel,
 	DesktopAgentSnapshot,
+	DesktopSessionMessagesRequest,
+	DesktopSessionMessagesResult,
 	SerializedAgentEvent,
 } from "../../shared/serialized-agent-event.ts";
 import { clampDesktopThinkingLevelForModel } from "../../shared/thinking-levels.ts";
@@ -56,6 +59,10 @@ import {
 } from "./create-runtime.ts";
 import { type SerializableAgentEvent, serializeAgentEvent } from "./serialize-agent-event.ts";
 import { generateSessionTitleFromPrompt } from "./session-title-generator.ts";
+
+const WORKSPACE_OVERVIEW_PROJECT_SESSION_PREVIEW_LIMIT = 8;
+const SNAPSHOT_MESSAGE_WINDOW_LIMIT = 120;
+const SESSION_MESSAGE_PAGE_LIMIT = 80;
 
 export interface DesktopAgentRuntime {
 	readonly cwd: string;
@@ -234,9 +241,10 @@ function isNonFatalManualCompactionError(error: unknown): boolean {
 export function createDesktopAgentSnapshot(
 	sessionId: string,
 	runtime: DesktopAgentRuntime,
-	options: { consumedProposedPlanMessageIds?: readonly string[] } = {},
+	options: { consumedProposedPlanMessageIds?: readonly string[]; messageWindowLimit?: number } = {},
 ): DesktopAgentSnapshot {
 	const state = runtime.getState();
+	const messageWindow = sliceLatestMessages(state.messages, options.messageWindowLimit);
 
 	return {
 		sessionId,
@@ -248,11 +256,53 @@ export function createDesktopAgentSnapshot(
 		model: serializeModel(state),
 		thinkingLevel: state.thinkingLevel,
 		availableTools: [...runtime.availableTools],
-		messages: [...state.messages],
+		messages: messageWindow.messages,
+		...(messageWindow.window ? { messageWindow: messageWindow.window } : {}),
 		streamingMessage: state.streamingMessage,
 		pendingToolCalls: Array.from(state.pendingToolCalls),
 		isStreaming: state.isStreaming,
 		errorMessage: state.errorMessage,
+	};
+}
+
+function createMessageWindow(total: number, start: number, end: number): DesktopAgentMessageWindow {
+	return {
+		start,
+		end,
+		total,
+		hasMoreBefore: start > 0,
+	};
+}
+
+function sliceMessagesBefore(
+	messages: readonly AgentMessage[],
+	before: number,
+	limit: number,
+): { messages: AgentMessage[]; window: DesktopAgentMessageWindow } {
+	const total = messages.length;
+	const safeBefore = Math.min(Math.max(0, before), total);
+	const safeLimit = Math.max(1, limit);
+	const start = Math.max(0, safeBefore - safeLimit);
+	const end = safeBefore;
+	return {
+		messages: messages.slice(start, end),
+		window: createMessageWindow(total, start, end),
+	};
+}
+
+function sliceLatestMessages(
+	messages: readonly AgentMessage[],
+	limit: number | undefined,
+): { messages: AgentMessage[]; window?: DesktopAgentMessageWindow } {
+	if (limit === undefined || messages.length <= limit) {
+		return { messages: [...messages] };
+	}
+
+	const end = messages.length;
+	const start = Math.max(0, end - Math.max(1, limit));
+	return {
+		messages: messages.slice(start, end),
+		window: createMessageWindow(messages.length, start, end),
 	};
 }
 
@@ -352,6 +402,7 @@ export class DesktopRuntimeHost {
 	private createSnapshotForEntry(entry: DesktopRuntimeEntry, runtime: DesktopAgentRuntime): DesktopAgentSnapshot {
 		return createDesktopAgentSnapshot(entry.sessionId, runtime, {
 			consumedProposedPlanMessageIds: entry.session?.consumedProposedPlanMessageIds,
+			messageWindowLimit: SNAPSHOT_MESSAGE_WINDOW_LIMIT,
 		});
 	}
 
@@ -486,10 +537,18 @@ export class DesktopRuntimeHost {
 	private buildSessionsByProjectId(
 		projects: readonly DesktopProjectSummary[],
 		sessions: DesktopSessionSummary[],
+		options: { fullProjectId?: string; previewLimit?: number } = {},
 	): Record<string, DesktopSessionSummary[]> {
 		const decoratedSessions = this.decorateSessionSummaries(sessions);
+		const previewLimit = Math.max(0, options.previewLimit ?? Number.POSITIVE_INFINITY);
 		return Object.fromEntries(
-			projects.map((project) => [project.id, this.filterSessionsForProject(decoratedSessions, project)]),
+			projects.map((project) => {
+				const projectSessions = this.filterSessionsForProject(decoratedSessions, project);
+				return [
+					project.id,
+					project.id === options.fullProjectId ? projectSessions : projectSessions.slice(0, previewLimit),
+				];
+			}),
 		);
 	}
 
@@ -937,6 +996,19 @@ export class DesktopRuntimeHost {
 		});
 	}
 
+	async getSessionMessages(request: DesktopSessionMessagesRequest): Promise<DesktopSessionMessagesResult> {
+		return measureMainAsync("main session messages load", async () => {
+			const entry = await this.ensureSessionEntry(request.sessionId);
+			const messages = entry.runtime?.getState().messages ?? entry.session?.messages ?? [];
+			const page = sliceMessagesBefore(messages, request.before, request.limit ?? SESSION_MESSAGE_PAGE_LIMIT);
+			return {
+				sessionId: entry.sessionId,
+				messages: page.messages,
+				window: page.window,
+			};
+		});
+	}
+
 	private startPromptForEntry(
 		entry: DesktopRuntimeEntry,
 		runtime: DesktopAgentRuntime,
@@ -1211,7 +1283,10 @@ export class DesktopRuntimeHost {
 			const projects = await this.persistence.projectStore.listWithSessionStats(sessions);
 			return {
 				projects,
-				sessionsByProjectId: this.buildSessionsByProjectId(projects, sessions),
+				sessionsByProjectId: this.buildSessionsByProjectId(projects, sessions, {
+					fullProjectId: activeProject?.id,
+					previewLimit: WORKSPACE_OVERVIEW_PROJECT_SESSION_PREVIEW_LIMIT,
+				}),
 				activeProjectId: this.activeProjectId,
 				activeSessionId: this.activeSessionId,
 			};

@@ -1075,6 +1075,52 @@ describe("SessionList UI", () => {
 		expect(onSelectSession).toHaveBeenCalledWith("session-other", "project-2");
 	});
 
+	it("virtualizes high-volume sidebar search results", async () => {
+		const user = userEvent.setup();
+		const sessions = Array.from({ length: 80 }, (_, index) =>
+			createSession(
+				`session-${index}`,
+				`Virtual Search ${String(index + 1).padStart(2, "0")}`,
+				"2026-04-22T01:00:00.000Z",
+			),
+		);
+
+		render(
+			<Sidebar
+				activeProjectId="project-1"
+				activeSessionId="session-0"
+				isBusy={false}
+				isLoading={false}
+				onCreateProjectFromFolder={async () => undefined}
+				onCreateSession={async () => undefined}
+				onSelectProject={async () => undefined}
+				onSelectSession={async () => undefined}
+				projects={[createProject("project-1", "pi-mono", sessions.length)]}
+				sessionsByProjectId={{ "project-1": sessions }}
+			/>,
+		);
+
+		await user.click(screen.getByRole("button", { name: "搜索" }));
+		const dialog = screen.getByRole("dialog", { name: "搜索" });
+		await user.type(within(dialog).getByRole("searchbox", { name: "搜索项目和对话" }), "Virtual");
+
+		await waitFor(() => {
+			expect(within(dialog).getByText("Virtual Search 01")).toBeTruthy();
+		});
+		expect(dialog.querySelectorAll("[data-slot='virtual-stack-item']").length).toBeLessThan(sessions.length);
+		expect(within(dialog).queryByText("Virtual Search 80")).toBeNull();
+
+		const viewport = dialog.querySelector("[data-slot='sidebar-search-virtual-results']");
+		expect(viewport).toBeInstanceOf(HTMLElement);
+		(viewport as HTMLElement).scrollTop = 48 * 70;
+		fireEvent.scroll(viewport as HTMLElement);
+
+		await waitFor(() => {
+			expect(within(dialog).getByText("Virtual Search 72")).toBeTruthy();
+		});
+		expect(within(dialog).queryByText("Virtual Search 01")).toBeNull();
+	});
+
 	it("limits project sessions and expands hidden rows on demand", async () => {
 		const user = userEvent.setup();
 		const sessions = Array.from({ length: 6 }, (_, index) =>
@@ -1110,6 +1156,34 @@ describe("SessionList UI", () => {
 			expect(screen.queryByText("Session 6")).toBeNull();
 		});
 		expect(screen.getByRole("button", { name: "展开显示" })).toBeTruthy();
+	});
+
+	it("requests full project sessions when expanding a preview-limited project", async () => {
+		const user = userEvent.setup();
+		const onEnsureProjectSessions = vi.fn(async () => undefined);
+		const previewSessions = Array.from({ length: 8 }, (_, index) =>
+			createSession(`session-${index}`, `Preview Session ${index + 1}`, `2026-04-22T0${index}:00:00.000Z`),
+		);
+
+		render(
+			<Sidebar
+				activeProjectId="project-2"
+				isBusy={false}
+				isLoading={false}
+				onCreateProjectFromFolder={async () => undefined}
+				onCreateSession={async () => undefined}
+				onEnsureProjectSessions={onEnsureProjectSessions}
+				onSelectProject={async () => undefined}
+				onSelectSession={async () => undefined}
+				projects={[createProject("project-1", "pi-mono", 20), createProject("project-2", "opencode", 0)]}
+				sessionsByProjectId={{ "project-1": previewSessions, "project-2": [] }}
+			/>,
+		);
+
+		await user.click(screen.getByRole("button", { name: "展开显示" }));
+
+		expect(onEnsureProjectSessions).toHaveBeenCalledWith("project-1");
+		expect(onEnsureProjectSessions).toHaveBeenCalledTimes(1);
 	});
 
 	it("keeps session quantity expansion scoped to a single project", async () => {

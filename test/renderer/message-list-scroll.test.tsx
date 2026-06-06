@@ -146,7 +146,9 @@ function setViewportMetrics(
 }
 
 function getViewport(container: HTMLElement): HTMLDivElement {
-	const viewport = container.querySelector("[data-slot='scroll-area-viewport']");
+	const viewport = container.querySelector(
+		"[data-slot='message-list-virtual-viewport'], [data-slot='scroll-area-viewport']",
+	);
 	if (!(viewport instanceof HTMLDivElement)) {
 		throw new Error("MessageList scroll viewport was not rendered.");
 	}
@@ -328,6 +330,28 @@ describe("MessageList autoscroll", () => {
 		expect(screen.getByLabelText("Read README.md")).toBeTruthy();
 		expect(screen.getByAltText("panel.png").closest("[data-slot='thread-image-preview-grid']")).not.toBeNull();
 		expect(screen.queryByText("Preview")).toBeNull();
+	});
+
+	it("virtualizes long legacy transcript lists", async () => {
+		const messages: AgentMessage[] = Array.from({ length: 80 }, (_, index) => [
+			{ role: "user" as const, content: `Question ${String(index).padStart(3, "0")}`, timestamp: index * 2 + 1 },
+			createAssistantMessage(`Answer ${String(index).padStart(3, "0")}`, index * 2 + 2),
+		]).flat();
+		const { container } = render(<MessageList messages={messages} showThinkingBlocks={false} toolCalls={[]} />);
+		const viewport = getViewport(container);
+
+		await waitFor(() => {
+			expect(screen.getByText("Question 000")).toBeTruthy();
+		});
+		expect(screen.queryByText("Answer 079")).toBeNull();
+		expect(container.querySelectorAll("[data-slot='virtual-stack-item']").length).toBeLessThan(messages.length);
+
+		viewport.scrollTop = 29_000;
+		fireEvent.scroll(viewport);
+
+		await waitFor(() => {
+			expect(screen.getByText("Answer 075")).toBeTruthy();
+		});
 	});
 
 	it("keeps streaming image read batches summarized across timestamp refreshes", async () => {

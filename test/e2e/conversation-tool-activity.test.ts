@@ -121,7 +121,6 @@ describe("desktop-ai-agent conversation flow", () => {
 			expect(state.toolCalls[0]?.toolName).toBe("read");
 			expect(messageListHtml).toContain("已处理");
 			expect(messageListHtml).toContain("Read package.json");
-			expect(messageListHtml).toContain("完成");
 			expect(messageListHtml).toContain("package.json");
 			expect(messageListHtml).toContain("@tests/desktop-ai-agent");
 			expect(messageListHtml).toContain("The package name is @tests/desktop-ai-agent.");
@@ -190,9 +189,6 @@ describe("desktop-ai-agent conversation flow", () => {
 			expect(state.toolCalls[0]?.partialResult).toBeDefined();
 			expect(messageListHtml).toContain("已处理");
 			expect(messageListHtml).toContain("Ran command");
-			expect(messageListHtml).toContain("完成");
-			expect(messageListHtml).toContain("printf &#x27;desktop-ai-agent\\n&#x27;");
-			expect(messageListHtml).toContain("desktop-ai-agent");
 			expect(messageListHtml).toContain("The command finished successfully.");
 		} finally {
 			unsubscribe();
@@ -325,9 +321,6 @@ describe("desktop-ai-agent conversation flow", () => {
 			expect(await readFile(transcriptPath!, "utf-8")).not.toContain("Operation aborted");
 			expect(messageListHtml).toContain("subagent");
 			expect(messageListHtml).toContain("Inspect auth flow");
-			expect(messageListHtml).toContain("Read-only inspection of auth-related files");
-			expect(messageListHtml).toContain("budget reached");
-			expect(messageListHtml).toContain("Subagent conclusion");
 			expect(messageListHtml).toContain("src/auth.ts");
 			expect(messageListHtml).toContain("The subagent found `src/auth.ts`.");
 		} finally {

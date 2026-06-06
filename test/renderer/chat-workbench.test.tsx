@@ -1472,13 +1472,13 @@ describe("ChatWorkbench", () => {
 					skills: [],
 					slashCommands: [
 						{ name: "compact", description: "Compact context", source: "builtin" },
-						...Array.from({ length: 5 }, (_, index) => ({
+						...Array.from({ length: 24 }, (_, index) => ({
 							name: `skill:review-${index + 1}`,
 							description: `Review skill ${index + 1}`,
 							source: "skill" as const,
 							sourcePath: `/workspace/project/.pi/skills/review-${index + 1}/SKILL.md`,
 						})),
-						...Array.from({ length: 5 }, (_, index) => ({
+						...Array.from({ length: 24 }, (_, index) => ({
 							name: `template-${index + 1}`,
 							description: `Prompt template ${index + 1}`,
 							source: "prompt" as const,
@@ -1496,8 +1496,17 @@ describe("ChatWorkbench", () => {
 		await user.type(screen.getByLabelText("Message Skylark"), "/");
 
 		expect(await screen.findByRole("listbox", { name: "Composer suggestions" })).toBeTruthy();
-		expect(screen.getByText("/skill:review-5")).toBeTruthy();
-		expect(screen.getByText("/template-5")).toBeTruthy();
+		expect(screen.getByText("/skill:review-1")).toBeTruthy();
+		const suggestionList = document.querySelector("[data-slot='composer-suggestion-virtual-list']");
+		expect(suggestionList).toBeTruthy();
+		expect(screen.queryByText("/template-24")).toBeNull();
+		if (suggestionList instanceof HTMLElement) {
+			suggestionList.scrollTop = 2200;
+			fireEvent.scroll(suggestionList);
+		}
+		await waitFor(() => {
+			expect(screen.getByText("/template-24")).toBeTruthy();
+		});
 	});
 
 	it("keeps the selected slash command scrolled into view during keyboard navigation", async () => {
@@ -1560,6 +1569,47 @@ describe("ChatWorkbench", () => {
 			projectId: "project-1",
 			sessionId: "session-1",
 			limit: 1000,
+		});
+	});
+
+	it("virtualizes long workspace file suggestion lists", async () => {
+		const user = userEvent.setup();
+		const manyFiles: DesktopWorkspaceFileEntry[] = Array.from({ length: 80 }, (_, index) => {
+			const fileNumber = String(index + 1).padStart(3, "0");
+			return {
+				name: `File ${fileNumber}.ts`,
+				path: `src/File-${fileNumber}.ts`,
+				size: 128,
+				type: "code",
+				updatedAt: `2026-05-01T00:${String(index).padStart(2, "0")}:00.000Z`,
+			};
+		});
+		installWorkspaceFileBridge(manyFiles);
+
+		render(
+			<ChatWorkbench
+				activeProjectId="project-1"
+				onAbort={vi.fn(async () => undefined)}
+				onSubmitPrompt={vi.fn(async () => undefined)}
+				runtimeCatalog={{ defaultTools: ["read"], providers: [] }}
+				showThinkingBlocks={false}
+			/>,
+		);
+
+		await user.type(screen.getByLabelText("Message Skylark"), "@");
+
+		expect(await screen.findByText("File 001.ts")).toBeTruthy();
+		const suggestionList = document.querySelector("[data-slot='composer-suggestion-virtual-list']");
+		expect(suggestionList?.querySelectorAll("[data-slot='virtual-stack-item']").length).toBeLessThan(
+			manyFiles.length,
+		);
+		expect(screen.queryByText("File 080.ts")).toBeNull();
+		if (suggestionList instanceof HTMLElement) {
+			suggestionList.scrollTop = 3400;
+			fireEvent.scroll(suggestionList);
+		}
+		await waitFor(() => {
+			expect(screen.getByText("File 080.ts")).toBeTruthy();
 		});
 	});
 
@@ -2148,6 +2198,10 @@ describe("ChatWorkbench", () => {
 		expect(scrollToBottom.disabled).toBe(true);
 		expect(scrollToBottom.className).toContain("disabled:hidden");
 		expect(scrollAnchor?.className).toContain("h-8");
+		expect(scrollAnchor?.className).toContain("absolute");
+		expect(scrollAnchor?.className).toContain("bottom-full");
+		expect(scrollAnchor?.parentElement?.getAttribute("data-slot")).toBe("composer-dock-frame");
+		expect((scrollAnchor as HTMLElement | null)?.style.bottom).toBe("");
 	});
 
 	it("keeps active assistant streaming pinned with a scheduled instant viewport scroll", async () => {
@@ -3436,6 +3490,66 @@ describe("ChatWorkbench", () => {
 		expect(streamingMessageRoot?.className).not.toContain("assistant-message-contained");
 		expect(css).toContain("content-visibility: auto");
 		expect(css).toContain("contain-intrinsic-size");
+	});
+
+	it("virtualizes long assistant timelines", async () => {
+		const messages = Array.from({ length: 80 }, (_, index) => {
+			const label = String(index + 1).padStart(3, "0");
+			return [
+				userMessage(`Virtual prompt ${label}`, index * 2 + 1),
+				assistantMessage([{ type: "text", text: `Virtual answer ${label}` }], index * 2 + 2),
+			];
+		}).flat();
+		agentStore.setState({ messages });
+
+		const { container } = renderChatWorkbench();
+
+		expect(await screen.findByText("Virtual prompt 001")).toBeTruthy();
+		const viewport = getAssistantViewport(container);
+		expect(viewport.querySelectorAll("[data-slot='virtual-stack-item']").length).toBeLessThan(messages.length);
+
+		viewport.scrollTop = 18000;
+		fireEvent.scroll(viewport);
+
+		await waitFor(() => {
+			expect(screen.getByText("Virtual answer 078")).toBeTruthy();
+		});
+		const lateItem = screen.getByText("Virtual answer 078").closest("[data-slot='virtual-stack-item']");
+		expect(Number(lateItem?.getAttribute("data-index"))).toBeGreaterThanOrEqual(150);
+	});
+
+	it("loads older windowed session messages when the thread is scrolled near the top", async () => {
+		const allMessages = Array.from({ length: 100 }, (_, index) =>
+			userMessage(`Windowed prompt ${String(index + 1).padStart(3, "0")}`, index + 1),
+		);
+		const getSessionMessages = vi.fn(async () => ({
+			sessionId: "session-1",
+			messages: allMessages.slice(0, 80),
+			window: { start: 0, end: 80, total: 100, hasMoreBefore: false },
+		}));
+		installRendererDesktopAgentBridge({
+			getSessionMessages,
+		} satisfies Pick<DesktopAgentBridge, "getSessionMessages">);
+		agentStore.getState().hydrateSnapshot(
+			agentSnapshot({
+				messages: allMessages.slice(80, 100),
+				messageWindow: { start: 80, end: 100, total: 100, hasMoreBefore: true },
+			}),
+		);
+
+		const { container } = renderChatWorkbench();
+		const viewport = getAssistantViewport(container);
+		setAssistantViewportMetrics(viewport, { clientHeight: 600, scrollHeight: 2400, scrollTop: 0 });
+
+		fireEvent.scroll(viewport);
+
+		await waitFor(() => {
+			expect(getSessionMessages).toHaveBeenCalledWith({ sessionId: "session-1", before: 80, limit: 80 });
+		});
+		await waitFor(() => {
+			expect(screen.getByText("Windowed prompt 001")).toBeTruthy();
+		});
+		expect(agentStore.getState().messageWindow).toEqual({ start: 0, end: 100, total: 100, hasMoreBefore: false });
 	});
 
 	it("does not render stale throttled streaming content after message_end commits the final response", async () => {

@@ -3,10 +3,11 @@ import type { ImageContent, TextContent, ThinkingContent, ToolCall } from "@eare
 import { AlertTriangle, ArrowDown, Sparkles } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import type { ReactNode } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { VirtualStack } from "@/components/ui/virtual-stack";
 import { softRevealTransition, subtleReveal } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import type { DesktopThreadMessageStatus } from "../../lib/assistant-runtime-adapter.ts";
@@ -59,7 +60,9 @@ function isViewportPinnedToBottom(viewport: HTMLDivElement): boolean {
 }
 
 function getScrollViewport(root: HTMLDivElement | null): HTMLDivElement | null {
-	return root?.querySelector("[data-slot='scroll-area-viewport']") as HTMLDivElement | null;
+	return root?.querySelector(
+		"[data-slot='message-list-virtual-viewport'], [data-slot='scroll-area-viewport']",
+	) as HTMLDivElement | null;
 }
 
 function isVisibleTranscriptMessage(message: AgentMessage): boolean {
@@ -232,6 +235,17 @@ interface AssistantRunTranscriptItem {
 
 type TranscriptItem = UserTranscriptItem | AssistantRunTranscriptItem;
 
+type MessageListVirtualItem =
+	| {
+			kind: "transcript";
+			key: string;
+			transcriptItem: TranscriptItem;
+	  }
+	| {
+			kind: "pending-assistant-status";
+			key: string;
+	  };
+
 function createTranscriptItems(messages: AgentMessage[]): TranscriptItem[] {
 	const transcriptItems: TranscriptItem[] = [];
 	let currentAssistantRun: AssistantRunTranscriptItem | undefined;
@@ -270,6 +284,20 @@ function createTranscriptItems(messages: AgentMessage[]): TranscriptItem[] {
 function getAssistantRunKey(run: AssistantRunTranscriptItem, itemIndex: number): string {
 	const firstMessageIndex = run.messageIndexes[0] ?? itemIndex;
 	return `assistant-run-${firstMessageIndex}-${itemIndex}`;
+}
+
+function estimateTranscriptItemSize(item: MessageListVirtualItem): number {
+	if (item.kind === "pending-assistant-status") {
+		return 88;
+	}
+	if (item.transcriptItem.kind === "user") {
+		return 104;
+	}
+
+	const run = item.transcriptItem;
+	const messageCount = Math.max(1, run.messages.length);
+	const hasTools = hasToolCallBlocks(run.messages);
+	return 128 + messageCount * 96 + (hasTools ? 96 : 0);
 }
 
 function hasToolCallBlocks(messages: Extract<AgentMessage, { role: "assistant" }>[]): boolean {
@@ -576,9 +604,23 @@ export function MessageList({
 			? [...visibleMessages, streamingMessage]
 			: visibleMessages;
 	const isTranscriptEmpty = renderedMessages.length === 0;
-	const transcriptItems = createTranscriptItems(renderedMessages);
+	const transcriptItems = useMemo(() => createTranscriptItems(renderedMessages), [renderedMessages]);
 	const shouldRenderPendingAssistantStatus =
 		isStreaming && transcriptItems[transcriptItems.length - 1]?.kind === "user";
+	const virtualItems = useMemo(() => {
+		const items: MessageListVirtualItem[] = transcriptItems.map((transcriptItem, index) => ({
+			kind: "transcript",
+			key:
+				transcriptItem.kind === "user"
+					? messageKey(transcriptItem.message, transcriptItem.messageIndex)
+					: getAssistantRunKey(transcriptItem, index),
+			transcriptItem,
+		}));
+		if (shouldRenderPendingAssistantStatus) {
+			items.push({ kind: "pending-assistant-status", key: "assistant-run-pending-status" });
+		}
+		return items;
+	}, [shouldRenderPendingAssistantStatus, transcriptItems]);
 
 	useEffect(() => {
 		if (isTranscriptEmpty) {
@@ -657,59 +699,60 @@ export function MessageList({
 
 	return (
 		<div ref={scrollAreaRef} className="relative h-full min-h-0 flex-1">
-			<ScrollArea className="h-full" scrollHideDelay={600} type="scroll">
-				<div
-					className="mx-auto flex min-h-full w-full max-w-[860px] select-text flex-col gap-8 px-2 pt-6 md:px-4"
-					data-selectable-text="true"
-					style={{ paddingBottom: bottomInset }}
-				>
-					<AnimatePresence initial={false}>
-						{transcriptItems.map((item, index) => {
-							if (item.kind === "user") {
-								const message = item.message;
+			<VirtualStack
+				className="native-scrollbar h-full overflow-y-auto overscroll-contain"
+				dataSlot="message-list-virtual-viewport"
+				estimateSize={(index) => estimateTranscriptItemSize(virtualItems[index] ?? virtualItems[0]!)}
+				gap={32}
+				getKey={(item) => item.key}
+				initialViewportHeight={640}
+				itemClassName="px-2 md:px-4"
+				items={virtualItems}
+				measureItems
+				overscan={5}
+				paddingEnd={bottomInset}
+				paddingStart={24}
+				renderItem={({ item, index }) => {
+					if (item.kind === "pending-assistant-status") {
+						return (
+							<motion.article className="mx-auto w-full max-w-[860px]" layout {...subtleReveal}>
+								<div className="min-w-0 space-y-3">
+									<div className="space-y-5">{renderAssistantThinkingStatus()}</div>
+								</div>
+							</motion.article>
+						);
+					}
+					const transcriptItem = item.transcriptItem;
+					if (transcriptItem.kind === "user") {
+						const message = transcriptItem.message;
+						return (
+							<motion.article className="mx-auto flex w-full max-w-[860px] justify-end" layout {...subtleReveal}>
+								<div className="max-w-[70%]">
+									<div className="rounded-2xl bg-[color:var(--color-user-bubble)] px-4 py-3 text-[13px] leading-6 text-[color:var(--color-user-bubble-foreground)]">
+										{renderUserMessage(message)}
+									</div>
+								</div>
+							</motion.article>
+						);
+					}
 
-								return (
-									<motion.article
-										className="flex justify-end"
-										key={messageKey(message, item.messageIndex)}
-										layout
-										{...subtleReveal}
-									>
-										<div className="max-w-[70%]">
-											<div className="rounded-2xl bg-[color:var(--color-user-bubble)] px-4 py-3 text-[13px] leading-6 text-[color:var(--color-user-bubble-foreground)]">
-												{renderUserMessage(message)}
-											</div>
-										</div>
-									</motion.article>
-								);
-							}
-
-							const isRunActive = isStreaming && index === transcriptItems.length - 1;
-
-							return (
-								<AssistantRunView
-									defaultExpandedToolRailMessageIndex={defaultExpandedToolRailMessageIndex}
-									isRunActive={isRunActive}
-									itemIndex={index}
-									key={getAssistantRunKey(item, index)}
-									messages={messages}
-									onPreviewImage={onPreviewImage}
-									run={item}
-									showThinkingBlocks={showThinkingBlocks}
-									toolCalls={toolCalls}
-								/>
-							);
-						})}
-					</AnimatePresence>
-					{shouldRenderPendingAssistantStatus ? (
-						<motion.article className="w-full" key="assistant-run-pending-status" layout {...subtleReveal}>
-							<div className="min-w-0 space-y-3">
-								<div className="space-y-5">{renderAssistantThinkingStatus()}</div>
-							</div>
-						</motion.article>
-					) : null}
-				</div>
-			</ScrollArea>
+					const isRunActive = isStreaming && index === transcriptItems.length - 1;
+					return (
+						<div className="mx-auto w-full max-w-[860px]" data-selectable-text="true">
+							<AssistantRunView
+								defaultExpandedToolRailMessageIndex={defaultExpandedToolRailMessageIndex}
+								isRunActive={isRunActive}
+								itemIndex={index}
+								messages={messages}
+								onPreviewImage={onPreviewImage}
+								run={transcriptItem}
+								showThinkingBlocks={showThinkingBlocks}
+								toolCalls={toolCalls}
+							/>
+						</div>
+					);
+				}}
+			/>
 			<AnimatePresence initial={false}>
 				{!isPinnedToBottom ? (
 					<motion.div

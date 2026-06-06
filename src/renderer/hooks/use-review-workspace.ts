@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { DesktopReviewSnapshot, DesktopReviewSnapshotRequest } from "../../shared/types.ts";
+import type { DesktopReviewFile, DesktopReviewSnapshot, DesktopReviewSnapshotRequest } from "../../shared/types.ts";
 
 export interface UseReviewWorkspaceOptions {
 	open: boolean;
@@ -10,6 +10,7 @@ export interface UseReviewWorkspaceOptions {
 export interface UseReviewWorkspaceResult {
 	errorMessage?: string;
 	isLoading: boolean;
+	loadFilePatch: (path: string) => Promise<DesktopReviewFile | undefined>;
 	refresh: () => Promise<void>;
 	request?: DesktopReviewSnapshotRequest;
 	snapshot?: DesktopReviewSnapshot;
@@ -64,6 +65,36 @@ export function useReviewWorkspace({
 		}
 	}, [open, request]);
 
+	const loadFilePatch = useCallback(
+		async (path: string): Promise<DesktopReviewFile | undefined> => {
+			if (!open || !request) {
+				return undefined;
+			}
+			const refreshRequestId = refreshRequestIdRef.current;
+			try {
+				const file = await window.desktopAgent.getReviewFilePatch({ ...request, path });
+				if (refreshRequestId !== refreshRequestIdRef.current) {
+					return undefined;
+				}
+				setSnapshot((currentSnapshot) => {
+					if (!currentSnapshot?.files.some((entry) => entry.path === file.path)) {
+						return currentSnapshot;
+					}
+					return {
+						...currentSnapshot,
+						files: currentSnapshot.files.map((entry) =>
+							entry.path === file.path ? { ...entry, ...file } : entry,
+						),
+					};
+				});
+				return file;
+			} catch {
+				return undefined;
+			}
+		},
+		[open, request],
+	);
+
 	useEffect(() => {
 		if (previousRequestKeyRef.current === requestKey) {
 			return;
@@ -95,6 +126,7 @@ export function useReviewWorkspace({
 	return {
 		errorMessage,
 		isLoading: isLoading || (open && Boolean(request) && !snapshot && !errorMessage),
+		loadFilePatch,
 		refresh,
 		request,
 		snapshot,

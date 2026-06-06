@@ -42,6 +42,7 @@ import { Sheet, SheetClose, SheetContent, SheetDescription, SheetTitle } from ".
 import { Spinner } from "../ui/spinner.tsx";
 import { StatusDot } from "../ui/status-dot.tsx";
 import { Textarea } from "../ui/textarea.tsx";
+import { VirtualStack } from "../ui/virtual-stack.tsx";
 
 const EVENT_STATUS_LABELS: Record<DesktopEventStatus, string> = {
 	inbox: "待评估",
@@ -312,25 +313,31 @@ function EventColumn({
 				<h2 className="truncate font-medium">{EVENT_STATUS_LABELS[status]}</h2>
 				<span className="tabular-nums text-[color:var(--text-tertiary)]">{events.length}</span>
 			</header>
-			<ScrollArea className="min-h-0">
-				<div className="grid gap-2 pr-2 pb-4">
-					{events.length === 0 ? (
-						<div className="grid h-[86px] place-items-center rounded-[8px] border border-dashed border-[color:var(--border-subtle)] px-3 py-3 text-[12px] text-[color:var(--text-tertiary)]">
-							空
-						</div>
-					) : (
-						events.map((event) => (
-							<EventCard
-								event={event}
-								isActive={event.id === activeEventId}
-								key={event.id}
-								now={now}
-								onSelect={onSelectEvent}
-							/>
-						))
-					)}
+			{events.length === 0 ? (
+				<div className="grid min-h-0 pr-2">
+					<div className="grid h-[86px] place-items-center rounded-[8px] border border-dashed border-[color:var(--border-subtle)] px-3 py-3 text-[12px] text-[color:var(--text-tertiary)]">
+						空
+					</div>
 				</div>
-			</ScrollArea>
+			) : (
+				<VirtualStack
+					ariaLabel={`${EVENT_STATUS_LABELS[status]} events`}
+					className="native-scrollbar h-full min-h-0 overflow-y-auto overscroll-contain"
+					dataSlot={`event-column-${status}-virtual-list`}
+					estimateSize={() => 94}
+					gap={8}
+					getKey={(event) => event.id}
+					initialViewportHeight={520}
+					itemClassName="pr-2"
+					items={events}
+					measureItems
+					overscan={5}
+					paddingEnd={16}
+					renderItem={({ item: event }) => (
+						<EventCard event={event} isActive={event.id === activeEventId} now={now} onSelect={onSelectEvent} />
+					)}
+				/>
+			)}
 		</section>
 	);
 }

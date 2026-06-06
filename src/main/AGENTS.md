@@ -17,6 +17,12 @@ runtimes, events, MCP, previews, and environment resources.
   `src/main/ipc`; validate renderer input inside the group before calling
   services. Keep closely related bridge groups in the same module when that is
   clearer than adding one thin file per channel family.
+- Treat workspace overview session arrays as startup previews for non-active
+  projects. Use `listSessions(projectId)` for a project's full session history;
+  the active project overview must remain complete for renderer hydration.
+- Chat snapshots should hydrate only the latest message window for long
+  transcripts. Use `getSessionMessages` for older pages and avoid starting a
+  runtime just to read persisted history.
 - When adding or materially changing a main-process service, IPC handler,
   runtime host behavior, storage path, permission flow, terminal capability, or
   event pipeline, update this file with the local rule or verification change

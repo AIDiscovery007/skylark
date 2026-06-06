@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -280,5 +280,43 @@ describe("CapabilitiesPage", () => {
 		});
 		expect(screen.getByText("Summarize $ARGUMENTS")).toBeTruthy();
 		expect(screen.getAllByText("[TEXT]").length).toBeGreaterThan(0);
+	});
+
+	it("virtualizes high-volume skill lists", async () => {
+		const user = userEvent.setup();
+		const catalog = createCatalog();
+		catalog.skills = Array.from({ length: 80 }, (_, index) => {
+			const id = String(index).padStart(3, "0");
+			return {
+				name: `Skill ${id}`,
+				description: `Review capability ${index}`,
+				filePath: `/workspace/.pi/skills/skill-${id}/SKILL.md`,
+				baseDir: `/workspace/.pi/skills/skill-${id}`,
+				disableModelInvocation: false,
+				source: { label: "project", scope: "project" as const },
+			};
+		});
+		renderCapabilitiesPage({ catalog });
+
+		await user.click(screen.getByRole("button", { name: /^Skills/i }));
+		const skillsGrid = document.querySelector("[data-slot='capabilities-skills-virtual-grid']");
+		if (!(skillsGrid instanceof HTMLElement)) {
+			throw new Error("Expected virtualized skills grid.");
+		}
+
+		await waitFor(() => {
+			expect(screen.getByText("Skill 000")).toBeTruthy();
+		});
+		expect(screen.queryByText("Skill 079")).toBeNull();
+		expect(skillsGrid.querySelectorAll("[data-slot='virtual-stack-item']").length).toBeLessThan(
+			catalog.skills.length / 2,
+		);
+
+		skillsGrid.scrollTop = 3_000;
+		fireEvent.scroll(skillsGrid);
+
+		await waitFor(() => {
+			expect(screen.getByText("Skill 068")).toBeTruthy();
+		});
 	});
 });

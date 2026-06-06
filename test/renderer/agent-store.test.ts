@@ -124,6 +124,28 @@ describe("agentStore", () => {
 		expect(store.getState().messages).toEqual([nextMessage]);
 	});
 
+	it("prepends older message pages into the active cached session window", () => {
+		const store = createAgentStore();
+		const messages = Array.from({ length: 6 }, (_, index) => createUserMessage(`message ${index + 1}`, index + 1));
+		store.getState().hydrateSnapshot({
+			...createSnapshot("session-1"),
+			messages: messages.slice(3, 6),
+			messageWindow: { start: 3, end: 6, total: 6, hasMoreBefore: true },
+		});
+
+		store.getState().prependOlderMessages({
+			sessionId: "session-1",
+			messages: messages.slice(1, 3),
+			window: { start: 1, end: 3, total: 6, hasMoreBefore: true },
+		});
+
+		const state = store.getState();
+		expect(state.messages).toEqual(messages.slice(1, 6));
+		expect(state.contextMessages).toEqual(messages.slice(1, 6));
+		expect(state.messageWindow).toEqual({ start: 1, end: 6, total: 6, hasMoreBefore: true });
+		expect(state.sessionStates["session-1"]?.messages).toEqual(messages.slice(1, 6));
+	});
+
 	it("keeps running source-session events out of the visible transcript while another session loads", () => {
 		const store = createAgentStore();
 		const currentSnapshot = createSnapshot("session-1");

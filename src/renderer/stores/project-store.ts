@@ -146,6 +146,7 @@ export interface ProjectStoreState {
 	isSwitching: boolean;
 	errorMessage?: string;
 	loadProjects: (bridge: ProjectStoreBridge) => Promise<DesktopWorkspaceOverview | undefined>;
+	ensureProjectSessions: (bridge: ProjectStoreBridge, projectId: string) => Promise<void>;
 	createProjectFromFolder: (bridge: ProjectStoreBridge) => Promise<DesktopProjectSummary | undefined>;
 	switchProject: (bridge: ProjectStoreBridge, projectId: string) => Promise<DesktopProjectSummary | undefined>;
 	upsertProjectSession: (projectId: string, session: DesktopSessionSummary) => void;
@@ -185,6 +186,31 @@ export function createProjectStore() {
 					errorMessage: getErrorMessage(error),
 				}));
 				return undefined;
+			}
+		},
+		ensureProjectSessions: async (bridge, projectId) => {
+			const project = get().projects.find((entry) => entry.id === projectId);
+			const currentSessions = get().sessionsByProjectId[projectId] ?? [];
+			if (project && currentSessions.length >= project.sessionCount) {
+				return;
+			}
+
+			try {
+				const sessions = sortSessionsByRecency(await bridge.listSessions(projectId));
+				set((state) => ({
+					...state,
+					projects: updateProjectSessionCount(state.projects, projectId, sessions),
+					sessionsByProjectId: {
+						...state.sessionsByProjectId,
+						[projectId]: sessions,
+					},
+					errorMessage: undefined,
+				}));
+			} catch (error: unknown) {
+				set((state) => ({
+					...state,
+					errorMessage: getErrorMessage(error),
+				}));
 			}
 		},
 		createProjectFromFolder: async (bridge) => {

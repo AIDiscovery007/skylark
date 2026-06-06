@@ -15,6 +15,13 @@ export interface DesktopAgentModel {
 	contextWindow?: number;
 }
 
+export interface DesktopAgentMessageWindow {
+	start: number;
+	end: number;
+	total: number;
+	hasMoreBefore: boolean;
+}
+
 export interface DesktopAgentSnapshot {
 	sessionId: string;
 	cwd: string;
@@ -26,10 +33,23 @@ export interface DesktopAgentSnapshot {
 	thinkingLevel: ThinkingLevel;
 	availableTools: string[];
 	messages: AgentMessage[];
+	messageWindow?: DesktopAgentMessageWindow;
 	streamingMessage?: AgentMessage;
 	pendingToolCalls: string[];
 	isStreaming: boolean;
 	errorMessage?: string;
+}
+
+export interface DesktopSessionMessagesRequest {
+	sessionId: string;
+	before: number;
+	limit?: number;
+}
+
+export interface DesktopSessionMessagesResult {
+	sessionId: string;
+	messages: AgentMessage[];
+	window: DesktopAgentMessageWindow;
 }
 
 export type SerializedCompactionReason = "manual" | "threshold" | "overflow";
