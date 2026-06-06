@@ -406,6 +406,7 @@ describe("Settings workbench UI", () => {
 		const eventCriteriaTextarea = screen.getByRole("textbox", { name: "事件 EVENTS.md 准则" });
 
 		for (const textarea of [compactTextarea, globalAgentsTextarea, eventCriteriaTextarea]) {
+			expect(textarea.className).toContain("uix-flat-field");
 			expect(textarea.className).toContain("field-sizing-fixed");
 			expect(textarea.className).toContain("overflow-y-auto");
 			expect(textarea.className).toContain("resize-none");

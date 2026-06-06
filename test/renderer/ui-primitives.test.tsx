@@ -8,6 +8,7 @@ import { EntityRow } from "../../src/renderer/components/ui/entity-row.tsx";
 import { ErrorNotice } from "../../src/renderer/components/ui/error-notice.tsx";
 import { IconButton } from "../../src/renderer/components/ui/icon-button.tsx";
 import { Input } from "../../src/renderer/components/ui/input.tsx";
+import { Select, SelectTrigger, SelectValue } from "../../src/renderer/components/ui/select.tsx";
 import { Spinner } from "../../src/renderer/components/ui/spinner.tsx";
 import { StatusDot } from "../../src/renderer/components/ui/status-dot.tsx";
 import { Textarea } from "../../src/renderer/components/ui/textarea.tsx";
@@ -74,6 +75,29 @@ describe("UI primitives", () => {
 
 		expect(screen.getByLabelText("Title").className).toContain("select-text");
 		expect(screen.getByLabelText("Body").className).toContain("select-text");
+	});
+
+	it("uses the shared lightweight focus shadow for editing controls", () => {
+		render(
+			<>
+				<Input aria-label="Title" />
+				<Textarea aria-label="Body" />
+				<Select>
+					<SelectTrigger aria-label="Priority">
+						<SelectValue placeholder="Priority" />
+					</SelectTrigger>
+				</Select>
+			</>,
+		);
+
+		for (const control of [
+			screen.getByLabelText("Title"),
+			screen.getByLabelText("Body"),
+			screen.getByRole("combobox", { name: "Priority" }),
+		]) {
+			expect(control.className).toContain("focus-visible:shadow-[var(--control-focus-shadow)]");
+			expect(control.className).not.toContain("focus-visible:ring-[3px]");
+		}
 	});
 
 	it("renders low-saturation semantic badges", () => {
