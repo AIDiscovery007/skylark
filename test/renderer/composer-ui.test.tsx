@@ -75,7 +75,7 @@ describe("Composer UI", () => {
 		expect(screen.queryByText(/Codex/)).toBeNull();
 	});
 
-	it("renders composer status entries as pure icons without circular chrome", () => {
+	it("renders the model selector and status entries without circular chrome", () => {
 		const { container } = render(
 			<TooltipProvider>
 				<Composer
@@ -95,8 +95,13 @@ describe("Composer UI", () => {
 		);
 
 		const statusIcons = container.querySelectorAll("[data-slot='composer-status-icon']");
+		const modelSelectorTrigger = container.querySelector("[data-slot='composer-model-selector-trigger']");
 
-		expect(statusIcons).toHaveLength(2);
+		expect(modelSelectorTrigger).toBeTruthy();
+		expect(modelSelectorTrigger?.className).not.toContain("rounded-full");
+		expect(modelSelectorTrigger?.className).not.toContain("bg-background");
+		expect(modelSelectorTrigger?.textContent).toContain("kimi-for-coding");
+		expect(statusIcons).toHaveLength(1);
 		for (const statusIcon of statusIcons) {
 			expect(statusIcon.className).not.toContain("rounded-full");
 			expect(statusIcon.className).not.toContain("bg-background");
@@ -159,9 +164,6 @@ describe("Composer UI", () => {
 		);
 
 		await user.click(screen.getByLabelText("Model anthropic / claude-3-5-sonnet"));
-		const providerItem = screen.getByText("anthropic").closest("[data-slot='command-item']");
-		expect(providerItem).not.toBeNull();
-		await user.click(providerItem!);
 		await user.type(screen.getByPlaceholderText("Filter models"), "opus");
 		const modelItem = screen.getByText(/Claude Opus 4\.6/i).closest("[data-slot='command-item']");
 		expect(modelItem).not.toBeNull();
@@ -224,11 +226,11 @@ describe("Composer UI", () => {
 		);
 
 		await user.click(screen.getByLabelText("Model anthropic / claude-3-5-sonnet"));
-		expect(screen.getByLabelText("OpenAI 未配置")).toBeTruthy();
+		expect(screen.getByLabelText(/GPT-5\.4.*OpenAI.*未配置/i)).toBeTruthy();
 		expect(screen.queryByText("未配置")).toBeNull();
-		const openAiItem = screen.getByText("OpenAI").closest("[data-slot='command-item']");
-		expect(openAiItem).not.toBeNull();
-		await user.click(openAiItem!);
+		const openAiModelItem = screen.getByText(/GPT-5\.4/i).closest("[data-slot='command-item']");
+		expect(openAiModelItem).not.toBeNull();
+		await user.click(openAiModelItem!);
 
 		expect(onOpenSettings).toHaveBeenCalledWith({ section: "credentials", providerId: "openai" });
 		expect(onUpdateSessionProfile).not.toHaveBeenCalled();
@@ -297,27 +299,120 @@ describe("Composer UI", () => {
 		);
 
 		await user.click(screen.getByLabelText("Model openai-codex / gpt-5.5"));
-		const providerItems = Array.from(document.querySelectorAll("[data-slot='command-item']")).filter((item) =>
-			["OpenAI Codex", "Anthropic", "OpenAI"].some((label) => item.textContent?.includes(label)),
-		);
+		const providerGroups = Array.from(document.querySelectorAll("[data-slot='command-group']"));
 
-		expect(providerItems.map((item) => item.textContent)).toEqual([
+		expect(providerGroups.map((item) => item.textContent)).toEqual([
 			expect.stringContaining("OpenAI Codex"),
 			expect.stringContaining("Anthropic"),
 			expect.stringContaining("OpenAI"),
 		]);
-		expect(screen.getByLabelText("OpenAI Codex 已登录")).toBeTruthy();
-		expect(screen.getByLabelText("Anthropic API key")).toBeTruthy();
-		expect(screen.getByLabelText("OpenAI 未配置")).toBeTruthy();
+		expect(screen.getByLabelText(/GPT-5\.5.*OpenAI Codex.*已登录/i)).toBeTruthy();
+		expect(screen.getByLabelText(/Claude 3\.5 Sonnet.*Anthropic.*API key/i)).toBeTruthy();
+		expect(screen.getByLabelText(/GPT-5\.4.*OpenAI.*未配置/i)).toBeTruthy();
 		expect(screen.queryByText("已登录")).toBeNull();
 		expect(screen.queryByText("API key")).toBeNull();
 		expect(screen.queryByText("未配置")).toBeNull();
 
-		await user.type(screen.getByPlaceholderText("Filter providers"), "anth");
+		await user.type(screen.getByPlaceholderText("Filter models"), "anth");
 
-		expect(screen.getByText("Anthropic").closest("[data-slot='command-item']")).toBeTruthy();
-		expect(screen.queryByText("OpenAI Codex")).toBeNull();
-		expect(screen.queryByText("OpenAI")).toBeNull();
+		const visibleProviderGroups = Array.from(document.querySelectorAll("[data-slot='command-group']"))
+			.filter((group) => !group.hasAttribute("hidden"))
+			.map((group) => group.textContent ?? "");
+		expect(visibleProviderGroups).toEqual([expect.stringContaining("Anthropic")]);
+	});
+
+	it("keeps the default model selector compact while searching the full catalog", async () => {
+		const user = userEvent.setup();
+		const anthropicModels = Array.from({ length: 9 }, (_, index) => ({
+			id: `claude-model-${index + 1}`,
+			name: `Claude Model ${index + 1}`,
+			reasoning: true,
+			contextWindow: 200000,
+		}));
+		anthropicModels.push({
+			id: "claude-opus-ten",
+			name: "Claude Opus Ten",
+			reasoning: true,
+			contextWindow: 200000,
+		});
+
+		render(
+			<TooltipProvider>
+				<Composer
+					isStreaming={false}
+					model={{
+						id: "claude-model-1",
+						name: "Claude Model 1",
+						provider: "anthropic",
+						reasoning: true,
+					}}
+					onAbort={async () => undefined}
+					onSubmitPrompt={async () => undefined}
+					onUpdateSessionProfile={async () => undefined}
+					runtimeCatalog={{
+						defaultTools: [],
+						providers: [
+							{
+								id: "anthropic",
+								name: "Anthropic",
+								configured: true,
+								authMethods: ["api_key" as const],
+								models: anthropicModels,
+							},
+							{
+								id: "openai",
+								name: "OpenAI",
+								configured: false,
+								authMethods: ["api_key" as const],
+								models: [{ id: "gpt-5.4", name: "GPT-5.4", reasoning: true, contextWindow: 256000 }],
+							},
+							{
+								id: "google",
+								name: "Google",
+								configured: false,
+								authMethods: ["api_key" as const],
+								models: [{ id: "gemini-pro", name: "Gemini Pro", reasoning: true, contextWindow: 1000000 }],
+							},
+							{
+								id: "mistral",
+								name: "Mistral",
+								configured: false,
+								authMethods: ["api_key" as const],
+								models: [
+									{ id: "mistral-large", name: "Mistral Large", reasoning: false, contextWindow: 128000 },
+								],
+							},
+							{
+								id: "zz-hidden",
+								name: "Zzz Hidden",
+								configured: false,
+								authMethods: ["api_key" as const],
+								models: [
+									{
+										id: "zz-hidden-model",
+										name: "Zzz Hidden Model",
+										reasoning: false,
+										contextWindow: 128000,
+									},
+								],
+							},
+						],
+					}}
+				/>
+			</TooltipProvider>,
+		);
+
+		await user.click(screen.getByLabelText("Model anthropic / claude-model-1"));
+		expect(screen.queryByText("Claude Opus Ten")).toBeNull();
+		expect(screen.queryByLabelText(/Zzz Hidden Model.*Zzz Hidden.*未配置/i)).toBeNull();
+
+		const filterInput = screen.getByPlaceholderText("Filter models");
+		await user.type(filterInput, "opus ten");
+		expect(screen.getByLabelText(/Claude Opus Ten.*Anthropic.*已配置/i)).toBeTruthy();
+
+		await user.clear(filterInput);
+		await user.type(filterInput, "zz hidden");
+		expect(screen.getByLabelText(/Zzz Hidden Model.*Zzz Hidden.*未配置/i)).toBeTruthy();
 	});
 
 	it("opens the thinking popover and applies a selected level", async () => {

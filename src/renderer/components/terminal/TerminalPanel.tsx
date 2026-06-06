@@ -223,11 +223,7 @@ export function TerminalPanel({
 		<MotionConfig reducedMotion="never">
 			<motion.section
 				animate={{ height: resolvedHeight }}
-				className={cn(
-					"relative shrink-0 overflow-hidden bg-[color:var(--surface-1)]",
-					isOpen &&
-						"border-t border-[color:var(--border-subtle)] shadow-[inset_0_1px_0_color-mix(in_oklch,var(--foreground)_3%,transparent)]",
-				)}
+				className="relative shrink-0 overflow-hidden bg-[color:var(--surface-1)] shadow-none"
 				data-motion="structural-drawer"
 				data-motion-engine="motion"
 				data-motion-mode="drawer"
@@ -259,20 +255,25 @@ export function TerminalPanel({
 					{isOpen ? (
 						<button
 							aria-label="Resize terminal"
-							className="block h-1.5 w-full shrink-0 cursor-ns-resize bg-transparent transition-colors hover:bg-[color:var(--border-subtle)]"
+							className="group block h-2 w-full shrink-0 cursor-ns-resize bg-transparent"
 							onPointerDown={startResize}
 							type="button"
-						/>
+						>
+							<span className="mx-auto mt-1 block h-px w-12 rounded-full bg-transparent transition-colors group-hover:bg-[color:color-mix(in_oklch,var(--foreground)_10%,transparent)]" />
+						</button>
 					) : null}
 					{isOpen ? (
-						<div className="flex h-10 shrink-0 items-center justify-between gap-3 border-b border-[color:var(--border-subtle)] px-3">
+						<div
+							className="flex h-10 shrink-0 items-center justify-between gap-3 px-4"
+							data-slot="terminal-toolbar"
+						>
 							<div className="flex min-w-0 flex-1 items-center gap-2">
 								<button
-									className="flex min-w-0 shrink-0 items-center gap-2 rounded-[var(--radius-sm)] px-1.5 py-1 text-left text-sm font-medium text-[color:var(--text-secondary)] transition-colors hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--focus-ring)]"
+									className="flex min-w-0 shrink-0 items-center gap-2 rounded-[var(--radius-sm)] px-1.5 py-1 text-left text-[13px] font-medium text-[color:var(--text-secondary)] transition-colors hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] focus-visible:outline-none focus-visible:shadow-[var(--control-focus-shadow)]"
 									onClick={() => onOpenChange(false)}
 									type="button"
 								>
-									<TerminalSquare className="size-4 shrink-0" />
+									<TerminalSquare className="size-3.5 shrink-0" />
 									<span>Terminal</span>
 								</button>
 								<div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden" role="tablist">
@@ -281,16 +282,17 @@ export function TerminalPanel({
 										return (
 											<div
 												className={cn(
-													"group flex h-7 min-w-0 max-w-48 items-center gap-1 rounded-[var(--radius-sm)] border px-2 text-xs transition-colors",
+													"group flex h-7 min-w-0 max-w-48 items-center gap-1 rounded-[var(--radius-sm)] px-2 text-xs transition-colors",
 													isActive
-														? "border-[color:var(--border-subtle)] bg-[color:var(--surface-2)] text-[color:var(--text-primary)]"
-														: "border-transparent text-[color:var(--text-tertiary)] hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-secondary)]",
+														? "bg-[color:var(--surface-2)] text-[color:var(--text-primary)]"
+														: "text-[color:var(--text-tertiary)] hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-secondary)]",
 												)}
+												data-slot="terminal-tab"
 												key={tab.id}
 											>
 												<button
 													aria-selected={isActive}
-													className="min-w-0 flex-1 truncate text-left focus-visible:outline-none"
+													className="min-w-0 flex-1 truncate text-left focus-visible:outline-none focus-visible:shadow-[var(--control-focus-shadow)]"
 													onClick={() => {
 														setActiveTerminalId(tab.id);
 														onOpenChange(true);
@@ -302,7 +304,7 @@ export function TerminalPanel({
 												</button>
 												<button
 													aria-label={`Close ${tab.title}`}
-													className="shrink-0 rounded-[var(--radius-xs)] p-0.5 text-[color:var(--text-tertiary)] opacity-70 transition hover:bg-[color:var(--surface-3)] hover:text-[color:var(--text-primary)] group-hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--focus-ring)]"
+													className="shrink-0 rounded-[var(--radius-xs)] p-0.5 text-[color:var(--text-tertiary)] opacity-60 transition hover:bg-[color:var(--surface-3)] hover:text-[color:var(--text-primary)] group-hover:opacity-100 focus-visible:outline-none focus-visible:shadow-[var(--control-focus-shadow)]"
 													onClick={() => closeTerminalTab(tab.id)}
 													type="button"
 												>
@@ -313,6 +315,7 @@ export function TerminalPanel({
 									})}
 									<IconButton
 										aria-label="New terminal"
+										className="shadow-none hover:shadow-none focus-visible:shadow-[var(--control-focus-shadow)] focus-visible:ring-0"
 										disabled={!canStart}
 										onClick={addTerminalTab}
 										size="sm"
@@ -335,6 +338,7 @@ export function TerminalPanel({
 								) : null}
 								<IconButton
 									aria-label="Restart terminal"
+									className="shadow-none hover:shadow-none focus-visible:shadow-[var(--control-focus-shadow)] focus-visible:ring-0"
 									disabled={!isOpen || !canStart || !activeTerminalId}
 									onClick={restartActiveTerminal}
 									size="sm"
@@ -344,6 +348,7 @@ export function TerminalPanel({
 								</IconButton>
 								<IconButton
 									aria-label="Collapse terminal"
+									className="shadow-none hover:shadow-none focus-visible:shadow-[var(--control-focus-shadow)] focus-visible:ring-0"
 									onClick={() => onOpenChange(false)}
 									size="sm"
 									type="button"
@@ -406,7 +411,7 @@ export function TerminalPanel({
 						) : isOpen && canStart ? (
 							<div className="flex h-full items-center justify-center px-4 text-sm text-[color:var(--terminal-foreground)]">
 								<button
-									className="inline-flex items-center gap-2 rounded-[var(--radius-sm)] border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] px-3 py-1.5 text-[color:var(--text-secondary)] transition hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--focus-ring)]"
+									className="inline-flex items-center gap-2 rounded-[var(--radius-sm)] bg-[color:var(--surface-2)] px-3 py-1.5 text-[color:var(--text-secondary)] shadow-none transition hover:bg-[color:var(--surface-3)] hover:text-[color:var(--text-primary)] focus-visible:outline-none focus-visible:shadow-[var(--control-focus-shadow)]"
 									onClick={addTerminalTab}
 									type="button"
 								>

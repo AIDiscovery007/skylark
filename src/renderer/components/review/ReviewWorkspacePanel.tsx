@@ -1827,10 +1827,12 @@ export function ReviewWorkspacePanel({
 					<div className="flex h-full min-w-0 flex-col">
 						<header
 							className={cn(
-								"desktop-window-drag-region flex h-12 shrink-0 items-center justify-between border-b border-border/70 px-3",
+								"flex h-12 shrink-0 items-center justify-between border-b border-border/70 px-3",
+								!isTitlebarSummaryVisible && "desktop-window-drag-region",
 								showHeaderTitleBlock ? "" : "justify-end",
 							)}
 							data-display-mode={displayMode}
+							data-titlebar-summary-visible={isTitlebarSummaryVisible ? "true" : "false"}
 							data-slot="review-workspace-header"
 						>
 							<div

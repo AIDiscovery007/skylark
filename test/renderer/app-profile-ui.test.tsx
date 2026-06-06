@@ -681,7 +681,7 @@ describe("App profile controls", () => {
 
 		await screen.findByText("hello");
 		await user.click(screen.getByLabelText("Model kimi-coding / kimi-for-coding"));
-		await user.click(screen.getByRole("option", { name: /OpenAI.*未配置/i }));
+		await user.click(screen.getByRole("option", { name: /GPT-5\.5.*OpenAI.*未配置/i }));
 
 		expect(openSettingsWindow).toHaveBeenCalledWith({ section: "credentials", providerId: "openai" });
 	});
@@ -1637,12 +1637,15 @@ describe("App profile controls", () => {
 			expect(mountedSummary).toBeTruthy();
 			return mountedSummary as HTMLElement;
 		});
+		const reviewHeader = document.querySelector('[data-slot="review-workspace-header"]');
 		const newConversationButton = getTopNewConversationButton();
 		const titlebarChildren = Array.from(titlebarControls?.children ?? []);
 		expect(titlebarControls?.contains(summary)).toBe(true);
 		expect(titlebarChildren.indexOf(newConversationButton)).toBeLessThan(titlebarChildren.indexOf(summary));
 		expect(titlebarControls?.className).toContain("z-[var(--z-popover)]");
 		expect(document.querySelector('[data-slot="review-workspace-spacer"]')?.className).toContain("z-50");
+		expect(reviewHeader?.getAttribute("data-titlebar-summary-visible")).toBe("true");
+		expect(reviewHeader?.className).not.toContain("desktop-window-drag-region");
 
 		const summaryText = summary.textContent ?? "";
 		const expectedOrder = ["综合面板", "+2", "-1", "feature/review", "/workspace/project", "审查"];

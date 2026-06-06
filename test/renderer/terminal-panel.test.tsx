@@ -423,6 +423,8 @@ describe("TerminalPanel", () => {
 
 		const terminal = terminalMocks.MockTerminal.instances[0];
 		const terminalPanel = document.querySelector("[data-slot='terminal-panel']");
+		const terminalToolbar = document.querySelector("[data-slot='terminal-toolbar']");
+		const terminalTab = document.querySelector("[data-slot='terminal-tab']");
 		const terminalBody = document.querySelector("[data-slot='terminal-body']");
 		const terminalViewportShell = document.querySelector("[data-slot='terminal-viewport-shell']");
 		const terminalViewport = document.querySelector("[data-slot='terminal-viewport']");
@@ -430,9 +432,15 @@ describe("TerminalPanel", () => {
 		expect(terminalPanel?.getAttribute("data-motion-origin")).toBe("bottom");
 		expect(terminalPanel?.getAttribute("data-motion-owner")).toBe("spacer");
 		expect(terminalPanel?.getAttribute("data-structural-layout-driver")).toBe("height");
+		expect(terminalPanel?.className).toContain("shadow-none");
+		expect(terminalPanel?.className).not.toContain("border-t");
+		expect(terminalToolbar?.className).not.toContain("border-b");
+		expect(terminalTab?.className).not.toContain("border");
+		expect(terminalTab?.className).toContain("bg-[color:var(--surface-2)]");
 		expect(terminalBody?.className).toContain("bg-[color:var(--terminal-background)]");
 		expect(terminalBody?.classList.contains("hidden")).toBe(false);
-		expect(terminalViewportShell?.className).toContain("p-3");
+		expect(terminalViewportShell?.className).toContain("px-4");
+		expect(terminalViewportShell?.className).toContain("pt-2");
 		expect(terminalViewportShell?.className).toContain("pb-4");
 		expect(terminalViewportShell?.className).toContain("bg-[color:var(--terminal-background)]");
 		expect(terminalViewport?.className).toContain("overflow-hidden");

@@ -385,7 +385,7 @@ export function TerminalSession({
 
 	return (
 		<div
-			className="h-full min-h-0 bg-[color:var(--terminal-background)] p-3 pb-4"
+			className="h-full min-h-0 bg-[color:var(--terminal-background)] px-4 pt-2 pb-4"
 			data-slot="terminal-viewport-shell"
 		>
 			<div className="h-full min-h-0 w-full overflow-hidden" data-slot="terminal-viewport" ref={containerRef} />

@@ -1,5 +1,5 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { ArrowLeft, Bot, Brain, Check, type LucideIcon } from "lucide-react";
+import { Bot, Brain, Check, ChevronDown, type LucideIcon } from "lucide-react";
 import { type ComponentProps, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -25,10 +25,10 @@ import {
 	ModelSelectorInput,
 	ModelSelectorItem,
 	ModelSelectorList,
+	ModelSelectorLogo,
+	ModelSelectorName,
 	ModelSelectorTrigger,
 } from "../ai-elements/model-selector.tsx";
-
-type ModelPickerStep = "providers" | "models";
 
 interface ComposerQuickControlsProps {
 	agentMode?: DesktopAgentMode;
@@ -55,11 +55,28 @@ type StatusTriggerButtonProps = StatusTriggerProps & Omit<ComponentProps<typeof 
 
 type ProviderConfigurationStatus = "oauth" | "api_key" | "configured" | "unconfigured";
 
+const DEFAULT_MODEL_SELECTOR_PROVIDER_LIMIT = 3;
+const DEFAULT_MODEL_SELECTOR_MODELS_PER_PROVIDER = 8;
+
 interface ProviderOption {
 	provider: DesktopRuntimeCatalogProvider;
 	status: ProviderConfigurationStatus;
 	statusLabel: string;
 	sortRank: number;
+}
+
+interface ModelOption {
+	model: DesktopRuntimeCatalogModel;
+	provider: DesktopRuntimeCatalogProvider;
+	providerLabel: string;
+	status: ProviderConfigurationStatus;
+	statusLabel: string;
+}
+
+interface ModelGroup {
+	options: ModelOption[];
+	provider: DesktopRuntimeCatalogProvider;
+	providerLabel: string;
 }
 
 function getProviderStatusLabel(status: ProviderConfigurationStatus): string {
@@ -73,13 +90,6 @@ function getProviderStatusLabel(status: ProviderConfigurationStatus): string {
 		return "已配置";
 	}
 	return "未配置";
-}
-
-function getProviderStatusDotClassName(status: ProviderConfigurationStatus): string {
-	return cn(
-		"inline-block size-2.5 shrink-0 rounded-full",
-		status === "unconfigured" ? "bg-[color:var(--text-tertiary)] opacity-55" : "bg-[color:var(--success)]",
-	);
 }
 
 function getProviderOptionStatus(
@@ -148,15 +158,121 @@ function getCurrentProvider(model: DesktopAgentModel | undefined, providers: rea
 	);
 }
 
-function getProviderModels(
-	runtimeCatalog: DesktopRuntimeCatalog | undefined,
-	providerId: string,
-): DesktopRuntimeCatalogModel[] {
-	return runtimeCatalog?.providers.find((provider) => provider.id === providerId)?.models ?? [];
-}
-
 function formatModelName(model: DesktopRuntimeCatalogModel): string {
 	return model.name && model.name !== model.id ? `${model.name} (${model.id})` : model.id;
+}
+
+function formatModelTriggerName(model: DesktopAgentModel | undefined): string {
+	if (!model) {
+		return "Model";
+	}
+	return model.name && model.name !== model.id ? model.name : model.id;
+}
+
+function getModelGroups(providers: readonly ProviderOption[]): ModelGroup[] {
+	return providers.flatMap((option) => {
+		const providerLabel = formatProviderLabel(option.provider);
+		const options = option.provider.models.map((providerModel) => ({
+			model: providerModel,
+			provider: option.provider,
+			providerLabel,
+			status: option.status,
+			statusLabel: option.statusLabel,
+		}));
+		return options.length > 0 ? [{ options, provider: option.provider, providerLabel }] : [];
+	});
+}
+
+function getDefaultModelGroups(
+	modelGroups: readonly ModelGroup[],
+	currentProviderId: string,
+	currentModelId: string | undefined,
+): ModelGroup[] {
+	const defaultProviderIds = new Set<string>();
+	for (const group of modelGroups) {
+		if (group.provider.id === currentProviderId || group.options.some((option) => option.status !== "unconfigured")) {
+			defaultProviderIds.add(group.provider.id);
+		}
+	}
+	for (const group of modelGroups) {
+		if (defaultProviderIds.size >= DEFAULT_MODEL_SELECTOR_PROVIDER_LIMIT) {
+			break;
+		}
+		defaultProviderIds.add(group.provider.id);
+	}
+	return modelGroups
+		.filter((group) => defaultProviderIds.has(group.provider.id))
+		.map((group) => limitDefaultModelGroup(group, currentProviderId, currentModelId));
+}
+
+function limitDefaultModelGroup(
+	group: ModelGroup,
+	currentProviderId: string,
+	currentModelId: string | undefined,
+): ModelGroup {
+	const visibleOptions = group.options.slice(0, DEFAULT_MODEL_SELECTOR_MODELS_PER_PROVIDER);
+	if (group.provider.id !== currentProviderId || !currentModelId) {
+		return { ...group, options: visibleOptions };
+	}
+	const activeOption = group.options.find((option) => option.model.id === currentModelId);
+	if (!activeOption || visibleOptions.some((option) => option.model.id === currentModelId)) {
+		return { ...group, options: visibleOptions };
+	}
+	return {
+		...group,
+		options: [activeOption, ...visibleOptions.slice(0, DEFAULT_MODEL_SELECTOR_MODELS_PER_PROVIDER - 1)],
+	};
+}
+
+function normalizeModelSearchValue(option: ModelOption): string {
+	return `${option.model.id} ${option.model.name} ${option.providerLabel} ${option.provider.id} ${option.statusLabel}`.toLocaleLowerCase();
+}
+
+function getFilteredModelGroups(modelGroups: readonly ModelGroup[], query: string): ModelGroup[] {
+	const queryTokens = query.toLocaleLowerCase().trim().split(/\s+/).filter(Boolean);
+	if (queryTokens.length === 0) {
+		return [...modelGroups];
+	}
+	return modelGroups.flatMap((group) => {
+		const options = group.options.filter((option) => {
+			const searchValue = normalizeModelSearchValue(option);
+			return queryTokens.every((token) => searchValue.includes(token));
+		});
+		return options.length > 0 ? [{ ...group, options }] : [];
+	});
+}
+
+function ProviderLogo({ className, providerId }: { className?: string; providerId?: string }) {
+	if (!providerId) {
+		return (
+			<span
+				className={cn(
+					"grid size-4 shrink-0 place-items-center rounded-full bg-[color:var(--surface-2)] text-[color:var(--text-tertiary)]",
+					className,
+				)}
+			>
+				<Bot className="size-3" />
+			</span>
+		);
+	}
+
+	return (
+		<span
+			className={cn(
+				"relative grid size-4 shrink-0 place-items-center overflow-hidden rounded-full bg-[color:var(--surface-2)] text-[color:var(--text-tertiary)]",
+				className,
+			)}
+		>
+			<Bot className="size-3" />
+			<ModelSelectorLogo
+				className="absolute inset-0 size-4 bg-[color:var(--surface-1)] p-0 dark:invert"
+				onError={(event) => {
+					event.currentTarget.style.display = "none";
+				}}
+				provider={providerId}
+			/>
+		</span>
+	);
 }
 
 function StatusTrigger({
@@ -202,175 +318,126 @@ function ModelQuickControl({
 		() => getProviderOptions(runtimeCatalog, providerKeys, oauthProviders),
 		[oauthProviders, providerKeys, runtimeCatalog],
 	);
+	const modelGroups = useMemo(() => getModelGroups(providers), [providers]);
 	const [open, setOpen] = useState(false);
-	const [step, setStep] = useState<ModelPickerStep>("providers");
-	const [selectedProvider, setSelectedProvider] = useState(() => getCurrentProvider(model, providers));
-	const [providerFilter, setProviderFilter] = useState("");
-	const [modelFilter, setModelFilter] = useState("");
-	const [applyingModelId, setApplyingModelId] = useState<string | undefined>();
+	const [modelQuery, setModelQuery] = useState("");
+	const [applyingModelKey, setApplyingModelKey] = useState<string | undefined>();
 	const [errorMessage, setErrorMessage] = useState<string | undefined>();
 	const currentModelLabel = model ? `${model.provider} / ${model.id}` : "Model unavailable";
+	const currentModelName = formatModelTriggerName(model);
+	const currentProviderId = model?.provider ?? getCurrentProvider(model, providers);
+	const displayedModelGroups = useMemo(() => {
+		const trimmedQuery = modelQuery.trim();
+		if (trimmedQuery.length > 0) {
+			return getFilteredModelGroups(modelGroups, trimmedQuery);
+		}
+		return getDefaultModelGroups(modelGroups, currentProviderId, model?.id);
+	}, [currentProviderId, model?.id, modelGroups, modelQuery]);
 	const isDisabled = disabled || isStreaming || (!onUpdateSessionProfile && !onOpenSettings);
-	const selectedProviderModels = useMemo(
-		() => getProviderModels(runtimeCatalog, selectedProvider),
-		[runtimeCatalog, selectedProvider],
-	);
-	const filteredProviders = providers.filter((option) => {
-		const query = providerFilter.trim().toLowerCase();
-		if (!query) {
-			return true;
-		}
-		return `${option.provider.id} ${option.provider.name} ${option.statusLabel}`.toLowerCase().includes(query);
-	});
-	const filteredModels = selectedProviderModels.filter((providerModel) => {
-		const query = modelFilter.trim().toLowerCase();
-		if (!query) {
-			return true;
-		}
-		return `${providerModel.id} ${providerModel.name}`.toLowerCase().includes(query);
-	});
 
 	useEffect(() => {
 		if (!open) {
 			return;
 		}
-		setSelectedProvider(getCurrentProvider(model, providers));
-		setStep("providers");
-		setProviderFilter("");
-		setModelFilter("");
 		setErrorMessage(undefined);
-	}, [model, open, providers]);
+	}, [open]);
 
-	const selectProvider = (option: ProviderOption): void => {
+	const handleModelSelectorOpenChange = (nextOpen: boolean): void => {
+		setOpen(nextOpen);
+		if (!nextOpen) {
+			setModelQuery("");
+		}
+	};
+
+	const closeModelSelector = (): void => {
+		setOpen(false);
+		setModelQuery("");
+	};
+
+	const applyModel = async (option: ModelOption): Promise<void> => {
 		if (option.status === "unconfigured") {
-			setOpen(false);
+			closeModelSelector();
 			onOpenSettings?.({ section: "credentials", providerId: option.provider.id });
 			return;
 		}
-		setSelectedProvider(option.provider.id);
-		setStep("models");
-	};
-
-	const applyModel = async (modelId: string): Promise<void> => {
-		if (!onUpdateSessionProfile || !selectedProvider) {
+		if (!onUpdateSessionProfile) {
 			return;
 		}
-		if (model?.provider === selectedProvider && model.id === modelId) {
-			setOpen(false);
+		if (model?.provider === option.provider.id && model.id === option.model.id) {
+			closeModelSelector();
 			return;
 		}
 
-		setApplyingModelId(modelId);
+		const nextModelKey = `${option.provider.id}:${option.model.id}`;
+		setApplyingModelKey(nextModelKey);
 		setErrorMessage(undefined);
 		try {
-			await onUpdateSessionProfile({ provider: selectedProvider, modelId });
-			setOpen(false);
+			await onUpdateSessionProfile({ provider: option.provider.id, modelId: option.model.id });
+			closeModelSelector();
 		} catch (error: unknown) {
 			setErrorMessage(error instanceof Error ? error.message : String(error));
 		} finally {
-			setApplyingModelId(undefined);
+			setApplyingModelKey(undefined);
 		}
 	};
 
 	return (
-		<ModelSelector onOpenChange={setOpen} open={open}>
+		<ModelSelector onOpenChange={handleModelSelectorOpenChange} open={open}>
 			<ModelSelectorTrigger asChild>
-				<StatusTrigger disabled={isDisabled} icon={Bot} label={`Model ${currentModelLabel}`} />
+				<Button
+					aria-label={`Model ${currentModelLabel}`}
+					className="h-7 min-w-0 max-w-[13rem] gap-1.5 rounded-[var(--radius-md)] border border-transparent px-2 text-[12px] font-medium text-[color:var(--text-tertiary)] shadow-none hover:border-[color:var(--border-subtle)] hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)]"
+					data-slot="composer-model-selector-trigger"
+					disabled={isDisabled}
+					size="xs"
+					title={`Model ${currentModelLabel}`}
+					type="button"
+					variant="ghost"
+				>
+					<ProviderLogo providerId={currentProviderId} />
+					<ModelSelectorName className="max-w-[8.5rem] flex-none text-[12px]">
+						{currentModelName}
+					</ModelSelectorName>
+					<ChevronDown className="size-3 shrink-0 opacity-65" />
+				</Button>
 			</ModelSelectorTrigger>
 			<ModelSelectorContent className="max-w-[26rem] shadow-[var(--uix-flat-shadow-floating)]" title="Session model">
-				{step === "providers" ? (
-					<>
-						<ModelSelectorInput
-							onValueChange={setProviderFilter}
-							placeholder="Filter providers"
-							value={providerFilter}
-						/>
-						<ModelSelectorList className="max-h-[20rem]">
-							{runtimeCatalog === undefined ? (
-								<ModelSelectorEmpty>Loading providers...</ModelSelectorEmpty>
-							) : filteredProviders.length > 0 ? (
-								<ModelSelectorGroup heading="Providers">
-									{filteredProviders.map((option) => {
-										const providerLabel = formatProviderLabel(option.provider);
-										const isActive = model?.provider === option.provider.id;
+				<ModelSelectorInput onValueChange={setModelQuery} placeholder="Filter models" value={modelQuery} />
+				<ModelSelectorList className="max-h-[22rem]">
+					{runtimeCatalog === undefined ? (
+						<ModelSelectorEmpty>Loading models...</ModelSelectorEmpty>
+					) : displayedModelGroups.length > 0 ? (
+						<>
+							<ModelSelectorEmpty>No models match.</ModelSelectorEmpty>
+							{displayedModelGroups.map((group) => (
+								<ModelSelectorGroup heading={group.providerLabel} key={group.provider.id}>
+									{group.options.map((option) => {
+										const itemKey = `${option.provider.id}:${option.model.id}`;
+										const isActive = model?.provider === option.provider.id && model.id === option.model.id;
+										const isApplying = applyingModelKey === itemKey;
 										return (
 											<ModelSelectorItem
+												aria-label={`${formatModelName(option.model)} ${option.providerLabel} ${option.statusLabel}`}
 												className={cn(
-													"grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3",
+													"grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2.5",
 													option.status === "unconfigured" && "text-muted-foreground",
 												)}
-												key={option.provider.id}
-												onSelect={() => selectProvider(option)}
-												value={`${providerLabel} ${option.provider.id} ${option.statusLabel}`}
+												disabled={applyingModelKey !== undefined}
+												key={itemKey}
+												onSelect={() => void applyModel(option)}
+												value={`${option.model.id} ${option.model.name} ${option.providerLabel} ${option.provider.id} ${option.statusLabel}`}
 											>
-												<span className="min-w-0">
-													<span className="flex min-w-0 items-center gap-2">
-														<span className="truncate">{providerLabel}</span>
-														{isActive ? <Check className="size-3.5 shrink-0" /> : null}
-													</span>
-													{providerLabel !== option.provider.id ? (
+												<ProviderLogo providerId={option.provider.id} />
+												<ModelSelectorName className="block min-w-0">
+													<span className="block truncate">{formatModelName(option.model)}</span>
+													{option.model.reasoning ? (
 														<span className="block truncate text-xs text-muted-foreground">
-															{option.provider.id}
+															reasoning
 														</span>
 													) : null}
-												</span>
-												<span
-													aria-label={`${providerLabel} ${option.statusLabel}`}
-													className={getProviderStatusDotClassName(option.status)}
-													data-provider-status={
-														option.status === "unconfigured" ? "unconfigured" : "configured"
-													}
-													role="img"
-													title={option.statusLabel}
-												/>
-											</ModelSelectorItem>
-										);
-									})}
-								</ModelSelectorGroup>
-							) : providers.length > 0 ? (
-								<ModelSelectorEmpty>No providers match.</ModelSelectorEmpty>
-							) : (
-								<ModelSelectorEmpty>No providers available.</ModelSelectorEmpty>
-							)}
-						</ModelSelectorList>
-					</>
-				) : (
-					<>
-						<div className="flex items-center gap-2 px-1">
-							<Button
-								aria-label="Back to providers"
-								onClick={() => setStep("providers")}
-								size="icon-xs"
-								type="button"
-								variant="ghost"
-							>
-								<ArrowLeft className="size-3.5" />
-							</Button>
-							<p className="min-w-0 truncate text-sm font-medium text-foreground">{selectedProvider}</p>
-						</div>
-						<ModelSelectorInput onValueChange={setModelFilter} placeholder="Filter models" value={modelFilter} />
-						<ModelSelectorList className="max-h-[19rem]">
-							{filteredModels.length > 0 ? (
-								<ModelSelectorGroup heading="Models">
-									{filteredModels.map((providerModel) => {
-										const isActive = model?.provider === selectedProvider && model.id === providerModel.id;
-										const isApplying = applyingModelId === providerModel.id;
-										return (
-											<ModelSelectorItem
-												className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3"
-												disabled={applyingModelId !== undefined}
-												key={providerModel.id}
-												onSelect={() => void applyModel(providerModel.id)}
-												value={`${providerModel.id} ${providerModel.name}`}
-											>
-												<span className="min-w-0">
-													<span className="block truncate">{formatModelName(providerModel)}</span>
-													{providerModel.reasoning ? (
-														<span className="text-xs text-muted-foreground">reasoning</span>
-													) : null}
-												</span>
+												</ModelSelectorName>
 												{isApplying ? (
-													<Spinner className="size-3.5 shrink-0" label={`Applying ${providerModel.id}`} />
+													<Spinner className="size-3.5 shrink-0" label={`Applying ${option.model.id}`} />
 												) : isActive ? (
 													<Check className="size-3.5 shrink-0" />
 												) : null}
@@ -378,12 +445,12 @@ function ModelQuickControl({
 										);
 									})}
 								</ModelSelectorGroup>
-							) : (
-								<ModelSelectorEmpty>No models match.</ModelSelectorEmpty>
-							)}
-						</ModelSelectorList>
-					</>
-				)}
+							))}
+						</>
+					) : (
+						<ModelSelectorEmpty>No models available.</ModelSelectorEmpty>
+					)}
+				</ModelSelectorList>
 				{errorMessage ? <p className="px-3.5 py-2 text-xs text-destructive">{errorMessage}</p> : null}
 			</ModelSelectorContent>
 		</ModelSelector>
