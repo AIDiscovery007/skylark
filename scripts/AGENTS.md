@@ -15,8 +15,12 @@ This subtree owns repository harness and maintenance scripts.
 - When adding or materially changing a harness script, pre-commit rule,
   release/package check, or maintenance command, update this file with the local
   behavior and verification expectation future agents need.
+- `monitor-upstream.mjs` is a non-harness maintenance script that reads upstream
+  `earendil-works/pi` changes (network required) and writes a summary to stdout / workflow
+  step summary.
 
 ## Verification
 
 - Run the script directly after changing it.
+- Run `UPSTREAM_REPO_URL=file:///Users/qiaochao/pi-mono UPSTREAM_BRANCH=main node scripts/monitor-upstream.mjs` as a dry run.
 - Run `npm run check` before handoff.

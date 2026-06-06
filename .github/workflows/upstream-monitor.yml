@@ -1,0 +1,26 @@
+name: "Skylark Upstream Monitor"
+
+on:
+  schedule:
+    # 10:00 Asia/Shanghai = 02:00 UTC
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+jobs:
+  check-upstream:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check upstream pi changes
+        env:
+          UPSTREAM_REPO_URL: https://github.com/earendil-works/pi.git
+          UPSTREAM_BRANCH: main
+          UPSTREAM_LOOKBACK_HOURS: "24"
+          UPSTREAM_MAX_COMMITS: "20"
+        run: |
+          node scripts/monitor-upstream.mjs
