@@ -18,6 +18,9 @@ This subtree owns repository harness and maintenance scripts.
 - `monitor-upstream.mjs` is a non-harness maintenance script that reads upstream
   `earendil-works/pi` changes (network required) and writes a summary to stdout / workflow
   step summary.
+- The script emits GitHub Actions outputs (`has_important_changes`, `commit_count`,
+  `important_count`, `report_path`) when `GITHUB_OUTPUT` is available, so the
+  workflow can create an issue only when priority paths changed.
 
 ## Verification
 

@@ -11,12 +11,14 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      issues: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Check upstream pi changes
+        id: check-upstream
         env:
           UPSTREAM_REPO_URL: https://github.com/earendil-works/pi.git
           UPSTREAM_BRANCH: main
@@ -24,3 +26,13 @@ jobs:
           UPSTREAM_MAX_COMMITS: "20"
         run: |
           node scripts/monitor-upstream.mjs
+
+      - name: Create issue for merge-worthy upstream changes
+        if: steps.check-upstream.outputs.has_important_changes == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create \
+            --repo "${{ github.repository }}" \
+            --title "Upstream monitor: ${{ steps.check-upstream.outputs.important_count }} merge-worthy change(s) in earendil-works/pi" \
+            --body-file "${{ steps.check-upstream.outputs.report_path }}"

@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -15,6 +15,10 @@ const importantPaths = (process.env.UPSTREAM_IMPORTANT_PATHS ??
 	.filter(Boolean);
 
 const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+const outputPath = process.env.GITHUB_OUTPUT;
+const reportPath =
+	process.env.UPSTREAM_REPORT_PATH ??
+	path.join(process.env.RUNNER_TEMP || os.tmpdir(), "skylark-upstream-monitor-report.md");
 
 if (!Number.isFinite(lookbackHours) || lookbackHours <= 0) {
 	throw new Error("UPSTREAM_LOOKBACK_HOURS must be a positive number");
@@ -54,6 +58,13 @@ const since = new Date(now.getTime() - lookbackHours * 60 * 60 * 1000).toISOStri
 const workspace = mkdtempSync(path.join(os.tmpdir(), "skylark-upstream-"));
 const upstreamRepo = path.join(workspace, "upstream-pi");
 
+function setOutput(name, value) {
+	if (!outputPath) {
+		return;
+	}
+	appendFileSync(outputPath, `${name}=${value}\n`, "utf8");
+}
+
 try {
 	run(`git clone --depth 400 --branch ${upstreamBranch} ${upstreamUrl} ${upstreamRepo}`);
 
@@ -68,6 +79,12 @@ try {
 		if (summaryPath) {
 			writeFileSync(summaryPath, `# Upstream Monitor\n\n${none}\n`);
 		}
+		const noCommitReport = `# Upstream Monitor\n\n${none}\n`;
+		writeFileSync(reportPath, noCommitReport);
+		setOutput("has_important_changes", false);
+		setOutput("commit_count", 0);
+		setOutput("important_count", 0);
+		setOutput("report_path", reportPath);
 		process.exit(0);
 	}
 
@@ -124,6 +141,11 @@ try {
 	if (summaryPath) {
 		writeFileSync(summaryPath, report);
 	}
+	writeFileSync(reportPath, report);
+	setOutput("has_important_changes", importantEntries.length > 0);
+	setOutput("commit_count", entries.length);
+	setOutput("important_count", importantEntries.length);
+	setOutput("report_path", reportPath);
 } catch (error) {
 	console.error("Failed to generate upstream monitor report");
 	console.error(error instanceof Error ? error.message : String(error));
