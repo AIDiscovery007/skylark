@@ -1,15 +1,12 @@
 import { GitCompareArrows, Info, SquareTerminal } from "lucide-react";
 import { type Ref, useState } from "react";
-import { AgentStatusIndicator } from "@/components/layout/AgentStatusIndicator";
 import { IconButton } from "@/components/ui/icon-button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import type { AgentRuntimeStatus } from "@/lib/agent-runtime-state";
 
 interface WorkbenchHeaderProps {
 	workspaceLabel: string;
 	sessionTitle: string;
 	sessionMeta?: string;
-	runtimeState?: AgentRuntimeStatus;
 	isReviewOpen?: boolean;
 	isTerminalOpen?: boolean;
 	isWorkspacePanelOpen?: boolean;
@@ -25,7 +22,6 @@ export function WorkbenchHeader({
 	workspaceLabel,
 	sessionTitle,
 	sessionMeta,
-	runtimeState,
 	isReviewOpen = false,
 	isTerminalOpen = false,
 	isWorkspacePanelOpen = false,
@@ -87,7 +83,6 @@ export function WorkbenchHeader({
 				className="desktop-window-drag-region relative z-10 flex h-full shrink-0 items-center justify-end gap-2"
 				data-slot="workbench-header-actions"
 			>
-				<AgentStatusIndicator runtimeState={runtimeState} />
 				<Tooltip
 					onOpenChange={(nextOpen: boolean) => {
 						if (!nextOpen) {

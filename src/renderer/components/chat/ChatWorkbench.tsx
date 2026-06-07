@@ -2794,41 +2794,28 @@ function QuietSessionSwitchState({ bottomInset }: { bottomInset: number }) {
 	);
 }
 
-function AssistantEmptyState({
-	detail,
-	onAction,
-	tone,
-}: {
-	detail: string;
-	onAction: () => void;
-	tone: "error" | "idle";
-}) {
+function AssistantEmptyState({ detail }: { detail: string }) {
 	return (
 		<div
 			className="boundary-state mx-auto flex w-full items-center px-5 py-10 md:px-7"
-			data-boundary-state={tone}
+			data-boundary-state="error"
 			data-slot="assistant-empty-state"
-			role={tone === "error" ? "alert" : undefined}
+			role="alert"
 		>
 			<div className="grid max-w-xl gap-4">
 				<div className="boundary-state-icon flex items-center justify-center rounded-lg border bg-background text-foreground">
-					<Sparkles className={cn("size-4", tone === "error" ? "text-destructive" : "text-primary")} />
+					<Sparkles className="size-4 text-destructive" />
 				</div>
 				<div className="grid gap-1.5">
-					<p className="ui-detail-label">{tone === "error" ? "Session unavailable" : "Skylark"}</p>
+					<p className="ui-detail-label">Session unavailable</p>
 					<h2 className="text-[13px] font-semibold leading-5 text-foreground">
-						{tone === "error" ? "The current transcript could not be loaded." : "What should we work on?"}
+						The current transcript could not be loaded.
 					</h2>
 					<p className="text-sm leading-6 text-muted-foreground">
-						{tone === "error"
-							? "The desktop bridge did not return a usable session snapshot yet."
-							: "Ask Skylark to inspect files, explain code, or shape the next change."}
+						The desktop bridge did not return a usable session snapshot yet.
 					</p>
 					<p className="boundary-state-detail font-mono text-xs leading-5 text-muted-foreground">{detail}</p>
 				</div>
-				<Button className="w-fit" onClick={onAction} type="button" variant="outline">
-					Focus composer
-				</Button>
 			</div>
 		</div>
 	);
@@ -3743,6 +3730,8 @@ export function ChatWorkbench({
 	const isSwitchingSession = pendingActiveSessionId !== undefined;
 	const hasActiveConversation = activeAgentSessionId !== undefined;
 	const isConversationHydrating = hasActiveConversation && !hasHydrated;
+	const isEmptyConversation = !isConversationHydrating && !isSwitchingSession && assistantMessages.length === 0;
+	const useCenteredComposerLayout = isEmptyConversation && !bridgeError;
 
 	useEffect(() => {
 		const viewport = threadViewportElement;
@@ -3983,7 +3972,7 @@ export function ChatWorkbench({
 									<QuietHydrationState bottomInset={composerInset} />
 								) : isSwitchingSession ? (
 									<QuietSessionSwitchState bottomInset={composerInset} />
-								) : assistantMessages.length === 0 ? (
+								) : isEmptyConversation ? (
 									<ConversationContent
 										className="gap-0 p-0"
 										scrollClassName="native-scrollbar h-full overflow-y-auto overscroll-contain pb-6 pt-6"
@@ -3994,15 +3983,9 @@ export function ChatWorkbench({
 										}}
 										stickToBottom={false}
 									>
-										<AssistantEmptyState
-											detail={
-												bridgeError
-													? (cwd ?? "Session snapshot unavailable.")
-													: (cwd ?? "Workspace path will appear here when the session is ready.")
-											}
-											onAction={() => composerRef.current?.focus()}
-											tone={bridgeError ? "error" : "idle"}
-										/>
+										{bridgeError ? (
+											<AssistantEmptyState detail={cwd ?? "Session snapshot unavailable."} />
+										) : null}
 										{isCompactionRunning ? <CompactionTimelineDivider status="running" /> : null}
 									</ConversationContent>
 								) : (
@@ -4042,7 +4025,11 @@ export function ChatWorkbench({
 						<ThreadImagePreviewDialog image={previewImage} onClose={handleCloseImagePreview} />
 
 						<div
-							className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex justify-center px-5 pb-5 md:px-7 md:pb-7"
+							className={cn(
+								"pointer-events-none absolute inset-x-0 z-20 flex justify-center px-5 md:px-7",
+								useCenteredComposerLayout ? "top-[clamp(15rem,38vh,28rem)]" : "bottom-0 pb-5 md:pb-7",
+							)}
+							data-empty-session={useCenteredComposerLayout ? "true" : undefined}
 							data-slot="composer-dock"
 							ref={composerDockRef}
 						>

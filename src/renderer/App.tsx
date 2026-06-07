@@ -25,12 +25,10 @@ import { Spinner } from "./components/ui/spinner.tsx";
 import { useAgentStream } from "./hooks/use-agent-stream.ts";
 import { useCapabilities } from "./hooks/use-capabilities.ts";
 import { useEvents } from "./hooks/use-events.ts";
-import { useMinimumVisibleFlag } from "./hooks/use-minimum-visible-flag.ts";
 import { useProjects } from "./hooks/use-projects.ts";
 import { useSessions } from "./hooks/use-sessions.ts";
 import { useSettings } from "./hooks/use-settings.ts";
 import { useWorkspaceStatus } from "./hooks/use-workspace-status.ts";
-import { getAgentRuntimeState } from "./lib/agent-runtime-state.ts";
 import { applyDesktopAppearanceTheme } from "./lib/appearance-theme.ts";
 import {
 	deriveMainWorkbenchCoordination,
@@ -41,7 +39,6 @@ import {
 } from "./lib/main-workbench-coordination.ts";
 import { markRendererPerformance, measureRendererPerformance } from "./lib/performance-marks.ts";
 import { useAgentStore } from "./stores/agent-store.ts";
-import { useApprovalStore } from "./stores/approval-store.ts";
 
 interface ComposerFocusRequest {
 	nonce: number;
@@ -221,7 +218,6 @@ function DesktopApp({ desktopAgent }: { desktopAgent: DesktopAgentBridge }) {
 	const [hasRequestedCapabilitiesPage, setHasRequestedCapabilitiesPage] = useState(false);
 	const [hasRequestedEventsPage, setHasRequestedEventsPage] = useState(initialAppView === "events");
 	const [hasRequestedReviewPanel, setHasRequestedReviewPanel] = useState(false);
-	const [pendingPromptSubmissions, setPendingPromptSubmissions] = useState(0);
 	const [composerFocusRequest, setComposerFocusRequest] = useState<ComposerFocusRequest | undefined>();
 	const [workspacePreviewRequest, setWorkspacePreviewRequest] = useState<WorkspacePreviewRequest | undefined>();
 	const [webPreviewRequest, setWebPreviewRequest] = useState<WebPreviewRequest | undefined>();
@@ -230,7 +226,6 @@ function DesktopApp({ desktopAgent }: { desktopAgent: DesktopAgentBridge }) {
 		EnvironmentTerminalRequest | undefined
 	>();
 	const [isTerminalOpen, setIsTerminalOpen] = useState(false);
-	const [showCompletedStatus, setShowCompletedStatus] = useState(false);
 	const [hasReportedFirstInteractive, setHasReportedFirstInteractive] = useState(false);
 	const [nativeAppearance, setNativeAppearance] = useState<DesktopNativeAppearance | undefined>();
 	const [reviewOpenKeys, setReviewOpenKeys] = useState<ReadonlySet<string>>(() => new Set());
@@ -243,7 +238,6 @@ function DesktopApp({ desktopAgent }: { desktopAgent: DesktopAgentBridge }) {
 	const webPreviewRequestNonceRef = useRef(0);
 	const subagentRequestNonceRef = useRef(0);
 	const environmentTerminalRequestIdRef = useRef(0);
-	const wasStreamingRef = useRef(false);
 	const projects = useProjects({ bridge: desktopAgent });
 	const sessions = useSessions({
 		bridge: desktopAgent,
@@ -275,16 +269,12 @@ function DesktopApp({ desktopAgent }: { desktopAgent: DesktopAgentBridge }) {
 		bridge: desktopAgent,
 		enabled: hasReportedFirstInteractive || activeView === "events",
 	});
-	const hasPendingApproval = useApprovalStore((state) => state.requests.length > 0);
-	const bridgeError = useAgentStore((state) => state.bridgeError);
 	const capabilities = useCapabilities({
 		bridge: desktopAgent,
 		defer: "immediate",
 		enabled: activeView === "capabilities",
 	});
 	const isSidebarBusy = sessions.isCreating || sessions.isDeleting || projects.isCreating;
-	const isStreaming = useAgentStore((state) => state.isStreaming);
-	const errorMessage = useAgentStore((state) => state.errorMessage);
 	const canDeleteSessions = typeof desktopAgent.deleteSession === "function";
 	const activeSession = sessions.sessions.find((session) => session.id === sessions.activeSessionId);
 	const [optimisticActiveSession, setOptimisticActiveSession] = useOptimistic<
@@ -292,15 +282,6 @@ function DesktopApp({ desktopAgent }: { desktopAgent: DesktopAgentBridge }) {
 		DesktopSessionSummary | undefined
 	>(activeSession, (_currentSession, nextSession) => nextSession);
 	const [, startSessionNavigationTransition] = useTransition();
-	const showQueuedStatus = useMinimumVisibleFlag(pendingPromptSubmissions > 0, 1800);
-	const runtimeState = getAgentRuntimeState({
-		bridgeError,
-		errorMessage,
-		hasPendingApproval,
-		isQueued: showQueuedStatus,
-		isStreaming,
-		showCompleted: showCompletedStatus,
-	});
 	const sidebarSessionsByProjectId = resolveSidebarSessionsByProjectId(
 		projects.sessionsByProjectId,
 		projects.activeProjectId,
@@ -546,33 +527,18 @@ function DesktopApp({ desktopAgent }: { desktopAgent: DesktopAgentBridge }) {
 
 	const handleSubmitPrompt = useCallback(
 		async (request: DesktopPromptSubmission): Promise<void> => {
-			setPendingPromptSubmissions((current) => current + 1);
-			try {
-				await prompt(request);
-			} finally {
-				setPendingPromptSubmissions((current) => Math.max(0, current - 1));
-			}
+			await prompt(request);
 		},
 		[prompt],
 	);
 
 	const handleExecutePlan = useCallback(async (): Promise<void> => {
-		setPendingPromptSubmissions((current) => current + 1);
-		try {
-			await executePlan();
-		} finally {
-			setPendingPromptSubmissions((current) => Math.max(0, current - 1));
-		}
+		await executePlan();
 	}, [executePlan]);
 
 	const handleCompact = useCallback(
 		async (customInstructions?: string): Promise<void> => {
-			setPendingPromptSubmissions((current) => current + 1);
-			try {
-				await compact(customInstructions);
-			} finally {
-				setPendingPromptSubmissions((current) => Math.max(0, current - 1));
-			}
+			await compact(customInstructions);
 		},
 		[compact],
 	);
@@ -583,34 +549,6 @@ function DesktopApp({ desktopAgent }: { desktopAgent: DesktopAgentBridge }) {
 		},
 		[consumeProposedPlan],
 	);
-
-	useEffect(() => {
-		if (isStreaming || showQueuedStatus) {
-			setShowCompletedStatus(false);
-			return;
-		}
-	}, [isStreaming, showQueuedStatus]);
-
-	useEffect(() => {
-		if (isStreaming) {
-			wasStreamingRef.current = true;
-			setShowCompletedStatus(false);
-			return;
-		}
-
-		if (!wasStreamingRef.current) {
-			return;
-		}
-
-		wasStreamingRef.current = false;
-		if (bridgeError || errorMessage) {
-			return;
-		}
-
-		setShowCompletedStatus(true);
-		const timeoutId = window.setTimeout(() => setShowCompletedStatus(false), 1800);
-		return () => window.clearTimeout(timeoutId);
-	}, [bridgeError, errorMessage, isStreaming]);
 
 	const primeReviewWorkspacePanel = useCallback((): void => {
 		setHasRequestedReviewPanel(true);
@@ -945,7 +883,6 @@ function DesktopApp({ desktopAgent }: { desktopAgent: DesktopAgentBridge }) {
 												onToggleTerminal={toggleTerminalPanel}
 												onToggleWorkspacePanel={toggleWorkspacePanel}
 												reviewButtonRef={reviewTriggerRef}
-												runtimeState={runtimeState}
 												sessionMeta={sessionMeta}
 												sessionTitle={sessionTitle}
 												terminalAvailable={terminalAvailable}

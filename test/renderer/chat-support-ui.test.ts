@@ -107,14 +107,13 @@ describe("Chat support UI", () => {
 		expect(openHtml).not.toContain('aria-label="审查"');
 	});
 
-	it("renders the compact runtime status in the workbench header", () => {
+	it("does not render runtime status in the workbench header", () => {
 		const html = renderToStaticMarkup(
 			createElement(
 				TooltipProvider,
 				undefined,
 				createElement(WorkbenchHeader, {
 					onOpenReview: () => undefined,
-					runtimeState: { state: "running" },
 					sessionMeta: "faux / faux-model",
 					sessionTitle: "Inspect workspace",
 					workspaceLabel: "/workspace/project",
@@ -122,8 +121,8 @@ describe("Chat support UI", () => {
 			),
 		);
 
-		expect(html).toContain('data-slot="agent-status-indicator"');
-		expect(html).toContain("Working");
+		expect(html).not.toContain('data-slot="agent-status-indicator"');
+		expect(html).not.toContain("Working");
 	});
 
 	it("keeps the transcript body flush below the compact header", () => {

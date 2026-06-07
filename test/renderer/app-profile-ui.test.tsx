@@ -2276,7 +2276,7 @@ describe("App profile controls", () => {
 			</TooltipProvider>,
 		);
 
-		await screen.findByText("What should we work on?");
+		await screen.findByLabelText("Message Skylark");
 		await user.click(screen.getByRole("button", { name: "能力库" }));
 		expect(await screen.findByText("Agent 能力库")).toBeTruthy();
 		const snapshotCallCount = getSnapshot.mock.calls.length;
@@ -2321,7 +2321,7 @@ describe("App profile controls", () => {
 			</TooltipProvider>,
 		);
 
-		await screen.findByText("What should we work on?");
+		await screen.findByLabelText("Message Skylark");
 		const snapshotCallCount = getSnapshot.mock.calls.length;
 		const listSessionsCallCount = listSessions.mock.calls.length;
 
@@ -2583,7 +2583,7 @@ describe("App profile controls", () => {
 		);
 	});
 
-	it("surfaces pending approvals in the workbench header", async () => {
+	it("does not surface pending approvals in the workbench header status", async () => {
 		let approvalListener: ((event: DesktopApprovalEvent) => void) | undefined;
 		installDesktopAgentBridge({
 			subscribeToApprovalEvents: vi.fn((listener: (event: DesktopApprovalEvent) => void) => {
@@ -2618,16 +2618,15 @@ describe("App profile controls", () => {
 			});
 		});
 
-		const status = await screen.findByText("Waiting for approval");
-		expect(status.closest("[data-slot='agent-status-indicator']")?.getAttribute("data-state")).toBe(
-			"waiting_for_user",
-		);
+		await waitFor(() => {
+			expect(document.querySelector("[data-slot='agent-status-indicator']")).toBeNull();
+		});
 	});
 
-	it("shows queued status while a prompt submission is awaiting the runtime", async () => {
+	it("does not show queued status while a prompt submission is awaiting the runtime", async () => {
 		const user = userEvent.setup();
 		let resolvePrompt: (() => void) | undefined;
-		installDesktopAgentBridge({
+		const { bridge } = installDesktopAgentBridge({
 			prompt: vi.fn(
 				() =>
 					new Promise<void>((resolve) => {
@@ -2646,8 +2645,10 @@ describe("App profile controls", () => {
 		await user.type(screen.getByPlaceholderText("Message Skylark"), "scan workspace");
 		await user.click(screen.getByLabelText("Send message"));
 
-		const status = await screen.findByText("Queued");
-		expect(status.closest("[data-slot='agent-status-indicator']")?.getAttribute("data-state")).toBe("queued");
+		await waitFor(() => {
+			expect(bridge.prompt).toHaveBeenCalled();
+		});
+		expect(document.querySelector("[data-slot='agent-status-indicator']")).toBeNull();
 
 		act(() => {
 			resolvePrompt?.();
@@ -2737,7 +2738,7 @@ describe("App profile controls", () => {
 		expect(screen.getByText("/skill:review")).toBeTruthy();
 	});
 
-	it("shows completed status briefly after a run ends", async () => {
+	it("does not show running or completed status after run events", async () => {
 		let agentListener: ((event: SerializedAgentEvent) => void) | undefined;
 		installDesktopAgentBridge({
 			subscribeToAgentEvents: vi.fn((listener: (event: SerializedAgentEvent) => void) => {
@@ -2755,29 +2756,19 @@ describe("App profile controls", () => {
 		);
 
 		await screen.findByText("hello");
-		vi.useFakeTimers();
 
 		act(() => {
 			agentListener?.({ sessionId: "session-1", type: "agent_start" });
 		});
-		expect(document.querySelector('[data-slot="agent-status-indicator"]')?.getAttribute("aria-label")).toBe(
-			"Working",
-		);
+		expect(document.querySelector('[data-slot="agent-status-indicator"]')).toBeNull();
 
 		act(() => {
 			agentListener?.({ sessionId: "session-1", type: "agent_end", messages: baseSnapshot.messages });
 		});
-		expect(document.querySelector('[data-slot="agent-status-indicator"]')?.getAttribute("aria-label")).toBe(
-			"Completed",
-		);
-
-		await act(async () => {
-			await vi.advanceTimersByTimeAsync(1800);
-		});
 		expect(document.querySelector('[data-slot="agent-status-indicator"]')).toBeNull();
 	});
 
-	it("shows failed status when a run ends with an agent error", async () => {
+	it("does not show failed status when a run ends with an agent error", async () => {
 		let agentListener: ((event: SerializedAgentEvent) => void) | undefined;
 		installDesktopAgentBridge({
 			subscribeToAgentEvents: vi.fn((listener: (event: SerializedAgentEvent) => void) => {
@@ -2824,8 +2815,9 @@ describe("App profile controls", () => {
 			});
 		});
 
-		const status = await screen.findByText("Failed");
-		expect(status.closest("[data-slot='agent-status-indicator']")?.getAttribute("data-state")).toBe("error");
+		await waitFor(() => {
+			expect(document.querySelector("[data-slot='agent-status-indicator']")).toBeNull();
+		});
 	});
 
 	it("shows an empty project workspace without creating a default session", async () => {

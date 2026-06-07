@@ -349,21 +349,20 @@ describe("ChatWorkbench", () => {
 		expect(source).toContain("MessageResponse");
 	});
 
-	it("renders an intentional empty boundary state without prompt examples", async () => {
-		const user = userEvent.setup();
+	it("starts blank sessions with the existing composer in the empty workspace", () => {
+		const { container } = renderChatWorkbench();
 
-		renderChatWorkbench();
-
-		const emptyState = screen.getByText("What should we work on?").closest("[data-slot='assistant-empty-state']");
-		expect(emptyState).not.toBeNull();
-		expect(emptyState?.getAttribute("data-boundary-state")).toBe("idle");
-		expect(emptyState?.className).toContain("boundary-state");
-		expect(screen.getByText("Ask Skylark to inspect files, explain code, or shape the next change.")).toBeTruthy();
+		expect(screen.queryByText("What should we work on?")).toBeNull();
+		expect(screen.queryByText("Ask Skylark to inspect files, explain code, or shape the next change.")).toBeNull();
+		expect(screen.queryByRole("button", { name: "Focus composer" })).toBeNull();
 		expect(screen.queryByRole("button", { name: /inspect/i })).toBeNull();
 		expect(screen.queryByRole("button", { name: /research/i })).toBeNull();
+		expect(screen.getByLabelText("Message Skylark")).toBeTruthy();
 
-		await user.click(screen.getByRole("button", { name: "Focus composer" }));
-		expect(document.activeElement).toBe(screen.getByLabelText("Message Skylark"));
+		const dock = container.querySelector("[data-slot='composer-dock']");
+		expect(dock?.getAttribute("data-empty-session")).toBe("true");
+		expect(dock?.className).toContain("top-[clamp(15rem,38vh,28rem)]");
+		expect(dock?.className).not.toContain("bottom-0");
 	});
 
 	it("renders bridge failures as an accessible empty boundary state", () => {
@@ -414,7 +413,7 @@ describe("ChatWorkbench", () => {
 		});
 
 		expect(screen.queryByRole("status", { name: "Loading conversation" })).toBeNull();
-		expect(screen.getByText("What should we work on?")).toBeTruthy();
+		expect(screen.queryByText("What should we work on?")).toBeNull();
 		expect((screen.getByLabelText("Message Skylark") as HTMLTextAreaElement).disabled).toBe(true);
 	});
 
@@ -2616,7 +2615,25 @@ describe("ChatWorkbench", () => {
 		}
 	});
 
-	it("keeps the composer dock inside the shell aligned to the workbench reading width", () => {
+	it("centers the empty-session composer dock inside the workbench reading width", () => {
+		const { container } = renderChatWorkbench();
+
+		const shell = container.querySelector("[data-slot='assistant-chat-shell']");
+		const dock = shell?.querySelector("[data-slot='composer-dock']");
+		const dockFrame = dock?.firstElementChild;
+
+		expect(shell).toBeTruthy();
+		expect(dock?.className).toContain("absolute");
+		expect(dock?.className).toContain("top-[clamp(15rem,38vh,28rem)]");
+		expect(dock?.className).not.toContain("bottom-0");
+		expect(dock?.getAttribute("data-empty-session")).toBe("true");
+		expect(dockFrame?.className).toContain("max-w-[880px]");
+	});
+
+	it("keeps populated conversation composer docks at the bottom reading width", () => {
+		agentStore.setState({
+			messages: [userMessage("Explain the app", 1), assistantMessage([{ type: "text", text: "Sure." }], 2)],
+		});
 		const { container } = renderChatWorkbench();
 
 		const shell = container.querySelector("[data-slot='assistant-chat-shell']");
@@ -2626,6 +2643,8 @@ describe("ChatWorkbench", () => {
 		expect(shell).toBeTruthy();
 		expect(dock?.className).toContain("absolute");
 		expect(dock?.className).toContain("bottom-0");
+		expect(dock?.className).not.toContain("top-[clamp(15rem,38vh,28rem)]");
+		expect(dock?.getAttribute("data-empty-session")).toBeNull();
 		expect(dockFrame?.className).toContain("max-w-[880px]");
 	});
 
