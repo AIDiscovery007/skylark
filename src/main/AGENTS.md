@@ -11,6 +11,15 @@ runtimes, events, MCP, previews, and environment resources.
   stay isolated from local development state.
 - Keep Electron, filesystem, shell, and credential access in main-process
   services. Do not leak Electron primitives into renderer-facing contracts.
+- Static web previews use the `skylark-preview://` custom protocol. Keep session
+  authorization, entry-directory scoping, traversal rejection, and symlink escape
+  checks inside main-process preview services.
+- Register the `skylark-preview://` handler on every Electron session that loads
+  preview content, including the dedicated Web Preview partition.
+- Chromium browser previews inherit shell proxy environment variables through
+  `src/main/network-proxy.ts` and the Web Preview Electron session; keep proxy
+  parsing centralized there so local loopback previews continue to bypass
+  proxies consistently.
 - Prefer small service interfaces that can be tested with temporary directories,
   fake stores, faux providers, and injected shell/window functions.
 - Implement new main-process IPC channels as focused bridge groups under

@@ -2,7 +2,7 @@ import { realpath } from "node:fs/promises";
 import { basename, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DesktopPreviewFile } from "../../shared/types.ts";
-import { readDesktopPreviewFile } from "./preview-file-service.ts";
+import { type DesktopPreviewFileReadOptions, readDesktopPreviewFile } from "./preview-file-service.ts";
 
 const PREVIEW_ERROR_TIMESTAMP = new Date(0).toISOString();
 
@@ -49,7 +49,11 @@ function isInsideDirectory(parentPath: string, childPath: string): boolean {
 	);
 }
 
-export async function readWorkspacePreviewFile(cwd: string | undefined, path: string): Promise<DesktopPreviewFile> {
+export async function readWorkspacePreviewFile(
+	cwd: string | undefined,
+	path: string,
+	options: DesktopPreviewFileReadOptions = {},
+): Promise<DesktopPreviewFile> {
 	const parsedPath = parsePreviewPath(path);
 	if (!cwd) {
 		return createPreviewErrorFile(parsedPath, "当前 workspace 不可用，无法预览文件。");
@@ -79,7 +83,7 @@ export async function readWorkspacePreviewFile(cwd: string | undefined, path: st
 	}
 
 	try {
-		return await readDesktopPreviewFile(realTargetPath);
+		return await readDesktopPreviewFile(realTargetPath, options);
 	} catch {
 		return createPreviewErrorFile(realTargetPath, "文件不存在或无法读取。");
 	}

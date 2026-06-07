@@ -76,6 +76,15 @@ import type {
 	DesktopTerminalDisposeRequest,
 	DesktopTerminalResizeRequest,
 	DesktopTerminalWriteRequest,
+	DesktopWebPreviewBoundsRequest,
+	DesktopWebPreviewCloseRequest,
+	DesktopWebPreviewControlRequest,
+	DesktopWebPreviewEvent,
+	DesktopWebPreviewSelectionModeRequest,
+	DesktopWebPreviewShowRequest,
+	DesktopWebPreviewSnapshot,
+	DesktopWebPreviewState,
+	DesktopWebPreviewStorageRequest,
 	DesktopWorkspaceFileListRequest,
 	DesktopWorkspaceFileListResult,
 	DesktopWorkspaceOverview,
@@ -129,6 +138,7 @@ export function createDesktopAgentBridge(
 	let environmentStreamPort: BridgeMessagePort<DesktopEnvironmentEvent> | undefined;
 	let subagentStreamPort: BridgeMessagePort<DesktopSubagentRuntimeEvent> | undefined;
 	let workspaceRuntimeStreamPort: BridgeMessagePort<DesktopWorkspaceRuntimeEvent> | undefined;
+	let webPreviewStreamPort: BridgeMessagePort<DesktopWebPreviewEvent> | undefined;
 
 	const ensureAgentStreamPort = (): BridgeMessagePort<SerializedAgentEvent> => {
 		if (agentStreamPort) {
@@ -248,6 +258,18 @@ export function createDesktopAgentBridge(
 		workspaceRuntimeStreamPort.start();
 		ipcRenderer.postMessage(IPC_CHANNELS.openWorkspaceRuntimeStream, null, [channel.port2]);
 		return workspaceRuntimeStreamPort;
+	};
+
+	const ensureWebPreviewStreamPort = (): BridgeMessagePort<DesktopWebPreviewEvent> => {
+		if (webPreviewStreamPort) {
+			return webPreviewStreamPort;
+		}
+
+		const channel = createMessageChannel() as BridgeMessageChannel<DesktopWebPreviewEvent>;
+		webPreviewStreamPort = channel.port1;
+		webPreviewStreamPort.start();
+		ipcRenderer.postMessage(IPC_CHANNELS.openWebPreviewStream, null, [channel.port2]);
+		return webPreviewStreamPort;
 	};
 
 	return {
@@ -481,6 +503,39 @@ export function createDesktopAgentBridge(
 		},
 		async openExternalUrl(url: string): Promise<void> {
 			await ipcRenderer.invoke(IPC_CHANNELS.openExternalUrl, url);
+		},
+		async showWebPreview(request: DesktopWebPreviewShowRequest): Promise<DesktopWebPreviewState> {
+			return (await ipcRenderer.invoke(IPC_CHANNELS.showWebPreview, request)) as DesktopWebPreviewState;
+		},
+		async updateWebPreviewBounds(
+			request: DesktopWebPreviewBoundsRequest,
+		): Promise<DesktopWebPreviewSnapshot | undefined> {
+			return (await ipcRenderer.invoke(IPC_CHANNELS.updateWebPreviewBounds, request)) as
+				| DesktopWebPreviewSnapshot
+				| undefined;
+		},
+		async controlWebPreview(request: DesktopWebPreviewControlRequest): Promise<DesktopWebPreviewState> {
+			return (await ipcRenderer.invoke(IPC_CHANNELS.controlWebPreview, request)) as DesktopWebPreviewState;
+		},
+		async clearWebPreviewStorage(request: DesktopWebPreviewStorageRequest): Promise<DesktopWebPreviewState> {
+			return (await ipcRenderer.invoke(IPC_CHANNELS.clearWebPreviewStorage, request)) as DesktopWebPreviewState;
+		},
+		async setWebPreviewElementSelectionMode(
+			request: DesktopWebPreviewSelectionModeRequest,
+		): Promise<DesktopWebPreviewState> {
+			return (await ipcRenderer.invoke(
+				IPC_CHANNELS.setWebPreviewElementSelectionMode,
+				request,
+			)) as DesktopWebPreviewState;
+		},
+		async closeWebPreview(request: DesktopWebPreviewCloseRequest): Promise<void> {
+			await ipcRenderer.invoke(IPC_CHANNELS.closeWebPreview, request);
+		},
+		subscribeToWebPreviewEvents(listener: (event: DesktopWebPreviewEvent) => void): () => void {
+			const port = ensureWebPreviewStreamPort();
+			const handler = (event: BridgeMessageEvent<DesktopWebPreviewEvent>): void => listener(event.data);
+			port.addEventListener("message", handler);
+			return () => port.removeEventListener("message", handler);
 		},
 		async prompt(request: DesktopPromptRequest): Promise<void> {
 			await ipcRenderer.invoke(IPC_CHANNELS.prompt, request);

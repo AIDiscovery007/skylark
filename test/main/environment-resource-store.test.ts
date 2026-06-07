@@ -102,6 +102,7 @@ describe("environment resource store", () => {
 							currentCommand: "vitest",
 							currentPath: "/workspace/project",
 							options: {
+								"@skylark-preview-url": "http://localhost:5173",
 								"@skylark-resource-kind": "tmux_window",
 								"@skylark-title": "Tests",
 							},
@@ -124,6 +125,7 @@ describe("environment resource store", () => {
 				metadata: expect.objectContaining({
 					currentCommand: "vitest",
 					paneId: "%2",
+					previewUrl: "http://localhost:5173",
 					tmuxSessionName: "skylark_abcd1234_tests",
 					tmuxWindowName: "tests",
 				}),

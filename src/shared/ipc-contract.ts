@@ -75,6 +75,15 @@ import type {
 	DesktopTerminalDisposeRequest,
 	DesktopTerminalResizeRequest,
 	DesktopTerminalWriteRequest,
+	DesktopWebPreviewBoundsRequest,
+	DesktopWebPreviewCloseRequest,
+	DesktopWebPreviewControlRequest,
+	DesktopWebPreviewEvent,
+	DesktopWebPreviewSelectionModeRequest,
+	DesktopWebPreviewShowRequest,
+	DesktopWebPreviewSnapshot,
+	DesktopWebPreviewState,
+	DesktopWebPreviewStorageRequest,
 	DesktopWorkspaceFileListRequest,
 	DesktopWorkspaceFileListResult,
 	DesktopWorkspaceOverview,
@@ -184,6 +193,13 @@ export const IPC_CHANNELS = {
 	openSettingsWindow: "desktop-agent:open-settings-window",
 	notifyFirstInteractive: "desktop-agent:notify-first-interactive",
 	openExternalUrl: "desktop-agent:open-external-url",
+	showWebPreview: "desktop-agent:show-web-preview",
+	updateWebPreviewBounds: "desktop-agent:update-web-preview-bounds",
+	controlWebPreview: "desktop-agent:control-web-preview",
+	clearWebPreviewStorage: "desktop-agent:clear-web-preview-storage",
+	setWebPreviewElementSelectionMode: "desktop-agent:set-web-preview-element-selection-mode",
+	closeWebPreview: "desktop-agent:close-web-preview",
+	openWebPreviewStream: "desktop-agent:open-web-preview-stream",
 } as const;
 
 export interface DesktopAgentBridge {
@@ -253,6 +269,13 @@ export interface DesktopAgentBridge {
 	subscribeToSettingsOpenRequests(listener: (request: DesktopSettingsOpenRequest) => void): () => void;
 	notifyFirstInteractive(): Promise<void>;
 	openExternalUrl(url: string): Promise<void>;
+	showWebPreview(request: DesktopWebPreviewShowRequest): Promise<DesktopWebPreviewState>;
+	updateWebPreviewBounds(request: DesktopWebPreviewBoundsRequest): Promise<DesktopWebPreviewSnapshot | undefined>;
+	controlWebPreview(request: DesktopWebPreviewControlRequest): Promise<DesktopWebPreviewState>;
+	clearWebPreviewStorage(request: DesktopWebPreviewStorageRequest): Promise<DesktopWebPreviewState>;
+	setWebPreviewElementSelectionMode(request: DesktopWebPreviewSelectionModeRequest): Promise<DesktopWebPreviewState>;
+	closeWebPreview(request: DesktopWebPreviewCloseRequest): Promise<void>;
+	subscribeToWebPreviewEvents(listener: (event: DesktopWebPreviewEvent) => void): () => void;
 	prompt(request: DesktopPromptRequest): Promise<void>;
 	preparePromptAttachments(
 		request: DesktopPreparePromptAttachmentsRequest,

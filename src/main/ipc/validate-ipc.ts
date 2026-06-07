@@ -1,4 +1,5 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { normalizeDesktopWebPreviewUrl } from "../../shared/preview-url.ts";
 import type { DesktopSessionMessagesRequest } from "../../shared/serialized-agent-event.ts";
 import type {
 	DesktopAgentMode,
@@ -56,6 +57,15 @@ import type {
 	DesktopTerminalWriteRequest,
 	DesktopThemeMode,
 	DesktopThemePalette,
+	DesktopWebPreviewBounds,
+	DesktopWebPreviewBoundsRequest,
+	DesktopWebPreviewCloseRequest,
+	DesktopWebPreviewControlAction,
+	DesktopWebPreviewControlRequest,
+	DesktopWebPreviewSelectionModeRequest,
+	DesktopWebPreviewShowRequest,
+	DesktopWebPreviewStorageKind,
+	DesktopWebPreviewStorageRequest,
 	DesktopWindowKind,
 	DesktopWindowState,
 	DesktopWorkspaceFileListRequest,
@@ -84,6 +94,7 @@ const MAX_SESSION_MESSAGES_PAGE_LIMIT = 500;
 const MAX_INLINE_IMAGE_DATA_LENGTH = Math.ceil(MAX_ATTACHMENT_SIZE / 3) * 4;
 const MAX_TERMINAL_WRITE_LENGTH = 1_048_576;
 const MAX_CWD_LENGTH = 4096;
+const MAX_URL_LENGTH = 4096;
 const MAX_TERMINAL_DIMENSION = 1000;
 const MAX_WINDOW_COORDINATE = 100_000;
 const MAX_WINDOW_DIMENSION = 20_000;
@@ -117,6 +128,13 @@ const DESKTOP_SETTINGS_SECTIONS = new Set<DesktopSettingsSectionId>([
 	"permissions",
 	"credentials",
 ]);
+const DESKTOP_WEB_PREVIEW_CONTROL_ACTIONS = new Set<DesktopWebPreviewControlAction>([
+	"back",
+	"forward",
+	"reload",
+	"stop",
+]);
+const DESKTOP_WEB_PREVIEW_STORAGE_KINDS = new Set<DesktopWebPreviewStorageKind>(["cache", "cookies"]);
 
 export type ValidatedDesktopSetting = {
 	[TKey in DesktopSettingKey]: {
@@ -1486,5 +1504,103 @@ export function validateTerminalDisposeRequest(value: unknown): DesktopTerminalD
 	}
 	return {
 		terminalId: validateTerminalId(value.terminalId),
+	};
+}
+
+function validateWebPreviewBounds(value: unknown): DesktopWebPreviewBounds {
+	if (!isRecord(value)) {
+		reject("web preview bounds", "expected an object");
+	}
+	return {
+		height: validateNonNegativeInteger(value.height, "web preview height", MAX_WINDOW_DIMENSION),
+		width: validateNonNegativeInteger(value.width, "web preview width", MAX_WINDOW_DIMENSION),
+		x: validateNonNegativeInteger(value.x, "web preview x", MAX_WINDOW_COORDINATE),
+		y: validateNonNegativeInteger(value.y, "web preview y", MAX_WINDOW_COORDINATE),
+	};
+}
+
+function validateWebPreviewUrl(value: unknown): string {
+	const url = normalizeDesktopWebPreviewUrl(validateNonEmptyString(value, "web preview URL", MAX_URL_LENGTH));
+	if (!url) {
+		reject("web preview URL", "expected an http or https URL");
+	}
+	return url;
+}
+
+function validateWebPreviewControlAction(value: unknown): DesktopWebPreviewControlAction {
+	if (typeof value !== "string" || !DESKTOP_WEB_PREVIEW_CONTROL_ACTIONS.has(value as DesktopWebPreviewControlAction)) {
+		reject("web preview control action", "expected a supported action");
+	}
+	return value as DesktopWebPreviewControlAction;
+}
+
+export function validateWebPreviewShowRequest(value: unknown): DesktopWebPreviewShowRequest {
+	if (!isRecord(value)) {
+		reject("web preview show request", "expected an object");
+	}
+	return {
+		bounds: validateWebPreviewBounds(value.bounds),
+		id: validateIdentifier(value.id, "web preview id"),
+		occluded: validateOptionalBoolean(value.occluded, "web preview occluded"),
+		url: validateWebPreviewUrl(value.url),
+	};
+}
+
+export function validateWebPreviewBoundsRequest(value: unknown): DesktopWebPreviewBoundsRequest {
+	if (!isRecord(value)) {
+		reject("web preview bounds request", "expected an object");
+	}
+	return {
+		bounds: validateWebPreviewBounds(value.bounds),
+		id: validateIdentifier(value.id, "web preview id"),
+		occluded: validateOptionalBoolean(value.occluded, "web preview occluded"),
+	};
+}
+
+export function validateWebPreviewControlRequest(value: unknown): DesktopWebPreviewControlRequest {
+	if (!isRecord(value)) {
+		reject("web preview control request", "expected an object");
+	}
+	return {
+		action: validateWebPreviewControlAction(value.action),
+		id: validateIdentifier(value.id, "web preview id"),
+	};
+}
+
+export function validateWebPreviewCloseRequest(value: unknown): DesktopWebPreviewCloseRequest {
+	if (!isRecord(value)) {
+		reject("web preview close request", "expected an object");
+	}
+	return {
+		id: validateIdentifier(value.id, "web preview id"),
+	};
+}
+
+export function validateWebPreviewStorageRequest(value: unknown): DesktopWebPreviewStorageRequest {
+	if (!isRecord(value)) {
+		reject("web preview storage request", "expected an object");
+	}
+	if (
+		typeof value.storage !== "string" ||
+		!DESKTOP_WEB_PREVIEW_STORAGE_KINDS.has(value.storage as DesktopWebPreviewStorageKind)
+	) {
+		reject("web preview storage kind", "expected cache or cookies");
+	}
+	return {
+		id: validateIdentifier(value.id, "web preview id"),
+		storage: value.storage as DesktopWebPreviewStorageKind,
+	};
+}
+
+export function validateWebPreviewSelectionModeRequest(value: unknown): DesktopWebPreviewSelectionModeRequest {
+	if (!isRecord(value)) {
+		reject("web preview selection mode request", "expected an object");
+	}
+	if (typeof value.enabled !== "boolean") {
+		reject("web preview selection mode enabled", "expected a boolean");
+	}
+	return {
+		enabled: value.enabled,
+		id: validateIdentifier(value.id, "web preview id"),
 	};
 }

@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { AuthStorage, getAgentDir } from "@earendil-works/pi-coding-agent";
-import { app } from "electron";
+import { app, session } from "electron";
 import { installDesktopApplicationIdentity } from "./app-identity.ts";
 import { DesktopAuthService } from "./auth/desktop-auth-service.ts";
 import { ContextHarvester, JsonPaneSnapshotStore } from "./context/context-harvester.ts";
@@ -16,7 +16,14 @@ import { DesktopEventStreamBroker } from "./events/event-stream-broker.ts";
 import { registerDesktopAgentHandlers } from "./ipc/register-handlers.ts";
 import { DesktopMcpManager } from "./mcp/mcp-manager.ts";
 import { DesktopMcpStore } from "./mcp/mcp-store.ts";
+import { applyDesktopProxyToSession, installDesktopProxyFromEnvironment } from "./network-proxy.ts";
 import { markMainPerformance, measureMainAsync, measureMainPerformance } from "./performance.ts";
+import { DesktopPreviewProtocolService } from "./preview/preview-protocol-service.ts";
+import {
+	registerDesktopPreviewProtocolHandler,
+	registerDesktopPreviewProtocolSchemePrivileges,
+} from "./preview/register-preview-protocol.ts";
+import { DESKTOP_WEB_PREVIEW_PARTITION, DesktopWebPreviewViewService } from "./preview/web-preview-view-service.ts";
 import {
 	createDesktopAgentRuntime,
 	createDesktopEventManagementGenerateText,
@@ -51,8 +58,11 @@ let windowManager: DesktopWindowManager | undefined;
 let shutdownPromise: Promise<void> | undefined;
 
 const SHUTDOWN_TIMEOUT_MS = 2_000;
+const previewUrlService = new DesktopPreviewProtocolService();
 
 installDesktopApplicationIdentity(app);
+installDesktopProxyFromEnvironment(app.commandLine);
+registerDesktopPreviewProtocolSchemePrivileges();
 
 async function waitForShutdownStep(step: Promise<void>): Promise<void> {
 	let timeout: NodeJS.Timeout | undefined;
@@ -77,6 +87,7 @@ export function createDesktopShutdown(options: {
 	host: DesktopRuntimeHost;
 	mcpManager: DesktopMcpManager;
 	terminalManager: DesktopPtyManager;
+	webPreviewViewService?: DesktopWebPreviewViewService;
 }): () => Promise<void> {
 	let didStart = false;
 	return async () => {
@@ -85,6 +96,7 @@ export function createDesktopShutdown(options: {
 		}
 		didStart = true;
 		await measureMainAsync("main shutdown", async () => {
+			options.webPreviewViewService?.closeAll();
 			options.terminalManager.disposeAll();
 			options.authService.dispose();
 			options.approvalBroker.dispose("Application is quitting.");
@@ -98,6 +110,10 @@ export function createDesktopShutdown(options: {
 
 async function bootstrap(): Promise<void> {
 	markMainPerformance("main:bootstrap:start");
+	registerDesktopPreviewProtocolHandler(previewUrlService);
+	const webPreviewSession = session.fromPartition(DESKTOP_WEB_PREVIEW_PARTITION);
+	registerDesktopPreviewProtocolHandler(previewUrlService, webPreviewSession.protocol);
+	await applyDesktopProxyToSession(webPreviewSession);
 	const storagePaths = createDesktopMainStoragePaths(app.getPath("userData"), { isPackaged: app.isPackaged });
 	await migrateDesktopAgentHome({
 		agentRootDir: storagePaths.agentRootDir,
@@ -231,6 +247,7 @@ async function bootstrap(): Promise<void> {
 		},
 	);
 	terminalManager = new DesktopPtyManager(undefined, { environmentResourceStore });
+	const webPreviewViewService = new DesktopWebPreviewViewService();
 	windowManager = createDesktopWindowManager({
 		getWindowState: (kind) => windowStates[kind],
 		saveWindowState: async (kind, state) => {
@@ -246,6 +263,7 @@ async function bootstrap(): Promise<void> {
 		authService,
 		ptyManager: terminalManager,
 		mcpManager,
+		previewUrlService,
 		approvalBroker,
 		getRuntimeCatalog,
 		stores: {
@@ -265,6 +283,9 @@ async function bootstrap(): Promise<void> {
 		shellServices: {
 			promptAttachmentsDir: storagePaths.promptAttachmentsDir,
 			windowManager,
+		},
+		webPreviewServices: {
+			webPreviewViewService,
 		},
 		environmentServices: {
 			environmentResourceStore,
@@ -293,6 +314,7 @@ async function bootstrap(): Promise<void> {
 		host: desktopHost,
 		mcpManager,
 		terminalManager,
+		webPreviewViewService,
 	});
 	app.on("before-quit", () => {
 		shutdownPromise ??= shutdown();

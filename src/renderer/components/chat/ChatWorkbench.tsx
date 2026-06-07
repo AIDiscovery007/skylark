@@ -15,6 +15,7 @@ import {
 	FileSpreadsheet,
 	FileText,
 	FileType,
+	Globe2,
 	ImageIcon,
 	Sparkles,
 	SquareSlash,
@@ -55,6 +56,7 @@ import { VirtualStack } from "@/components/ui/virtual-stack";
 import { activityDrawerTransition, softRevealTransition, subtleReveal } from "@/lib/motion";
 import { markRendererPerformance, measureRendererPerformance } from "@/lib/performance-marks";
 import type { DesktopAgentBridge } from "../../../shared/ipc-contract.ts";
+import { normalizeDesktopWebPreviewUrl } from "../../../shared/preview-url.ts";
 import type { DesktopAgentModel } from "../../../shared/serialized-agent-event.ts";
 import type {
 	DesktopAgentMode,
@@ -232,6 +234,7 @@ interface MarkdownAstNode {
 }
 
 const WorkspacePreviewLinkContext = createContext<((path: string) => void) | undefined>(undefined);
+const WebPreviewLinkContext = createContext<((url: string) => void) | undefined>(undefined);
 const ProposedPlanExecutionContext = createContext<
 	| {
 			disabled: boolean;
@@ -305,6 +308,7 @@ interface ChatWorkbenchProps {
 	oauthProviders?: DesktopOAuthProviderStatus[];
 	onOpenSettings?: (request?: DesktopSettingsOpenRequest) => void;
 	onOpenEnvironmentResource?: (resource: DesktopEnvironmentResource) => void;
+	onOpenWebPreviewUrl?: (url: string) => void;
 	onOpenWorkspacePreviewFile?: (path: string) => void;
 	onRequestCapabilities?: () => Promise<void> | void;
 	onSetSessionMode?: (agentMode: DesktopAgentMode) => Promise<void>;
@@ -626,9 +630,11 @@ function getEnvironmentResourceSubtitle(resource: DesktopEnvironmentResource): s
 
 function WorkspaceStatusPanel({
 	onOpenEnvironmentResource,
+	onOpenWebPreviewUrl,
 	workspaceStatus,
 }: {
 	onOpenEnvironmentResource?: (resource: DesktopEnvironmentResource) => void;
+	onOpenWebPreviewUrl?: (url: string) => void;
 	workspaceStatus: WorkspaceStatusState;
 }) {
 	const [isCollapsed, setIsCollapsed] = useState(false);
@@ -701,23 +707,58 @@ function WorkspaceStatusPanel({
 					) : null}
 					{environmentResources.length > 0 || errorMessage ? (
 						<div className="grid gap-2" data-slot="assistant-workspace-runtime-status">
-							{environmentResources.map((resource) => (
-								<EntityRow
-									aria-label={`Open ${resource.title}`}
-									className="min-h-8 px-1.5 py-1 text-[12px]"
-									disabled={resource.provider !== "tmux" && resource.provider !== "subagent"}
-									icon={<StatusDot status={getEnvironmentStatusDot(resource.status)} />}
-									key={resource.id}
-									onClick={() => onOpenEnvironmentResource?.(resource)}
-									subtitle={getEnvironmentResourceSubtitle(resource)}
-									title={resource.title}
-									trailing={
-										<Badge variant={getEnvironmentStatusVariant(resource.status)}>
-											{getEnvironmentStatusLabel(resource.status)}
-										</Badge>
-									}
-								/>
-							))}
+							{environmentResources.map((resource) => {
+								const previewUrl = normalizeDesktopWebPreviewUrl(resource.metadata.previewUrl ?? "");
+								const canOpenResource = resource.provider === "tmux" || resource.provider === "subagent";
+								const openResource = () => onOpenEnvironmentResource?.(resource);
+								return (
+									<EntityRow
+										actions={
+											previewUrl ? (
+												<Button
+													aria-label={`Preview ${resource.title}`}
+													className="size-6"
+													onClick={(event) => {
+														event.stopPropagation();
+														onOpenWebPreviewUrl?.(previewUrl);
+													}}
+													size="icon-xs"
+													type="button"
+													variant="ghost"
+												>
+													<Globe2 className="size-3.5" />
+												</Button>
+											) : undefined
+										}
+										aria-label={`Open ${resource.title}`}
+										as={previewUrl ? "div" : "button"}
+										className="min-h-8 px-1.5 py-1 text-[12px]"
+										disabled={!canOpenResource}
+										icon={<StatusDot status={getEnvironmentStatusDot(resource.status)} />}
+										key={resource.id}
+										onClick={canOpenResource ? openResource : undefined}
+										onKeyDown={
+											previewUrl && canOpenResource
+												? (event) => {
+														if (event.key === "Enter" || event.key === " ") {
+															event.preventDefault();
+															openResource();
+														}
+													}
+												: undefined
+										}
+										role={previewUrl ? "button" : undefined}
+										subtitle={getEnvironmentResourceSubtitle(resource)}
+										tabIndex={previewUrl && canOpenResource ? 0 : undefined}
+										title={resource.title}
+										trailing={
+											<Badge variant={getEnvironmentStatusVariant(resource.status)}>
+												{getEnvironmentStatusLabel(resource.status)}
+											</Badge>
+										}
+									/>
+								);
+							})}
 							{errorMessage ? (
 								<p className="border-t border-border/60 pt-2 text-[12px] leading-5 text-destructive">
 									Environment status unavailable.
@@ -1540,13 +1581,17 @@ function SafeMarkdownAnchor({ children, className, href, ...props }: ComponentPr
 	const decodedWorkspacePreviewHref = decodeWorkspacePreviewLinkHref(href);
 	const effectiveHref = decodedWorkspacePreviewHref ?? href?.replace(/^(https?:\/\/[^/?#]+)\/$/i, "$1");
 	const openWorkspacePreviewFile = useContext(WorkspacePreviewLinkContext);
+	const openWebPreviewUrl = useContext(WebPreviewLinkContext);
+	const webPreviewUrl = effectiveHref ? normalizeDesktopWebPreviewUrl(effectiveHref) : undefined;
 	const opensWorkspacePreview = Boolean(
 		effectiveHref && openWorkspacePreviewFile && isWorkspacePreviewHref(effectiveHref),
 	);
+	const opensWebPreview = Boolean(webPreviewUrl && openWebPreviewUrl);
 	const desktopBridge = (window as Partial<Window>).desktopAgent as Partial<DesktopAgentBridge> | undefined;
 	const opensExternalUrl = Boolean(
 		effectiveHref &&
 			!opensWorkspacePreview &&
+			!opensWebPreview &&
 			isExternalBrowserHref(effectiveHref) &&
 			typeof desktopBridge?.openExternalUrl === "function",
 	);
@@ -1561,6 +1606,11 @@ function SafeMarkdownAnchor({ children, className, href, ...props }: ComponentPr
 			openWorkspacePreviewFile?.(effectiveHref);
 			return;
 		}
+		if (opensWebPreview && webPreviewUrl) {
+			event.preventDefault();
+			openWebPreviewUrl?.(webPreviewUrl);
+			return;
+		}
 		if (opensExternalUrl) {
 			event.preventDefault();
 			void desktopBridge?.openExternalUrl?.(effectiveHref).catch(() => undefined);
@@ -1573,8 +1623,8 @@ function SafeMarkdownAnchor({ children, className, href, ...props }: ComponentPr
 			href={effectiveHref}
 			{...props}
 			onClick={handleClick}
-			rel={opensWorkspacePreview ? undefined : "noreferrer"}
-			target={opensWorkspacePreview ? undefined : "_blank"}
+			rel={opensWorkspacePreview || opensWebPreview ? undefined : "noreferrer"}
+			target={opensWorkspacePreview || opensWebPreview ? undefined : "_blank"}
 		>
 			{children}
 		</a>
@@ -3529,6 +3579,7 @@ export function ChatWorkbench({
 	onOpenEnvironmentResource,
 	oauthProviders,
 	onOpenSettings,
+	onOpenWebPreviewUrl,
 	onOpenWorkspacePreviewFile,
 	onRequestCapabilities,
 	onSetSessionMode,
@@ -3875,159 +3926,162 @@ export function ChatWorkbench({
 
 	return (
 		<WorkspacePreviewLinkContext.Provider value={onOpenWorkspacePreviewFile}>
-			<ProposedPlanExecutionContext.Provider value={proposedPlanExecutionContext}>
-				<div className="relative h-full min-h-0 w-full" data-slot="assistant-chat-shell">
-					<AnimatePresence initial={false}>
-						{showAbortNotice && errorMessage ? (
-							<motion.div
-								animate={{ opacity: 1, x: "-50%", y: 0 }}
-								className="pointer-events-none absolute left-1/2 top-4 z-30"
-								exit={{ opacity: 0, x: "-50%", y: 4 }}
-								initial={{ opacity: 0, x: "-50%", y: 4 }}
-								key="abort-notice"
-								transition={softRevealTransition}
-							>
-								<output
-									aria-live="polite"
-									className="flex items-center gap-2 rounded-full border border-destructive/20 bg-background/90 px-4 py-2 text-[13px] font-medium text-destructive shadow-lg backdrop-blur"
+			<WebPreviewLinkContext.Provider value={onOpenWebPreviewUrl}>
+				<ProposedPlanExecutionContext.Provider value={proposedPlanExecutionContext}>
+					<div className="relative h-full min-h-0 w-full" data-slot="assistant-chat-shell">
+						<AnimatePresence initial={false}>
+							{showAbortNotice && errorMessage ? (
+								<motion.div
+									animate={{ opacity: 1, x: "-50%", y: 0 }}
+									className="pointer-events-none absolute left-1/2 top-4 z-30"
+									exit={{ opacity: 0, x: "-50%", y: 4 }}
+									initial={{ opacity: 0, x: "-50%", y: 4 }}
+									key="abort-notice"
+									transition={softRevealTransition}
 								>
-									<Sparkles className="size-3.5" />
-									<span>{errorMessage}</span>
-								</output>
-							</motion.div>
-						) : null}
-					</AnimatePresence>
+									<output
+										aria-live="polite"
+										className="flex items-center gap-2 rounded-full border border-destructive/20 bg-background/90 px-4 py-2 text-[13px] font-medium text-destructive shadow-lg backdrop-blur"
+									>
+										<Sparkles className="size-3.5" />
+										<span>{errorMessage}</span>
+									</output>
+								</motion.div>
+							) : null}
+						</AnimatePresence>
 
-					<AnimatePresence initial={false}>
-						{persistentTopNotice ? (
-							<motion.div
-								className="absolute inset-x-6 top-4 z-20 md:inset-x-9 xl:inset-x-14"
-								key="top-notice"
-								{...subtleReveal}
-							>
-								<ErrorNotice
-									className="mx-auto max-w-[880px] backdrop-blur"
-									description={persistentTopNotice}
-									title="Desktop runtime notice"
-								/>
-							</motion.div>
-						) : null}
-					</AnimatePresence>
-
-					<AnimatePresence initial={false}>
-						{isWorkspacePanelOpen && resolvedWorkspaceStatus.isAvailable ? (
-							<WorkspaceStatusPanel
-								key="workspace-status-panel"
-								onOpenEnvironmentResource={onOpenEnvironmentResource}
-								workspaceStatus={resolvedWorkspaceStatus}
-							/>
-						) : null}
-					</AnimatePresence>
-
-					<AssistantTimelineErrorBoundary resetKey={activeAgentSessionId ?? "no-active-session"}>
-						<Conversation className="absolute inset-0 min-h-0" data-slot="assistant-thread">
-							{isConversationHydrating ? (
-								<QuietHydrationState bottomInset={composerInset} />
-							) : isSwitchingSession ? (
-								<QuietSessionSwitchState bottomInset={composerInset} />
-							) : assistantMessages.length === 0 ? (
-								<ConversationContent
-									className="gap-0 p-0"
-									scrollClassName="native-scrollbar h-full overflow-y-auto overscroll-contain pb-6 pt-6"
-									scrollProps={{
-										"data-slot": "assistant-thread-viewport",
-										ref: setThreadViewportRef,
-										style: { paddingBottom: composerInset },
-									}}
-									stickToBottom={false}
+						<AnimatePresence initial={false}>
+							{persistentTopNotice ? (
+								<motion.div
+									className="absolute inset-x-6 top-4 z-20 md:inset-x-9 xl:inset-x-14"
+									key="top-notice"
+									{...subtleReveal}
 								>
-									<AssistantEmptyState
-										detail={
-											bridgeError
-												? (cwd ?? "Session snapshot unavailable.")
-												: (cwd ?? "Workspace path will appear here when the session is ready.")
-										}
-										onAction={() => composerRef.current?.focus()}
-										tone={bridgeError ? "error" : "idle"}
+									<ErrorNotice
+										className="mx-auto max-w-[880px] backdrop-blur"
+										description={persistentTopNotice}
+										title="Desktop runtime notice"
 									/>
-									{isCompactionRunning ? <CompactionTimelineDivider status="running" /> : null}
-								</ConversationContent>
-							) : (
-								<VirtualStack
-									className="native-scrollbar h-full overflow-y-auto overscroll-contain"
-									dataSlot="assistant-thread-viewport"
-									estimateSize={(index) =>
-										estimateAssistantTimelineItemSize(
-											assistantTimelineItems[index] ??
-												assistantTimelineItems[0] ?? {
-													key: "fallback",
-													type: "compaction-running",
-												},
-										)
-									}
-									getKey={(item) => item.key}
-									initialViewportHeight={640}
-									items={assistantTimelineItems}
-									measureItems
-									overscan={6}
-									paddingEnd={composerInset + 24}
-									paddingStart={24}
-									renderItem={({ item }) => (
-										<AssistantTimelineItemView
-											item={item}
-											onPreviewImage={handleOpenImagePreview}
-											resolveWorkspaceImage={resolveWorkspaceImagePreview}
-										/>
-									)}
-									role="presentation"
-									viewportRef={setThreadViewportRef}
+								</motion.div>
+							) : null}
+						</AnimatePresence>
+
+						<AnimatePresence initial={false}>
+							{isWorkspacePanelOpen && resolvedWorkspaceStatus.isAvailable ? (
+								<WorkspaceStatusPanel
+									key="workspace-status-panel"
+									onOpenEnvironmentResource={onOpenEnvironmentResource}
+									onOpenWebPreviewUrl={onOpenWebPreviewUrl}
+									workspaceStatus={resolvedWorkspaceStatus}
 								/>
-							)}
-						</Conversation>
-					</AssistantTimelineErrorBoundary>
+							) : null}
+						</AnimatePresence>
 
-					<ThreadImagePreviewDialog image={previewImage} onClose={handleCloseImagePreview} />
+						<AssistantTimelineErrorBoundary resetKey={activeAgentSessionId ?? "no-active-session"}>
+							<Conversation className="absolute inset-0 min-h-0" data-slot="assistant-thread">
+								{isConversationHydrating ? (
+									<QuietHydrationState bottomInset={composerInset} />
+								) : isSwitchingSession ? (
+									<QuietSessionSwitchState bottomInset={composerInset} />
+								) : assistantMessages.length === 0 ? (
+									<ConversationContent
+										className="gap-0 p-0"
+										scrollClassName="native-scrollbar h-full overflow-y-auto overscroll-contain pb-6 pt-6"
+										scrollProps={{
+											"data-slot": "assistant-thread-viewport",
+											ref: setThreadViewportRef,
+											style: { paddingBottom: composerInset },
+										}}
+										stickToBottom={false}
+									>
+										<AssistantEmptyState
+											detail={
+												bridgeError
+													? (cwd ?? "Session snapshot unavailable.")
+													: (cwd ?? "Workspace path will appear here when the session is ready.")
+											}
+											onAction={() => composerRef.current?.focus()}
+											tone={bridgeError ? "error" : "idle"}
+										/>
+										{isCompactionRunning ? <CompactionTimelineDivider status="running" /> : null}
+									</ConversationContent>
+								) : (
+									<VirtualStack
+										className="native-scrollbar h-full overflow-y-auto overscroll-contain"
+										dataSlot="assistant-thread-viewport"
+										estimateSize={(index) =>
+											estimateAssistantTimelineItemSize(
+												assistantTimelineItems[index] ??
+													assistantTimelineItems[0] ?? {
+														key: "fallback",
+														type: "compaction-running",
+													},
+											)
+										}
+										getKey={(item) => item.key}
+										initialViewportHeight={640}
+										items={assistantTimelineItems}
+										measureItems
+										overscan={6}
+										paddingEnd={composerInset + 24}
+										paddingStart={24}
+										renderItem={({ item }) => (
+											<AssistantTimelineItemView
+												item={item}
+												onPreviewImage={handleOpenImagePreview}
+												resolveWorkspaceImage={resolveWorkspaceImagePreview}
+											/>
+										)}
+										role="presentation"
+										viewportRef={setThreadViewportRef}
+									/>
+								)}
+							</Conversation>
+						</AssistantTimelineErrorBoundary>
 
-					<div
-						className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex justify-center px-5 pb-5 md:px-7 md:pb-7"
-						data-slot="composer-dock"
-						ref={composerDockRef}
-					>
-						<div className="pointer-events-auto relative w-full max-w-[880px]" data-slot="composer-dock-frame">
-							{scrollToBottomAnchor}
-							<AssistantComposer
-								activeProjectId={activeProjectId}
-								activeSessionId={activeAgentSessionId}
-								attachmentErrors={attachmentErrors}
-								agentMode={agentMode}
-								capabilityCatalog={capabilityCatalog}
-								contextWindowUsage={contextWindowUsage}
-								disabled={isComposerDisabled}
-								inputRef={composerRef}
-								isStreaming={isStreaming}
-								model={model}
-								onAbort={onAbort}
-								onCompact={onCompact}
-								oauthProviders={oauthProviders}
-								onOpenSettings={onOpenSettings}
-								onOpenWorkspacePreviewFile={onOpenWorkspacePreviewFile}
-								onRequestCapabilities={onRequestCapabilities}
-								onSetSessionMode={onSetSessionMode}
-								onSubmitPrompt={onSubmitPrompt}
-								onUpdateSessionProfile={onUpdateSessionProfile}
-								providerKeys={providerKeys}
-								runtimeCatalog={runtimeCatalog}
-								selectedCapabilityInvocations={selectedCapabilityInvocations}
-								selectedPromptAttachments={selectedPromptAttachments}
-								setAttachmentErrors={setAttachmentErrors}
-								setSelectedCapabilityInvocations={setSelectedCapabilityInvocations}
-								setSelectedPromptAttachments={setSelectedPromptAttachments}
-								thinkingLevel={thinkingLevel}
-							/>
+						<ThreadImagePreviewDialog image={previewImage} onClose={handleCloseImagePreview} />
+
+						<div
+							className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex justify-center px-5 pb-5 md:px-7 md:pb-7"
+							data-slot="composer-dock"
+							ref={composerDockRef}
+						>
+							<div className="pointer-events-auto relative w-full max-w-[880px]" data-slot="composer-dock-frame">
+								{scrollToBottomAnchor}
+								<AssistantComposer
+									activeProjectId={activeProjectId}
+									activeSessionId={activeAgentSessionId}
+									attachmentErrors={attachmentErrors}
+									agentMode={agentMode}
+									capabilityCatalog={capabilityCatalog}
+									contextWindowUsage={contextWindowUsage}
+									disabled={isComposerDisabled}
+									inputRef={composerRef}
+									isStreaming={isStreaming}
+									model={model}
+									onAbort={onAbort}
+									onCompact={onCompact}
+									oauthProviders={oauthProviders}
+									onOpenSettings={onOpenSettings}
+									onOpenWorkspacePreviewFile={onOpenWorkspacePreviewFile}
+									onRequestCapabilities={onRequestCapabilities}
+									onSetSessionMode={onSetSessionMode}
+									onSubmitPrompt={onSubmitPrompt}
+									onUpdateSessionProfile={onUpdateSessionProfile}
+									providerKeys={providerKeys}
+									runtimeCatalog={runtimeCatalog}
+									selectedCapabilityInvocations={selectedCapabilityInvocations}
+									selectedPromptAttachments={selectedPromptAttachments}
+									setAttachmentErrors={setAttachmentErrors}
+									setSelectedCapabilityInvocations={setSelectedCapabilityInvocations}
+									setSelectedPromptAttachments={setSelectedPromptAttachments}
+									thinkingLevel={thinkingLevel}
+								/>
+							</div>
 						</div>
 					</div>
-				</div>
-			</ProposedPlanExecutionContext.Provider>
+				</ProposedPlanExecutionContext.Provider>
+			</WebPreviewLinkContext.Provider>
 		</WorkspacePreviewLinkContext.Provider>
 	);
 }

@@ -33,6 +33,8 @@ import {
 	validateTerminalDisposeRequest,
 	validateTerminalResizeRequest,
 	validateTerminalWriteRequest,
+	validateWebPreviewBoundsRequest,
+	validateWebPreviewShowRequest,
 	validateWorkspaceFileListRequest,
 	validateWorkspacePreviewFileRequest,
 	validateWorkspaceRuntimeCaptureRequest,
@@ -730,6 +732,41 @@ describe("validate-ipc", () => {
 		expect(() => validatePreviewFileRequest({ path: "" })).toThrow(TypeError);
 		expect(() => validatePreviewFileRequest({ path: 42 })).toThrow(TypeError);
 		expect(() => validatePreviewFileRequest(null)).toThrow(TypeError);
+	});
+
+	it("validates web preview placement requests with optional renderer occlusion", () => {
+		expect(
+			validateWebPreviewShowRequest({
+				bounds: { height: 200, width: 300, x: 1, y: 2 },
+				id: "browser:1",
+				occluded: true,
+				url: "https://example.com",
+			}),
+		).toEqual({
+			bounds: { height: 200, width: 300, x: 1, y: 2 },
+			id: "browser:1",
+			occluded: true,
+			url: "https://example.com/",
+		});
+		expect(
+			validateWebPreviewBoundsRequest({
+				bounds: { height: 240, width: 320, x: 3, y: 4 },
+				id: "browser:1",
+				occluded: false,
+			}),
+		).toEqual({
+			bounds: { height: 240, width: 320, x: 3, y: 4 },
+			id: "browser:1",
+			occluded: false,
+		});
+
+		expect(() =>
+			validateWebPreviewBoundsRequest({
+				bounds: { height: 240, width: 320, x: 3, y: 4 },
+				id: "browser:1",
+				occluded: "yes",
+			}),
+		).toThrow(TypeError);
 	});
 
 	it("validates external URLs without allowing local file escape hatches", () => {

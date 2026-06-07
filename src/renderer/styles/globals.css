@@ -339,6 +339,7 @@
 	[role="separator"],
 	.desktop-window-no-drag {
 		-webkit-app-region: no-drag;
+		pointer-events: auto;
 	}
 
 	img {

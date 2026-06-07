@@ -25,6 +25,7 @@ import type {
 	DesktopReviewSnapshot,
 	DesktopSessionProfileUpdateRequest,
 	DesktopSessionSummary,
+	DesktopWebPreviewState,
 } from "../../src/shared/types.ts";
 import {
 	installRendererDesktopAgentBridge,
@@ -71,6 +72,23 @@ const baseSnapshot: DesktopAgentSnapshot = {
 	pendingToolCalls: [],
 	isStreaming: false,
 };
+
+function createWebPreviewState(
+	id: string,
+	url: string,
+	title = url,
+	isSelectingElement?: boolean,
+): DesktopWebPreviewState {
+	return {
+		canGoBack: false,
+		canGoForward: false,
+		id,
+		...(isSelectingElement === undefined ? {} : { isSelectingElement }),
+		isLoading: false,
+		title,
+		url,
+	};
+}
 
 function createCompactionSummaryMessage(summary: string, timestamp: number): AgentMessage {
 	return {
@@ -233,6 +251,13 @@ function installDesktopAgentBridge(overrides: Partial<DesktopAgentBridge> = {}) 
 		...baseSnapshot,
 		thinkingLevel: request.thinkingLevel ?? baseSnapshot.thinkingLevel,
 	}));
+	const webPreviewStatesById = new Map<string, DesktopWebPreviewState>();
+	const getWebPreviewState = (id: string): DesktopWebPreviewState =>
+		webPreviewStatesById.get(id) ?? createWebPreviewState(id, "https://example.com/");
+	const rememberWebPreviewState = (state: DesktopWebPreviewState): DesktopWebPreviewState => {
+		webPreviewStatesById.set(state.id, state);
+		return state;
+	};
 	const getWorkspaceOverview = vi.fn(async () => {
 		const settings = overrides.getSettings ? await overrides.getSettings() : await getSettings();
 		const projects = overrides.listProjects ? await overrides.listProjects() : await listProjects();
@@ -472,6 +497,25 @@ function installDesktopAgentBridge(overrides: Partial<DesktopAgentBridge> = {}) 
 		notifyFirstInteractive: vi.fn(async () => undefined),
 		openExternalUrl: vi.fn(async () => undefined),
 		openSettingsWindow: vi.fn(async () => undefined),
+		showWebPreview: vi.fn(async (request) => {
+			const currentState = getWebPreviewState(request.id);
+			return rememberWebPreviewState({
+				...createWebPreviewState(request.id, request.url),
+				canGoBack: currentState.canGoBack,
+				canGoForward: currentState.canGoForward,
+			});
+		}),
+		updateWebPreviewBounds: vi.fn(async () => undefined),
+		controlWebPreview: vi.fn(async (request) => rememberWebPreviewState(getWebPreviewState(request.id))),
+		clearWebPreviewStorage: vi.fn(async (request) => getWebPreviewState(request.id)),
+		setWebPreviewElementSelectionMode: vi.fn(async (request) =>
+			rememberWebPreviewState({
+				...getWebPreviewState(request.id),
+				isSelectingElement: request.enabled,
+			}),
+		),
+		closeWebPreview: vi.fn(async () => undefined),
+		subscribeToWebPreviewEvents: vi.fn(() => () => undefined),
 		openPreviewFiles: vi.fn(async () => []),
 		openWorkspacePreviewFile: vi.fn(async () => ({
 			path: "/workspace/project/src/App.tsx",
@@ -2379,6 +2423,42 @@ describe("App profile controls", () => {
 		expect(subscribeToEnvironmentEvents.mock.calls.length).toBeLessThanOrEqual(2);
 	});
 
+	it("opens environment resource preview urls in the review workspace panel", async () => {
+		const user = userEvent.setup();
+		const listEnvironmentResources = vi.fn(async () => [
+			{
+				...environmentResource,
+				metadata: {
+					...environmentResource.metadata,
+					previewUrl: "http://localhost:4173",
+				},
+			},
+		]);
+		const { bridge } = installDesktopAgentBridge({
+			listEnvironmentResources,
+			subscribeToEnvironmentEvents: vi.fn(() => () => undefined),
+		});
+
+		render(
+			<TooltipProvider>
+				<App />
+			</TooltipProvider>,
+		);
+
+		await user.click(await screen.findByRole("button", { name: "Preview Workspace progress" }));
+
+		expect(document.querySelector('[data-slot="chat-workbench"]')?.getAttribute("data-review-open")).toBe("true");
+		expect(screen.queryByTitle("Browser preview")).toBeNull();
+		expect(screen.getByRole("tab", { name: /localhost:4173/i })).toBeTruthy();
+		await waitFor(() =>
+			expect(bridge.showWebPreview).toHaveBeenCalledWith({
+				bounds: { height: 0, width: 0, x: 0, y: 0 },
+				id: expect.stringMatching(/^browser:/),
+				url: "http://localhost:4173/",
+			}),
+		);
+	});
+
 	it("keeps the workspace header toggle mounted and disabled without workspace status", async () => {
 		installDesktopAgentBridge();
 
@@ -2440,6 +2520,76 @@ describe("App profile controls", () => {
 		expect(await screen.findByRole("tab", { name: /App\.tsx/i })).toBeTruthy();
 		await waitFor(() => expect(screen.getByText("export")).toBeTruthy());
 		expect(screen.getByText("app")).toBeTruthy();
+	});
+
+	it("opens loopback thread links in the review workspace web preview panel", async () => {
+		const user = userEvent.setup();
+		const { bridge } = installDesktopAgentBridge({
+			getSnapshot: vi.fn(async () => ({
+				...baseSnapshot,
+				messages: [
+					{
+						role: "user" as const,
+						content: [{ type: "text" as const, text: "Open [dev](http://localhost:3000)." }],
+						timestamp: 1,
+					},
+				],
+			})),
+		});
+
+		render(
+			<TooltipProvider>
+				<App />
+			</TooltipProvider>,
+		);
+
+		await user.click(await screen.findByRole("link", { name: "dev" }));
+
+		expect(document.querySelector('[data-slot="chat-workbench"]')?.getAttribute("data-review-open")).toBe("true");
+		expect(screen.queryByTitle("Browser preview")).toBeNull();
+		expect(screen.getByRole("tab", { name: /localhost:3000/i })).toBeTruthy();
+		await waitFor(() =>
+			expect(bridge.showWebPreview).toHaveBeenCalledWith({
+				bounds: { height: 0, width: 0, x: 0, y: 0 },
+				id: expect.stringMatching(/^browser:/),
+				url: "http://localhost:3000/",
+			}),
+		);
+	});
+
+	it("opens public thread links in the review workspace web preview panel", async () => {
+		const user = userEvent.setup();
+		const { bridge } = installDesktopAgentBridge({
+			getSnapshot: vi.fn(async () => ({
+				...baseSnapshot,
+				messages: [
+					{
+						role: "user" as const,
+						content: [{ type: "text" as const, text: "Open [Google](https://google.com)." }],
+						timestamp: 1,
+					},
+				],
+			})),
+		});
+
+		render(
+			<TooltipProvider>
+				<App />
+			</TooltipProvider>,
+		);
+
+		await user.click(await screen.findByRole("link", { name: "Google" }));
+
+		expect(document.querySelector('[data-slot="chat-workbench"]')?.getAttribute("data-review-open")).toBe("true");
+		expect(screen.queryByTitle("Browser preview")).toBeNull();
+		expect(screen.getByRole("tab", { name: /google\.com/i })).toBeTruthy();
+		await waitFor(() =>
+			expect(bridge.showWebPreview).toHaveBeenCalledWith({
+				bounds: { height: 0, width: 0, x: 0, y: 0 },
+				id: expect.stringMatching(/^browser:/),
+				url: "https://google.com/",
+			}),
+		);
 	});
 
 	it("surfaces pending approvals in the workbench header", async () => {

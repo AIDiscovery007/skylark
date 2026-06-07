@@ -932,6 +932,30 @@ describe("ChatWorkbench", () => {
 		expect(panel.textContent).not.toContain("/workspace/project");
 	});
 
+	it("opens environment preview urls from row actions without opening the resource", async () => {
+		const user = userEvent.setup();
+		const onOpenEnvironmentResource = vi.fn();
+		const onOpenWebPreviewUrl = vi.fn();
+		installEnvironmentBridge([
+			{
+				...environmentResources[2]!,
+				metadata: {
+					...environmentResources[2]!.metadata,
+					previewUrl: "http://localhost:3000",
+				},
+				status: "running",
+			},
+		]);
+		agentStore.setState({ activeSessionId: "session-1" });
+
+		renderChatWorkbench({ onOpenEnvironmentResource, onOpenWebPreviewUrl });
+
+		await user.click(await screen.findByRole("button", { name: "Preview Dev Server" }));
+
+		expect(onOpenWebPreviewUrl).toHaveBeenCalledWith("http://localhost:3000/");
+		expect(onOpenEnvironmentResource).not.toHaveBeenCalled();
+	});
+
 	it("keeps completed and failed subagents visible in the environment panel", async () => {
 		const user = userEvent.setup();
 		const onOpenEnvironmentResource = vi.fn();
@@ -1910,8 +1934,9 @@ describe("ChatWorkbench", () => {
 		expect(bubble?.className).toContain("bg-[color:var(--surface-2)]");
 	});
 
-	it("routes local markdown file links to workspace preview while leaving external links alone", async () => {
+	it("routes markdown file links and web urls to workspace previews", async () => {
 		const user = userEvent.setup();
+		const onOpenWebPreviewUrl = vi.fn();
 		const onOpenWorkspacePreviewFile = vi.fn();
 		const openExternalUrl = vi.fn(async () => undefined);
 		installRendererDesktopAgentBridge({ openExternalUrl });
@@ -1921,7 +1946,7 @@ describe("ChatWorkbench", () => {
 					[
 						{
 							type: "text",
-							text: "Open [App](/workspace/project/src/App.tsx:12) and [docs](https://example.com).",
+							text: "Open [App](/workspace/project/src/App.tsx:12), [dev](http://localhost:3000), and [docs](https://example.com).",
 						},
 					],
 					1,
@@ -1929,16 +1954,22 @@ describe("ChatWorkbench", () => {
 			],
 		});
 
-		renderChatWorkbench({ onOpenWorkspacePreviewFile });
+		renderChatWorkbench({ onOpenWebPreviewUrl, onOpenWorkspacePreviewFile });
 
 		await user.click(screen.getByRole("link", { name: "App" }));
 		expect(onOpenWorkspacePreviewFile).toHaveBeenCalledWith("/workspace/project/src/App.tsx:12");
 
-		const externalLink = screen.getByRole("link", { name: "docs" });
-		expect(externalLink.getAttribute("target")).toBe("_blank");
-		await user.click(externalLink);
+		const devLink = screen.getByRole("link", { name: "dev" });
+		expect(devLink.getAttribute("target")).toBeNull();
+		await user.click(devLink);
+		expect(onOpenWebPreviewUrl).toHaveBeenCalledWith("http://localhost:3000/");
+
+		const docsLink = screen.getByRole("link", { name: "docs" });
+		expect(docsLink.getAttribute("target")).toBeNull();
+		await user.click(docsLink);
 		expect(onOpenWorkspacePreviewFile).toHaveBeenCalledTimes(1);
-		expect(openExternalUrl).toHaveBeenCalledWith("https://example.com");
+		expect(onOpenWebPreviewUrl).toHaveBeenNthCalledWith(2, "https://example.com/");
+		expect(openExternalUrl).not.toHaveBeenCalled();
 	});
 
 	it("renders assistant markdown local images through the workspace preview bridge", async () => {

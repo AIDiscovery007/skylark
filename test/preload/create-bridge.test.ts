@@ -14,6 +14,7 @@ import type {
 	DesktopEnvironmentEvent,
 	DesktopEventEvent,
 	DesktopSettingsEvent,
+	DesktopWebPreviewEvent,
 	DesktopWorkspaceRuntimeEvent,
 } from "../../src/shared/types.ts";
 
@@ -55,8 +56,11 @@ describe("createDesktopAgentBridge", () => {
 			"archiveWorkspaceRuntime",
 			"cancelOAuthLogin",
 			"captureWorkspaceRuntimeContext",
+			"clearWebPreviewStorage",
+			"closeWebPreview",
 			"compact",
 			"consumeProposedPlan",
+			"controlWebPreview",
 			"createDebugWorkspaceRuntime",
 			"createEvent",
 			"createEventManagementProposal",
@@ -121,6 +125,8 @@ describe("createDesktopAgentBridge", () => {
 			"setProviderKey",
 			"setSessionMode",
 			"setSetting",
+			"setWebPreviewElementSelectionMode",
+			"showWebPreview",
 			"startOAuthLogin",
 			"submitOAuthLoginCode",
 			"subscribeToAgentEvents",
@@ -133,6 +139,7 @@ describe("createDesktopAgentBridge", () => {
 			"subscribeToSettingsOpenRequests",
 			"subscribeToSubagentEvents",
 			"subscribeToTerminalEvents",
+			"subscribeToWebPreviewEvents",
 			"subscribeToWorkspaceRuntimeEvents",
 			"switchProject",
 			"switchSession",
@@ -141,6 +148,7 @@ describe("createDesktopAgentBridge", () => {
 			"testProviderKey",
 			"updateEvent",
 			"updateSessionProfile",
+			"updateWebPreviewBounds",
 			"upsertMcpServer",
 			"upsertPromptTemplate",
 			"writeTerminal",
@@ -609,6 +617,62 @@ describe("createDesktopAgentBridge", () => {
 		);
 	});
 
+	it("opens the web preview stream channel once and forwards preview state events", () => {
+		const port = new FakeMessagePort<DesktopWebPreviewEvent>();
+		const ipcRenderer = {
+			invoke: vi.fn(),
+			postMessage: vi.fn(),
+		};
+
+		const bridge = createDesktopAgentBridge(
+			ipcRenderer,
+			(): BridgeMessageChannel<DesktopWebPreviewEvent> => ({
+				port1: port,
+				port2: { id: "web-preview-port" },
+			}),
+		);
+
+		const listener = vi.fn();
+		const unsubscribe = bridge.subscribeToWebPreviewEvents(listener);
+		port.emit({
+			state: {
+				canGoBack: false,
+				canGoForward: false,
+				id: "browser:1",
+				isLoading: false,
+				title: "Google",
+				url: "https://www.google.com/",
+			},
+			type: "web_preview_state",
+		});
+		unsubscribe();
+		port.emit({
+			state: {
+				canGoBack: false,
+				canGoForward: false,
+				id: "browser:1",
+				isLoading: false,
+				title: "YouTube",
+				url: "https://www.youtube.com/",
+			},
+			type: "web_preview_state",
+		});
+
+		expect(port.start).toHaveBeenCalledTimes(1);
+		expect(ipcRenderer.postMessage).toHaveBeenCalledWith(IPC_CHANNELS.openWebPreviewStream, null, [
+			{ id: "web-preview-port" },
+		]);
+		expect(listener).toHaveBeenCalledTimes(1);
+		expect(listener).toHaveBeenCalledWith({
+			state: expect.objectContaining({
+				id: "browser:1",
+				title: "Google",
+				url: "https://www.google.com/",
+			}),
+			type: "web_preview_state",
+		});
+	});
+
 	it("proxies environment resource methods", async () => {
 		const ipcRenderer = {
 			invoke: vi.fn(async () => []),
@@ -813,6 +877,19 @@ describe("createDesktopAgentBridge", () => {
 		});
 		await bridge.testProviderKey("anthropic");
 		await bridge.listWorkspaceFiles({ projectId: "project-1", limit: 200 });
+		await bridge.showWebPreview({
+			bounds: { height: 200, width: 300, x: 1, y: 2 },
+			id: "browser:1",
+			url: "https://example.com/",
+		});
+		await bridge.updateWebPreviewBounds({
+			bounds: { height: 240, width: 320, x: 3, y: 4 },
+			id: "browser:1",
+		});
+		await bridge.controlWebPreview({ action: "reload", id: "browser:1" });
+		await bridge.clearWebPreviewStorage({ id: "browser:1", storage: "cookies" });
+		await bridge.setWebPreviewElementSelectionMode({ enabled: true, id: "browser:1" });
+		await bridge.closeWebPreview({ id: "browser:1" });
 
 		expect(ipcRenderer.invoke).toHaveBeenNthCalledWith(1, IPC_CHANNELS.getSnapshot, "session-1");
 		expect(ipcRenderer.invoke).toHaveBeenNthCalledWith(2, IPC_CHANNELS.getRuntimeCatalog);
@@ -993,6 +1070,30 @@ describe("createDesktopAgentBridge", () => {
 		expect(ipcRenderer.invoke).toHaveBeenNthCalledWith(68, IPC_CHANNELS.listWorkspaceFiles, {
 			projectId: "project-1",
 			limit: 200,
+		});
+		expect(ipcRenderer.invoke).toHaveBeenNthCalledWith(69, IPC_CHANNELS.showWebPreview, {
+			bounds: { height: 200, width: 300, x: 1, y: 2 },
+			id: "browser:1",
+			url: "https://example.com/",
+		});
+		expect(ipcRenderer.invoke).toHaveBeenNthCalledWith(70, IPC_CHANNELS.updateWebPreviewBounds, {
+			bounds: { height: 240, width: 320, x: 3, y: 4 },
+			id: "browser:1",
+		});
+		expect(ipcRenderer.invoke).toHaveBeenNthCalledWith(71, IPC_CHANNELS.controlWebPreview, {
+			action: "reload",
+			id: "browser:1",
+		});
+		expect(ipcRenderer.invoke).toHaveBeenNthCalledWith(72, IPC_CHANNELS.clearWebPreviewStorage, {
+			id: "browser:1",
+			storage: "cookies",
+		});
+		expect(ipcRenderer.invoke).toHaveBeenNthCalledWith(73, IPC_CHANNELS.setWebPreviewElementSelectionMode, {
+			enabled: true,
+			id: "browser:1",
+		});
+		expect(ipcRenderer.invoke).toHaveBeenNthCalledWith(74, IPC_CHANNELS.closeWebPreview, {
+			id: "browser:1",
 		});
 	});
 });

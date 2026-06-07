@@ -24,6 +24,7 @@ import { createEnvironmentBridgeGroup, type DesktopEnvironmentBridgeServices } f
 import { createEventBridgeGroup } from "./event-handlers.ts";
 import { createSettingsBridgeGroup } from "./settings-handlers.ts";
 import { createTerminalBridgeGroup } from "./terminal-handlers.ts";
+import { createWebPreviewBridgeGroup, type DesktopWebPreviewBridgeServices } from "./web-preview-view-handlers.ts";
 import {
 	createWorkspaceRuntimeBridgeGroup,
 	type WorkspaceRuntimeHandlerServices,
@@ -58,6 +59,10 @@ export interface DesktopAgentHandlerStores {
 	settingsStore: DesktopSettingsStore;
 }
 
+export interface DesktopPreviewUrlService {
+	createPreviewUrl(path: string): Promise<string>;
+}
+
 export interface DesktopAgentHandlerOptions {
 	approvalBroker: DesktopApprovalBroker;
 	authHandlerServices?: DesktopAuthHandlerServices;
@@ -68,8 +73,10 @@ export interface DesktopAgentHandlerOptions {
 	host: DesktopRuntimeHost;
 	mcpManager: DesktopMcpManager;
 	ptyManager: DesktopPtyManager;
+	previewUrlService?: DesktopPreviewUrlService;
 	shellServices?: DesktopShellHandlerServices;
 	stores: DesktopAgentHandlerStores;
+	webPreviewServices?: DesktopWebPreviewBridgeServices;
 	workspaceRuntimeServices?: WorkspaceRuntimeHandlerServices;
 }
 
@@ -116,6 +123,7 @@ export function registerDesktopAgentHandlers(options: DesktopAgentHandlerOptions
 		ipcMain,
 		createPreviewBridgeGroup({
 			host: options.host,
+			previewUrlService: options.previewUrlService,
 		}),
 	);
 	registerDesktopBridgeGroup(
@@ -149,6 +157,7 @@ export function registerDesktopAgentHandlers(options: DesktopAgentHandlerOptions
 			ptyManager: options.ptyManager,
 		}),
 	);
+	registerDesktopBridgeGroup(ipcMain, createWebPreviewBridgeGroup(options.webPreviewServices));
 
 	if (options.workspaceRuntimeServices) {
 		registerDesktopBridgeGroup(

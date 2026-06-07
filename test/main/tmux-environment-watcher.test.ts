@@ -47,6 +47,12 @@ describe("DefaultTmuxEnvironmentInspector", () => {
 			) {
 				return { stdout: "Server\n", stderr: "" };
 			}
+			if (
+				key ===
+				["show-options", "-w", "-qv", "-t", "skylark_abc123_dev:server", "@skylark-preview-url"].join("\u0000")
+			) {
+				return { stdout: "http://localhost:3000\n", stderr: "" };
+			}
 			return { stdout: "", stderr: "" };
 		});
 
@@ -61,6 +67,7 @@ describe("DefaultTmuxEnvironmentInspector", () => {
 					"@pi-session-id": undefined,
 					"@pi-title": undefined,
 					"@skylark-cwd": "/workspace/project",
+					"@skylark-preview-url": undefined,
 					"@skylark-resource-kind": "tmux_session",
 					"@skylark-session-id": "session-1",
 					"@skylark-title": "Dev runtime",
@@ -75,6 +82,7 @@ describe("DefaultTmuxEnvironmentInspector", () => {
 							"@pi-session-id": undefined,
 							"@pi-title": undefined,
 							"@skylark-cwd": undefined,
+							"@skylark-preview-url": undefined,
 							"@skylark-resource-kind": undefined,
 							"@skylark-session-id": undefined,
 							"@skylark-title": "Tests",
@@ -91,6 +99,7 @@ describe("DefaultTmuxEnvironmentInspector", () => {
 							"@pi-session-id": undefined,
 							"@pi-title": undefined,
 							"@skylark-cwd": undefined,
+							"@skylark-preview-url": "http://localhost:3000",
 							"@skylark-resource-kind": undefined,
 							"@skylark-session-id": undefined,
 							"@skylark-title": "Server",

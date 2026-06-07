@@ -67,6 +67,28 @@ describe("preview-file-service", () => {
 		});
 	});
 
+	it("adds static preview urls for html and svg files when a preview url service is provided", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "desktop-preview-"));
+		const htmlPath = join(dir, "chart.html");
+		const svgPath = join(dir, "shape.svg");
+		writeFileSync(htmlPath, "<!doctype html><html><body>Chart</body></html>");
+		writeFileSync(svgPath, '<svg xmlns="http://www.w3.org/2000/svg"><circle r="4" /></svg>');
+
+		const createPreviewUrl = async (path: string) => `skylark-preview://session/${basename(path)}`;
+
+		await expect(readDesktopPreviewFile(htmlPath, { createPreviewUrl })).resolves.toMatchObject({
+			path: htmlPath,
+			kind: "html",
+			previewUrl: "skylark-preview://session/chart.html",
+		});
+		const svgPreview = await readDesktopPreviewFile(svgPath, { createPreviewUrl });
+		expect(svgPreview).toMatchObject({
+			path: svgPath,
+			kind: "svg",
+			previewUrl: "skylark-preview://session/shape.svg",
+		});
+	});
+
 	it("reads supported image files as data urls", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "desktop-preview-"));
 		const filePath = join(dir, "pixel.png");
@@ -112,6 +134,34 @@ describe("preview-file-service", () => {
 			name: "index.ts",
 			kind: "text",
 			content: "export const ready = true;\n",
+		});
+	});
+
+	it("adds static preview urls for workspace html and svg files after workspace containment checks", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "desktop-preview-workspace-"));
+		const htmlPath = join(dir, "src", "index.html");
+		const svgPath = join(dir, "src", "shape.svg");
+		mkdirSync(dirname(htmlPath), { recursive: true });
+		writeFileSync(htmlPath, "<!doctype html><button>Open</button>");
+		writeFileSync(svgPath, '<svg xmlns="http://www.w3.org/2000/svg"><rect width="8" height="8" /></svg>');
+
+		await expect(
+			readWorkspacePreviewFile(dir, "src/index.html", {
+				createPreviewUrl: async (path) => `skylark-preview://session/${basename(path)}`,
+			}),
+		).resolves.toMatchObject({
+			path: realpathSync(htmlPath),
+			kind: "html",
+			previewUrl: "skylark-preview://session/index.html",
+		});
+		await expect(
+			readWorkspacePreviewFile(dir, "src/shape.svg", {
+				createPreviewUrl: async (path) => `skylark-preview://session/${basename(path)}`,
+			}),
+		).resolves.toMatchObject({
+			path: realpathSync(svgPath),
+			kind: "svg",
+			previewUrl: "skylark-preview://session/shape.svg",
 		});
 	});
 

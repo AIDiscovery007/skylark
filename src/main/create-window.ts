@@ -28,7 +28,7 @@ export const DESKTOP_CONTENT_SECURITY_POLICY = [
 	"style-src 'self' 'unsafe-inline'",
 	"connect-src 'self'",
 	"img-src 'self' data: blob:",
-	"frame-src 'self' http: https:",
+	"frame-src 'self' http: https: skylark-preview:",
 	"font-src 'self' data:",
 	"worker-src 'self' blob:",
 	"object-src 'none'",

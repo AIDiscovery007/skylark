@@ -333,6 +333,7 @@ export async function reconcileTmuxEnvironmentResources(
 				title: getTmuxOption(session.options, "@skylark-title", "@pi-title") ?? session.sessionName,
 				status: "running",
 				metadata: {
+					previewUrl: session.options?.["@skylark-preview-url"],
 					tmuxSessionName: session.sessionName,
 					tmuxSocketPath: session.socketPath,
 				},
@@ -360,6 +361,7 @@ export async function reconcileTmuxEnvironmentResources(
 						currentCommand: window.currentCommand,
 						currentPath: window.currentPath,
 						paneId: window.paneId,
+						previewUrl: window.options?.["@skylark-preview-url"],
 						tmuxSessionName: session.sessionName,
 						tmuxSocketPath: session.socketPath,
 						tmuxWindowName: window.windowName,

@@ -101,6 +101,85 @@ export interface DesktopNativeAppearance {
 	reducedTransparency: boolean;
 }
 
+export interface DesktopWebPreviewBounds {
+	height: number;
+	width: number;
+	x: number;
+	y: number;
+}
+
+export interface DesktopWebPreviewShowRequest {
+	bounds: DesktopWebPreviewBounds;
+	id: string;
+	occluded?: boolean;
+	url: string;
+}
+
+export interface DesktopWebPreviewBoundsRequest {
+	bounds: DesktopWebPreviewBounds;
+	id: string;
+	occluded?: boolean;
+}
+
+export interface DesktopWebPreviewSnapshot {
+	dataUrl: string;
+}
+
+export type DesktopWebPreviewControlAction = "back" | "forward" | "reload" | "stop";
+
+export interface DesktopWebPreviewControlRequest {
+	action: DesktopWebPreviewControlAction;
+	id: string;
+}
+
+export interface DesktopWebPreviewCloseRequest {
+	id: string;
+}
+
+export type DesktopWebPreviewStorageKind = "cache" | "cookies";
+
+export interface DesktopWebPreviewStorageRequest {
+	id: string;
+	storage: DesktopWebPreviewStorageKind;
+}
+
+export interface DesktopWebPreviewElementSelection {
+	ariaLabel?: string;
+	className?: string;
+	href?: string;
+	id?: string;
+	selector: string;
+	tagName: string;
+	text: string;
+}
+
+export interface DesktopWebPreviewSelectionModeRequest {
+	enabled: boolean;
+	id: string;
+}
+
+export interface DesktopWebPreviewState {
+	canGoBack: boolean;
+	canGoForward: boolean;
+	errorMessage?: string;
+	id: string;
+	isSelectingElement?: boolean;
+	isLoading: boolean;
+	title: string;
+	url: string;
+}
+
+export type DesktopWebPreviewEvent =
+	| {
+			state: DesktopWebPreviewState;
+			type: "web_preview_state";
+	  }
+	| {
+			id: string;
+			selection: DesktopWebPreviewElementSelection;
+			type: "web_preview_element_selected";
+	  };
+
 export type DesktopAgentMode = "plan" | "execute";
 
 export const DEFAULT_DESKTOP_AGENT_MODE: DesktopAgentMode = "execute";
@@ -1064,6 +1143,7 @@ export interface DesktopPreviewFile {
 	updatedAt: string;
 	content?: string;
 	dataUrl?: string;
+	previewUrl?: string;
 	errorMessage?: string;
 }
 

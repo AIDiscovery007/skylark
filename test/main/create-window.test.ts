@@ -183,7 +183,7 @@ describe("buildMainWindowOptions", () => {
 		});
 		expect(DESKTOP_CONTENT_SECURITY_POLICY).toContain("object-src 'none'");
 		expect(DESKTOP_CONTENT_SECURITY_POLICY).toContain("script-src 'self'");
-		expect(DESKTOP_CONTENT_SECURITY_POLICY).toContain("frame-src 'self' http: https:");
+		expect(DESKTOP_CONTENT_SECURITY_POLICY).toContain("frame-src 'self' http: https: skylark-preview:");
 	});
 
 	it("prefers a CommonJS preload entry when it exists", () => {

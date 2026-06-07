@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { TerminalPanel } from "../../src/renderer/components/terminal/TerminalPanel.tsx";
 import type { DesktopAgentBridge } from "../../src/shared/ipc-contract.ts";
 import type { SerializedTerminalEvent } from "../../src/shared/serialized-terminal-event.ts";
-import type { DesktopReviewSnapshot } from "../../src/shared/types.ts";
+import type { DesktopReviewSnapshot, DesktopWebPreviewState } from "../../src/shared/types.ts";
 import {
 	createRendererBridgeEventChannel,
 	installRendererDesktopAgentBridge,
@@ -25,6 +25,23 @@ const cleanReviewSnapshot: DesktopReviewSnapshot = {
 		reason: "只读审查模式暂不执行 Git 写操作。",
 	},
 };
+
+function createWebPreviewState(
+	id: string,
+	url: string,
+	title = url,
+	isSelectingElement?: boolean,
+): DesktopWebPreviewState {
+	return {
+		canGoBack: false,
+		canGoForward: false,
+		id,
+		...(isSelectingElement === undefined ? {} : { isSelectingElement }),
+		isLoading: false,
+		title,
+		url,
+	};
+}
 
 const terminalMocks = vi.hoisted(() => {
 	class MockTerminal {
@@ -318,6 +335,7 @@ function installBridge() {
 		resolveApproval: vi.fn(async () => undefined),
 		setProviderKey: vi.fn(async () => undefined),
 		setSetting: vi.fn(async () => undefined),
+		showWebPreview: vi.fn(async (request) => createWebPreviewState(request.id, request.url)),
 		startOAuthLogin: vi.fn(async () => undefined),
 		submitOAuthLoginCode: vi.fn(async () => undefined),
 		subscribeToAgentEvents: vi.fn(() => () => undefined),
@@ -330,12 +348,22 @@ function installBridge() {
 		subscribeToSettingsOpenRequests: vi.fn(() => () => undefined),
 		subscribeToSubagentEvents: vi.fn(() => () => undefined),
 		subscribeToTerminalEvents: terminalEvents.subscribe,
+		subscribeToWebPreviewEvents: vi.fn(() => () => undefined),
 		subscribeToWorkspaceRuntimeEvents: vi.fn(() => () => undefined),
 		switchProject: vi.fn(async () => undefined),
 		switchSession: vi.fn(async () => undefined),
+		updateWebPreviewBounds: vi.fn(async () => undefined),
 		updateSessionProfile: vi.fn(async () => {
 			throw new Error("unused");
 		}),
+		controlWebPreview: vi.fn(async (request) => createWebPreviewState(request.id, "https://example.com/", "Preview")),
+		clearWebPreviewStorage: vi.fn(async (request) =>
+			createWebPreviewState(request.id, "https://example.com/", "Preview"),
+		),
+		setWebPreviewElementSelectionMode: vi.fn(async (request) =>
+			createWebPreviewState(request.id, "https://example.com/", "Preview", request.enabled),
+		),
+		closeWebPreview: vi.fn(async () => undefined),
 		writeTerminal: vi.fn(async () => undefined),
 	};
 

@@ -1,7 +1,7 @@
 import { BrowserWindow, dialog, type OpenDialogOptions } from "electron";
 import { IPC_CHANNELS } from "../../shared/ipc-contract.ts";
 import type { DesktopRuntimeCatalog } from "../../shared/types.ts";
-import { readDesktopPreviewFile } from "../preview/preview-file-service.ts";
+import { type DesktopPreviewFileReadOptions, readDesktopPreviewFile } from "../preview/preview-file-service.ts";
 import { readWorkspacePreviewFile } from "../preview/workspace-preview-file-service.ts";
 import { prepareDesktopPromptAttachments } from "../prompt/prompt-attachment-service.ts";
 import { createGitReviewFilePatch, createGitReviewSnapshot } from "../review/git-review-service.ts";
@@ -53,6 +53,9 @@ export interface DesktopPromptBridgeGroupOptions {
 
 export interface DesktopPreviewBridgeGroupOptions {
 	host: Pick<DesktopRuntimeHost, "resolveReviewWorkspaceCwd">;
+	previewUrlService?: {
+		createPreviewUrl(path: string): Promise<string>;
+	};
 }
 
 export interface DesktopSessionBridgeGroupOptions {
@@ -186,6 +189,10 @@ export function createPromptBridgeGroup(options: DesktopPromptBridgeGroupOptions
 
 export function createPreviewBridgeGroup(options: DesktopPreviewBridgeGroupOptions): DesktopBridgeGroupDescriptor {
 	const previewFilePaths = new Set<string>();
+	const previewUrlService = options.previewUrlService;
+	const readOptions: DesktopPreviewFileReadOptions = previewUrlService
+		? { createPreviewUrl: (path) => previewUrlService.createPreviewUrl(path) }
+		: {};
 
 	return {
 		commands: [
@@ -225,7 +232,7 @@ export function createPreviewBridgeGroup(options: DesktopPreviewBridgeGroupOptio
 					for (const filePath of result.filePaths) {
 						previewFilePaths.add(filePath);
 					}
-					return Promise.all(result.filePaths.map((filePath) => readDesktopPreviewFile(filePath)));
+					return Promise.all(result.filePaths.map((filePath) => readDesktopPreviewFile(filePath, readOptions)));
 				},
 			},
 			{
@@ -233,7 +240,7 @@ export function createPreviewBridgeGroup(options: DesktopPreviewBridgeGroupOptio
 				handle: async (_event, request: unknown) => {
 					const previewRequest = validateWorkspacePreviewFileRequest(request);
 					const cwd = await options.host.resolveReviewWorkspaceCwd(previewRequest);
-					const file = await readWorkspacePreviewFile(cwd, previewRequest.path);
+					const file = await readWorkspacePreviewFile(cwd, previewRequest.path, readOptions);
 					if (!file.errorMessage) {
 						previewFilePaths.add(file.path);
 					}
@@ -255,7 +262,7 @@ export function createPreviewBridgeGroup(options: DesktopPreviewBridgeGroupOptio
 					if (!previewFilePaths.has(path)) {
 						throw new TypeError("Invalid preview file request: file was not selected in this app session");
 					}
-					return readDesktopPreviewFile(path);
+					return readDesktopPreviewFile(path, readOptions);
 				},
 			},
 		],

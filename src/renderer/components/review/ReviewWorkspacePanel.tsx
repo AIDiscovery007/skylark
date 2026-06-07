@@ -1,10 +1,14 @@
 import {
 	AlertCircle,
+	ArrowLeft,
+	ArrowRight,
 	Binary,
 	Bot,
 	Braces,
 	ChevronDown,
 	ChevronRight,
+	Cookie,
+	ExternalLink,
 	FileCode2,
 	FileText,
 	Folder,
@@ -13,9 +17,11 @@ import {
 	GitCompareArrows,
 	GitPullRequest,
 	Globe2,
+	HardDrive,
 	Maximize2,
 	Minimize2,
 	MoreHorizontal,
+	MousePointerClick,
 	Plus,
 	RefreshCcw,
 	Search,
@@ -30,24 +36,36 @@ import {
 	type PointerEvent as ReactPointerEvent,
 	useCallback,
 	useEffect,
+	useLayoutEffect,
 	useMemo,
 	useRef,
 	useState,
 } from "react";
+import { isDesktopStaticWebPreviewUrl, normalizeDesktopWebPreviewUrl } from "../../../shared/preview-url.ts";
 import type {
 	DesktopPreviewFile,
 	DesktopReviewFile,
 	DesktopReviewSnapshot,
 	DesktopSubagentOpenRequest,
+	DesktopWebPreviewElementSelection,
+	DesktopWebPreviewState,
 } from "../../../shared/types.ts";
 import { useReviewWorkspace } from "../../hooks/use-review-workspace.ts";
 import { noMotionTransition, panelSpring } from "../../lib/motion.ts";
 import { cn } from "../../lib/utils.ts";
 import { CodeBlock, type CodeBlockLanguage } from "../ai-elements/code-block.tsx";
+import {
+	WebPreview,
+	WebPreviewConsole,
+	type WebPreviewConsoleLog,
+	WebPreviewNavigation,
+	WebPreviewNavigationButton,
+	WebPreviewUrl,
+} from "../ai-elements/web-preview.tsx";
 import { Button } from "../ui/button.tsx";
 import { Input } from "../ui/input.tsx";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover.tsx";
-import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip.tsx";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip.tsx";
 import { VirtualStack } from "../ui/virtual-stack.tsx";
 import { SubagentDetailPane } from "./SubagentDetailPane.tsx";
 
@@ -58,6 +76,10 @@ interface ReviewWorkspacePanelProps {
 	previewRequest?: {
 		nonce: number;
 		path: string;
+	};
+	webPreviewRequest?: {
+		nonce: number;
+		url: string;
 	};
 	subagentRequest?: DesktopSubagentOpenRequest;
 	projectId?: string;
@@ -108,6 +130,7 @@ type WorkspacePanelItem =
 	  }
 	| {
 			id: string;
+			sourceFile?: Pick<DesktopPreviewFile, "kind" | "mimeType" | "name" | "path">;
 			type: "browser";
 			title: string;
 			url: string;
@@ -117,6 +140,13 @@ type WorkspacePanelItem =
 			type: "subagent";
 			request: DesktopSubagentOpenRequest;
 	  };
+type WorkspacePreviewFileItem =
+	| Extract<WorkspacePanelItem, { type: "file" }>
+	| (Extract<WorkspacePanelItem, { type: "browser" }> & {
+			sourceFile: Pick<DesktopPreviewFile, "kind" | "mimeType" | "name" | "path">;
+	  });
+type NativeWebPreviewOcclusionSource = "browser-actions" | "git-actions" | "workspace-create";
+type SetNativeWebPreviewOcclusion = (source: NativeWebPreviewOcclusionSource, occluded: boolean) => void;
 
 const PUSH_REVEAL_TRANSITION = { type: "tween", duration: 0.32, ease: [0.32, 0.72, 0, 1] } as const;
 const REVIEW_PANEL_BODY_HYDRATION_DELAY_MS = 340;
@@ -153,8 +183,6 @@ const PREVIEW_SOURCE_LANGUAGE_BY_EXTENSION: Record<string, CodeBlockLanguage> = 
 	go: "go",
 	h: "c",
 	hpp: "cpp",
-	html: "html",
-	htm: "html",
 	java: "java",
 	js: "javascript",
 	json: "json",
@@ -175,7 +203,6 @@ const PREVIEW_SOURCE_LANGUAGE_BY_EXTENSION: Record<string, CodeBlockLanguage> = 
 	sh: "bash",
 	sql: "sql",
 	svelte: "svelte",
-	svg: "xml",
 	swift: "swift",
 	toml: "toml",
 	ts: "typescript",
@@ -194,9 +221,7 @@ const PREVIEW_SOURCE_LANGUAGE_BY_FILE_NAME: Record<string, CodeBlockLanguage> = 
 const PREVIEW_SOURCE_LANGUAGE_BY_MIME_TYPE: Record<string, CodeBlockLanguage> = {
 	"application/json": "json",
 	"application/xml": "xml",
-	"image/svg+xml": "xml",
 	"text/css": "css",
-	"text/html": "html",
 	"text/javascript": "javascript",
 	"text/markdown": "markdown",
 	"text/plain": "text",
@@ -207,6 +232,31 @@ const PREVIEW_SOURCE_LANGUAGE_BY_MIME_TYPE: Record<string, CodeBlockLanguage> = 
 	"text/x-python": "python",
 	"text/yaml": "yaml",
 };
+const WEB_PREVIEW_ERROR_MESSAGE = "仅支持 http、https 或 skylark-preview 的预览 URL。";
+
+function formatWebPreviewElementSelection(selection: DesktopWebPreviewElementSelection): string {
+	const target = selection.selector || selection.tagName;
+	const label = selection.ariaLabel || selection.text;
+	const suffix = label ? ` "${label.slice(0, 120)}"` : "";
+	return `已选择 ${target}${suffix}`;
+}
+
+function getComparableWebPreviewHost(url: string): string | undefined {
+	try {
+		return new URL(url).host.toLowerCase().replace(/^www\./, "");
+	} catch {
+		return undefined;
+	}
+}
+
+function isRelatedWebPreviewUrl(firstUrl: string, secondUrl: string): boolean {
+	if (firstUrl === secondUrl) {
+		return true;
+	}
+	const firstHost = getComparableWebPreviewHost(firstUrl);
+	const secondHost = getComparableWebPreviewHost(secondUrl);
+	return Boolean(firstHost && secondHost && firstHost === secondHost);
+}
 
 function clampFileTreeWidth(width: number): number {
 	return Math.min(FILE_TREE_WIDTH.max, Math.max(FILE_TREE_WIDTH.min, width));
@@ -240,13 +290,13 @@ function getStatusClassName(status: DesktopReviewFile["status"]): string {
 	switch (status) {
 		case "added":
 		case "untracked":
-			return "bg-emerald-500/10 text-emerald-700";
+			return "bg-[color:color-mix(in_oklch,var(--success)_10%,var(--background))] text-[color:var(--success)]";
 		case "deleted":
-			return "bg-red-500/10 text-red-700";
+			return "bg-[color:color-mix(in_oklch,var(--destructive)_9%,var(--background))] text-[color:var(--destructive)]";
 		case "renamed":
-			return "bg-sky-500/10 text-sky-700";
+			return "bg-[color:color-mix(in_oklch,var(--info)_10%,var(--background))] text-[color:var(--info)]";
 		case "modified":
-			return "bg-muted text-muted-foreground";
+			return "bg-[color:var(--surface-2)] text-[color:var(--text-secondary)]";
 	}
 }
 
@@ -328,12 +378,12 @@ function filterFiles(files: DesktopReviewFile[], query: string): DesktopReviewFi
 
 function getFileIcon(path: string) {
 	if (path.endsWith(".tsx") || path.endsWith(".jsx")) {
-		return <Braces className="size-3.5 text-sky-500" />;
+		return <Braces className="size-3.5 text-[color:var(--info)]" />;
 	}
 	if (path.endsWith(".ts") || path.endsWith(".js") || path.endsWith(".css") || path.endsWith(".json")) {
-		return <FileCode2 className="size-3.5 text-blue-500" />;
+		return <FileCode2 className="size-3.5 text-[color:var(--accent)]" />;
 	}
-	return <FileCode2 className="size-3.5 text-muted-foreground" />;
+	return <FileCode2 className="size-3.5 text-[color:var(--text-tertiary)]" />;
 }
 
 function getPreviewFileName(file: Pick<DesktopPreviewFile, "name" | "path">): string {
@@ -379,16 +429,17 @@ function resolvePreviewSourceLanguage(file: DesktopPreviewFile): CodeBlockLangua
 		return mimeLanguage;
 	}
 
-	if (file.kind === "html") {
-		return "html";
-	}
-	if (file.kind === "svg") {
-		return "xml";
-	}
 	return "text";
 }
 
-function GitActionMenu({ reason }: { reason: string }) {
+function GitActionMenu({
+	onNativeWebPreviewOcclusionChange,
+	reason,
+}: {
+	onNativeWebPreviewOcclusionChange: SetNativeWebPreviewOcclusion;
+	reason: string;
+}) {
+	const [open, setOpen] = useState(false);
 	const actions = [
 		{ label: "提交", icon: GitCommitHorizontal },
 		{ label: "推送", icon: UploadCloud },
@@ -396,10 +447,22 @@ function GitActionMenu({ reason }: { reason: string }) {
 		{ label: "创建分支", icon: GitBranch },
 	];
 
+	const handleOpenChange = useCallback(
+		(nextOpen: boolean): void => {
+			setOpen(nextOpen);
+			onNativeWebPreviewOcclusionChange("git-actions", nextOpen);
+		},
+		[onNativeWebPreviewOcclusionChange],
+	);
+
+	useEffect(() => {
+		return () => onNativeWebPreviewOcclusionChange("git-actions", false);
+	}, [onNativeWebPreviewOcclusionChange]);
+
 	return (
-		<Popover>
+		<Popover onOpenChange={handleOpenChange} open={open}>
 			<PopoverTrigger asChild>
-				<Button aria-label="Open Git actions" size="icon-sm" variant="ghost">
+				<Button aria-label="Open Git actions" className="desktop-window-no-drag" size="icon-sm" variant="ghost">
 					<MoreHorizontal className="size-4" />
 				</Button>
 			</PopoverTrigger>
@@ -409,7 +472,7 @@ function GitActionMenu({ reason }: { reason: string }) {
 						const Icon = action.icon;
 						return (
 							<button
-								className="flex h-9 cursor-not-allowed items-center gap-3 rounded-md px-2.5 text-left text-sm text-muted-foreground opacity-70"
+								className="flex h-9 cursor-not-allowed items-center gap-3 rounded-[var(--radius-md)] px-2.5 text-left text-sm text-[color:var(--text-tertiary)] opacity-70"
 								disabled
 								key={action.label}
 								type="button"
@@ -420,55 +483,67 @@ function GitActionMenu({ reason }: { reason: string }) {
 						);
 					})}
 				</div>
-				<p className="mt-2 border-t border-border/70 px-2.5 pt-2 text-[11px] leading-4 text-muted-foreground">
-					{reason}
-				</p>
+				<p className="mt-2 px-2.5 pt-2 text-[11px] leading-4 text-[color:var(--text-tertiary)]">{reason}</p>
 			</PopoverContent>
 		</Popover>
 	);
 }
 
 function WorkspaceCreateMenu({
+	onNativeWebPreviewOcclusionChange,
 	onOpenBrowser,
 	onOpenFiles,
 }: {
+	onNativeWebPreviewOcclusionChange: SetNativeWebPreviewOcclusion;
 	onOpenBrowser: () => void;
 	onOpenFiles: () => Promise<void>;
 }) {
 	const [open, setOpen] = useState(false);
 
+	const handleOpenChange = useCallback(
+		(nextOpen: boolean): void => {
+			setOpen(nextOpen);
+			onNativeWebPreviewOcclusionChange("workspace-create", nextOpen);
+		},
+		[onNativeWebPreviewOcclusionChange],
+	);
+
+	useEffect(() => {
+		return () => onNativeWebPreviewOcclusionChange("workspace-create", false);
+	}, [onNativeWebPreviewOcclusionChange]);
+
 	async function handleOpenFiles(): Promise<void> {
-		setOpen(false);
+		handleOpenChange(false);
 		await onOpenFiles();
 	}
 
 	return (
-		<Popover onOpenChange={setOpen} open={open}>
+		<Popover onOpenChange={handleOpenChange} open={open}>
 			<PopoverTrigger asChild>
-				<Button aria-label="New workspace item" size="icon-sm" variant="ghost">
+				<Button aria-label="New workspace item" className="desktop-window-no-drag" size="icon-sm" variant="ghost">
 					<Plus className="size-4" />
 				</Button>
 			</PopoverTrigger>
 			<PopoverContent align="end" className="w-56 p-2">
 				<div className="grid gap-1">
 					<button
-						className="flex h-9 items-center gap-3 rounded-md px-2.5 text-left text-sm text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+						className="flex h-9 items-center gap-3 rounded-[var(--radius-md)] px-2.5 text-left text-sm text-[color:var(--text-primary)] transition-[background-color,color] duration-[var(--duration-fast)] hover:bg-[color:var(--surface-2)] focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-[color:var(--focus-ring)]"
 						onClick={() => void handleOpenFiles()}
 						type="button"
 					>
-						<FileText className="size-4 text-muted-foreground" />
+						<FileText className="size-4 text-[color:var(--text-tertiary)]" />
 						<span>打开文件</span>
 					</button>
 					<button
-						className="flex h-9 items-center gap-3 rounded-md px-2.5 text-left text-sm text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+						className="flex h-9 items-center gap-3 rounded-[var(--radius-md)] px-2.5 text-left text-sm text-[color:var(--text-primary)] transition-[background-color,color] duration-[var(--duration-fast)] hover:bg-[color:var(--surface-2)] focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-[color:var(--focus-ring)]"
 						onClick={() => {
-							setOpen(false);
+							handleOpenChange(false);
 							onOpenBrowser();
 						}}
 						type="button"
 					>
-						<Globe2 className="size-4 text-muted-foreground" />
-						<span>浏览器</span>
+						<Globe2 className="size-4 text-[color:var(--text-tertiary)]" />
+						<span>网页预览</span>
 					</button>
 				</div>
 			</PopoverContent>
@@ -490,12 +565,12 @@ function ReviewEmptyState({ snapshot }: { snapshot?: DesktopReviewSnapshot }) {
 	return (
 		<div className="grid h-full min-h-[360px] place-items-center px-8 py-12 text-center">
 			<div className="grid max-w-xs justify-items-center gap-3">
-				<div className="grid size-14 place-items-center rounded-2xl border border-border/70 bg-muted/40 text-muted-foreground">
+				<div className="grid size-14 place-items-center rounded-[var(--radius-xl)] bg-[color:var(--surface-2)] text-[color:var(--text-tertiary)] shadow-[var(--shadow-minimal)]">
 					<GitCompareArrows className="size-6" />
 				</div>
 				<div className="grid gap-1">
-					<p className="text-[13px] font-medium text-foreground">{title}</p>
-					<p className="text-xs leading-5 text-muted-foreground">{description}</p>
+					<p className="text-[13px] font-medium text-[color:var(--text-primary)]">{title}</p>
+					<p className="text-xs leading-5 text-[color:var(--text-tertiary)]">{description}</p>
 				</div>
 			</div>
 		</div>
@@ -506,12 +581,12 @@ function ReviewErrorState({ message }: { message: string }) {
 	return (
 		<div className="grid h-full min-h-[360px] place-items-center px-8 py-12 text-center">
 			<div className="grid max-w-xs justify-items-center gap-3">
-				<div className="grid size-14 place-items-center rounded-2xl border border-red-500/20 bg-red-500/10 text-red-700">
+				<div className="grid size-14 place-items-center rounded-[var(--radius-xl)] bg-[color:color-mix(in_oklch,var(--destructive)_9%,var(--background))] text-[color:var(--destructive)] shadow-[var(--shadow-minimal)]">
 					<AlertCircle className="size-6" />
 				</div>
 				<div className="grid gap-1">
-					<p className="text-[13px] font-medium text-foreground">无法读取审查信息</p>
-					<p className="text-xs leading-5 text-muted-foreground">{message}</p>
+					<p className="text-[13px] font-medium text-[color:var(--text-primary)]">无法读取审查信息</p>
+					<p className="text-xs leading-5 text-[color:var(--text-tertiary)]">{message}</p>
 				</div>
 			</div>
 		</div>
@@ -531,8 +606,59 @@ function getWorkspaceItemTitle(item: WorkspacePanelItem): string {
 	return item.file.name;
 }
 
+function getWebPreviewTitle(url: string): string {
+	try {
+		const parsedUrl = new URL(url);
+		if (isDesktopStaticWebPreviewUrl(url)) {
+			return "本地预览";
+		}
+		return parsedUrl.port ? `${parsedUrl.hostname}:${parsedUrl.port}` : parsedUrl.hostname;
+	} catch {
+		return "网页预览";
+	}
+}
+
+function hashWorkspaceItemId(value: string): string {
+	let hash = 2166136261;
+	for (let index = 0; index < value.length; index += 1) {
+		hash ^= value.charCodeAt(index);
+		hash = Math.imul(hash, 16777619);
+	}
+	return (hash >>> 0).toString(36);
+}
+
+function isPreviewFileWebPreview(file: DesktopPreviewFile): boolean {
+	return (file.kind === "html" || file.kind === "svg") && Boolean(file.previewUrl);
+}
+
+function createWorkspacePreviewItem(file: DesktopPreviewFile): WorkspacePanelItem {
+	if (isPreviewFileWebPreview(file) && file.previewUrl) {
+		return {
+			id: `browser:file:${hashWorkspaceItemId(file.path)}`,
+			sourceFile: {
+				kind: file.kind,
+				mimeType: file.mimeType,
+				name: file.name,
+				path: file.path,
+			},
+			title: getPreviewFileName(file),
+			type: "browser",
+			url: file.previewUrl,
+		};
+	}
+	return {
+		file,
+		id: `file:${file.path}`,
+		type: "file",
+	};
+}
+
+function isWorkspacePreviewFileItem(item: WorkspacePanelItem): item is WorkspacePreviewFileItem {
+	return item.type === "file" || (item.type === "browser" && Boolean(item.sourceFile));
+}
+
 function retainRecentWorkspacePreviewFiles(items: WorkspacePanelItem[], activeItemId: string): WorkspacePanelItem[] {
-	const fileItems = items.filter((item) => item.type === "file");
+	const fileItems = items.filter(isWorkspacePreviewFileItem);
 	if (fileItems.length <= MAX_WORKSPACE_PREVIEW_FILE_ITEMS) {
 		return items;
 	}
@@ -544,7 +670,7 @@ function retainRecentWorkspacePreviewFiles(items: WorkspacePanelItem[], activeIt
 			.slice(0, removableCount)
 			.map((item) => item.id),
 	);
-	return items.filter((item) => item.type !== "file" || !removableFileIds.has(item.id));
+	return items.filter((item) => !isWorkspacePreviewFileItem(item) || !removableFileIds.has(item.id));
 }
 
 function WorkspacePanelTabs({
@@ -567,7 +693,7 @@ function WorkspacePanelTabs({
 	return (
 		<div
 			aria-label="Workspace panel tabs"
-			className="flex h-10 shrink-0 items-center gap-1 overflow-x-auto border-b border-border/70 px-2 [scrollbar-width:none]"
+			className="flex h-9 shrink-0 items-center gap-1 overflow-x-auto bg-[color:var(--surface-1)] px-2 [scrollbar-width:none]"
 			data-display-mode={isFullscreen ? "fullscreen" : "panel"}
 			role="tablist"
 		>
@@ -576,7 +702,7 @@ function WorkspacePanelTabs({
 					{item.type !== "review" ? (
 						<button
 							aria-label={`Close ${getWorkspaceItemTitle(item)}`}
-							className="pointer-events-none absolute left-2 top-1/2 z-10 grid size-3.5 -translate-y-1/2 place-items-center rounded-full bg-muted-foreground/60 text-background opacity-0 transition-[background-color,opacity] hover:bg-muted-foreground/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100"
+							className="pointer-events-none absolute left-2 top-1/2 z-10 grid size-3.5 -translate-y-1/2 place-items-center rounded-full bg-[color:color-mix(in_oklch,var(--foreground)_48%,transparent)] text-[color:var(--background)] opacity-0 transition-[background-color,opacity] duration-[var(--duration-fast)] hover:bg-[color:color-mix(in_oklch,var(--foreground)_60%,transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--focus-ring)] group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100"
 							onClick={() => onCloseItem(item.id)}
 							type="button"
 						>
@@ -586,10 +712,10 @@ function WorkspacePanelTabs({
 					<button
 						aria-selected={activeItemId === item.id}
 						className={cn(
-							"flex h-7 max-w-44 min-w-0 items-center gap-1.5 rounded-md px-2 text-xs transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+							"flex h-7 max-w-44 min-w-0 items-center gap-1.5 rounded-[var(--radius-md)] px-2 text-xs transition-[background-color,color,box-shadow] duration-[var(--duration-fast)] focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-[color:var(--focus-ring)]",
 							activeItemId === item.id
-								? "bg-muted text-foreground"
-								: "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+								? "bg-[color:var(--surface-2)] text-[color:var(--text-primary)] shadow-[var(--shadow-minimal)]"
+								: "text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)]",
 						)}
 						onClick={() => onSelectItem(item.id)}
 						role="tab"
@@ -622,18 +748,18 @@ function ReviewPanelBodyDeferredFallback() {
 		>
 			<section className="min-w-0 flex-1 p-4">
 				<div className="grid gap-3">
-					<div className="h-8 rounded-md bg-muted/70" />
-					<div className="h-9 rounded-md bg-muted/60" />
-					<div className="h-52 rounded-md bg-muted/45" />
-					<div className="h-36 rounded-md bg-muted/35" />
+					<div className="h-8 rounded-[var(--radius-md)] bg-[color:var(--surface-2)]" />
+					<div className="h-9 rounded-[var(--radius-md)] bg-[color:var(--surface-2)]" />
+					<div className="h-52 rounded-[var(--radius-md)] bg-[color:var(--surface-1)]" />
+					<div className="h-36 rounded-[var(--radius-md)] bg-[color:var(--surface-1)]" />
 				</div>
 			</section>
-			<aside className="hidden w-[340px] shrink-0 border-l border-border/70 p-3 lg:block">
+			<aside className="hidden w-[340px] shrink-0 p-3 shadow-[inset_1px_0_0_var(--border-subtle)] lg:block">
 				<div className="grid gap-2">
-					<div className="h-9 rounded-md bg-muted/65" />
-					<div className="h-7 rounded-md bg-muted/45" />
-					<div className="h-7 rounded-md bg-muted/45" />
-					<div className="h-7 rounded-md bg-muted/35" />
+					<div className="h-9 rounded-[var(--radius-md)] bg-[color:var(--surface-2)]" />
+					<div className="h-7 rounded-[var(--radius-md)] bg-[color:var(--surface-1)]" />
+					<div className="h-7 rounded-[var(--radius-md)] bg-[color:var(--surface-1)]" />
+					<div className="h-7 rounded-[var(--radius-md)] bg-[color:var(--surface-1)]" />
 				</div>
 			</aside>
 		</div>
@@ -655,7 +781,7 @@ function FileTreeRow({
 		return (
 			<button
 				aria-expanded={row.expanded}
-				className="flex h-7 w-full items-center gap-1.5 rounded-md px-2 text-left text-[13px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+				className="flex h-7 w-full items-center gap-1.5 rounded-[var(--radius-md)] px-2 text-left text-[13px] text-[color:var(--text-secondary)] transition-[background-color,color] duration-[var(--duration-fast)] hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-[color:var(--focus-ring)]"
 				onClick={() => onToggle(row.path)}
 				style={{ paddingLeft: 4 + row.depth * FILE_TREE_INDENT }}
 				type="button"
@@ -675,8 +801,10 @@ function FileTreeRow({
 	return (
 		<button
 			className={cn(
-				"grid h-8 w-full min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md px-2 text-left text-[13px] transition-colors",
-				selected ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+				"grid h-8 w-full min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-[var(--radius-md)] px-2 text-left text-[13px] transition-[background-color,color,box-shadow] duration-[var(--duration-fast)]",
+				selected
+					? "bg-[color:var(--surface-2)] text-[color:var(--text-primary)] shadow-[var(--shadow-minimal)]"
+					: "text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)]",
 			)}
 			onClick={() => onSelect(file)}
 			style={{ paddingLeft: 6 + row.depth * FILE_TREE_INDENT }}
@@ -722,7 +850,7 @@ function FileTree({
 		[collapsedPaths, forceExpanded, nodes],
 	);
 	if (nodes.length === 0) {
-		return <p className="px-2 py-3 text-sm text-muted-foreground">没有匹配的文件</p>;
+		return <p className="px-2 py-3 text-sm text-[color:var(--text-tertiary)]">没有匹配的文件</p>;
 	}
 
 	return (
@@ -747,17 +875,22 @@ function DiffLine({ change }: { change: ParsedDiffFile["chunks"][number]["change
 	const content = change.content.slice(1);
 	const isAdd = change.type === "add";
 	const isDelete = change.type === "del";
-	const lineBackgroundClassName = isAdd ? "bg-emerald-500/10" : isDelete ? "bg-red-500/10" : "bg-background";
-	const stickyBackgroundClassName = isAdd ? "bg-emerald-50" : isDelete ? "bg-red-50" : "bg-background";
-	const changeBarClassName = isAdd ? "bg-emerald-600" : isDelete ? "bg-red-600" : "bg-background";
+	const lineBackgroundClassName = isAdd
+		? "bg-[color:color-mix(in_oklch,var(--success)_10%,var(--background))]"
+		: isDelete
+			? "bg-[color:color-mix(in_oklch,var(--destructive)_8%,var(--background))]"
+			: "bg-[color:var(--background)]";
+	const changeBarClassName = isAdd
+		? "bg-[color:var(--success)]"
+		: isDelete
+			? "bg-[color:var(--destructive)]"
+			: "bg-transparent";
 	const displayLineNumber = change.type === "del" ? change.ln : change.type === "normal" ? change.ln2 : change.ln;
 	return (
 		<div
 			className={cn(
-				"grid w-max min-w-full grid-cols-[4px_52px_max-content] font-mono text-[12px] leading-5",
+				"grid w-max min-w-full grid-cols-[4px_52px_max-content] font-mono text-[12px] leading-5 text-[color:var(--text-primary)]",
 				lineBackgroundClassName,
-				isAdd && "text-emerald-950",
-				isDelete && "text-red-950",
 			)}
 		>
 			<span
@@ -767,8 +900,8 @@ function DiffLine({ change }: { change: ParsedDiffFile["chunks"][number]["change
 			/>
 			<span
 				className={cn(
-					"sticky left-[4px] z-[1] select-none border-r border-border/50 px-2 text-right text-muted-foreground",
-					stickyBackgroundClassName,
+					"sticky left-[4px] z-[1] select-none px-2 text-right text-[color:var(--text-tertiary)] shadow-[inset_-1px_0_0_color-mix(in_oklch,var(--foreground)_6%,transparent)]",
+					lineBackgroundClassName,
 				)}
 				data-slot="diff-line-number"
 			>
@@ -844,7 +977,7 @@ function DiffViewer({
 	if (file.isBinary) {
 		return (
 			<div className="grid h-full place-items-center p-10 text-center">
-				<div className="grid justify-items-center gap-2 text-muted-foreground">
+				<div className="grid justify-items-center gap-2 text-[color:var(--text-tertiary)]">
 					<Binary className="size-6" />
 					<p className="text-sm">二进制文件无法展示文本差异。</p>
 				</div>
@@ -855,7 +988,7 @@ function DiffViewer({
 	if (isPatchLoading) {
 		return (
 			<div aria-busy="true" className="grid h-full place-items-center p-10 text-center">
-				<div className="grid justify-items-center gap-2 text-muted-foreground">
+				<div className="grid justify-items-center gap-2 text-[color:var(--text-tertiary)]">
 					<RefreshCcw className="size-5 animate-spin" />
 					<p className="text-sm">正在加载 diff...</p>
 				</div>
@@ -866,7 +999,7 @@ function DiffViewer({
 	if (patchErrorMessage) {
 		return (
 			<div className="grid h-full place-items-center p-10 text-center">
-				<div className="grid justify-items-center gap-2 text-muted-foreground">
+				<div className="grid justify-items-center gap-2 text-[color:var(--text-tertiary)]">
 					<AlertCircle className="size-6" />
 					<p className="text-sm">{patchErrorMessage}</p>
 				</div>
@@ -877,7 +1010,7 @@ function DiffViewer({
 	if (file.isTooLarge || !parsedFile) {
 		return (
 			<div className="grid h-full place-items-center p-10 text-center">
-				<div className="grid justify-items-center gap-2 text-muted-foreground">
+				<div className="grid justify-items-center gap-2 text-[color:var(--text-tertiary)]">
 					<AlertCircle className="size-6" />
 					<p className="text-sm">此文件没有可展示的文本 diff。</p>
 				</div>
@@ -905,7 +1038,7 @@ function DiffViewer({
 								<button
 									aria-expanded={expanded}
 									aria-label={`${expanded ? "Collapse" : "Expand"} diff hunk old ${oldRange} new ${newRange}`}
-									className="sticky left-2 z-[2] inline-flex h-full min-w-0 items-center overflow-hidden rounded-lg border border-border/60 bg-muted pr-3 text-left text-xs text-muted-foreground shadow-[0_8px_20px_-18px_rgba(15,23,42,0.75),0_1px_2px_rgba(15,23,42,0.05),inset_0_1px_0_rgba(255,255,255,0.72)] transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+									className="sticky left-2 z-[2] inline-flex h-full min-w-0 items-center overflow-hidden rounded-[var(--radius-md)] bg-[color:var(--surface-2)] pr-3 text-left text-xs text-[color:var(--text-secondary)] shadow-[var(--shadow-minimal)] transition-[background-color,color,box-shadow] duration-[var(--duration-fast)] hover:bg-[color:var(--surface-3)] hover:text-[color:var(--text-primary)] focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-[color:var(--focus-ring)]"
 									data-slot="diff-hunk-header"
 									onClick={() => toggleChunk(chunkKey)}
 									style={hunkHeaderWidth ? { width: hunkHeaderWidth } : undefined}
@@ -916,13 +1049,13 @@ function DiffViewer({
 										{expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
 									</span>
 									<span className="flex min-w-0 items-center gap-2">
-										<span className="shrink-0 rounded bg-background px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
+										<span className="shrink-0 rounded-[var(--radius-sm)] bg-[color:var(--surface-1)] px-1.5 py-0.5 font-mono text-[11px] text-[color:var(--text-tertiary)]">
 											旧 {oldRange}
 										</span>
-										<span className="shrink-0 rounded bg-background px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
+										<span className="shrink-0 rounded-[var(--radius-sm)] bg-[color:var(--surface-1)] px-1.5 py-0.5 font-mono text-[11px] text-[color:var(--text-tertiary)]">
 											新 {newRange}
 										</span>
-										<span className="truncate font-mono text-[11px] text-muted-foreground">
+										<span className="truncate font-mono text-[11px] text-[color:var(--text-tertiary)]">
 											{chunkContext || "变更片段"}
 										</span>
 									</span>
@@ -941,78 +1074,11 @@ function DiffViewer({
 	);
 }
 
-function MarkupPreviewPane({ file, onRefresh }: { file: DesktopPreviewFile; onRefresh: () => void }) {
-	const [viewMode, setViewMode] = useState<"preview" | "source">("preview");
-	const previewLabel = file.kind === "svg" ? "SVG" : "HTML";
-
-	return (
-		<section className="flex h-full min-h-0 min-w-0 flex-col" data-slot="workspace-preview-pane">
-			<div className="flex h-10 shrink-0 items-center justify-between gap-3 border-b border-border/70 px-3">
-				<div className="min-w-0">
-					<p className="truncate text-[13px] font-medium text-foreground" title={file.path}>
-						{file.name}
-					</p>
-					<p className="truncate text-[11px] text-muted-foreground">{file.mimeType}</p>
-				</div>
-				<div className="flex shrink-0 items-center gap-2">
-					<div className="flex items-center gap-1 rounded-md bg-muted p-0.5">
-						<Button
-							aria-pressed={viewMode === "preview"}
-							className={viewMode === "preview" ? "bg-background text-foreground shadow-sm" : undefined}
-							onClick={() => setViewMode("preview")}
-							size="xs"
-							type="button"
-							variant="ghost"
-						>
-							预览
-						</Button>
-						<Button
-							aria-pressed={viewMode === "source"}
-							className={viewMode === "source" ? "bg-background text-foreground shadow-sm" : undefined}
-							onClick={() => setViewMode("source")}
-							size="xs"
-							type="button"
-							variant="ghost"
-						>
-							源码
-						</Button>
-					</div>
-					<Button
-						aria-label={`Refresh ${file.name}`}
-						onClick={onRefresh}
-						size="icon-xs"
-						type="button"
-						variant="ghost"
-					>
-						<RefreshCcw className="size-3.5" />
-					</Button>
-				</div>
-			</div>
-			<div
-				className="relative min-h-0 min-w-0 flex-1 overflow-hidden bg-background"
-				data-slot="workspace-preview-viewport"
-			>
-				{viewMode === "preview" ? (
-					<iframe
-						className="absolute inset-0 block h-full w-full border-0 bg-white"
-						data-slot="workspace-preview-frame"
-						sandbox="allow-scripts allow-modals"
-						srcDoc={file.content ?? ""}
-						title={`${previewLabel} preview: ${file.name}`}
-					/>
-				) : (
-					<PreviewSourceCode file={file} />
-				)}
-			</div>
-		</section>
-	);
-}
-
 function PreviewSourceCode({ file }: { file: DesktopPreviewFile }) {
 	return (
 		<CodeBlock
 			bodyClassName="min-h-full p-4 text-[12px] leading-5"
-			className="h-full rounded-none border-0 bg-background shadow-none"
+			className="h-full rounded-none border-0 bg-[color:var(--background)] shadow-none"
 			code={file.content ?? ""}
 			contentClassName="h-full min-h-0"
 			data-slot="preview-source-code"
@@ -1027,8 +1093,8 @@ function FilePreviewPane({ file, onRefresh }: { file: DesktopPreviewFile; onRefr
 	if (file.kind === "image" && file.dataUrl) {
 		return (
 			<section className="flex h-full min-h-0 min-w-0 flex-col" data-slot="workspace-preview-pane">
-				<div className="flex h-10 shrink-0 items-center justify-between border-b border-border/70 px-3">
-					<p className="truncate text-[13px] font-medium text-foreground" title={file.path}>
+				<div className="flex h-10 shrink-0 items-center justify-between bg-[color:var(--surface-1)] px-3">
+					<p className="truncate text-[13px] font-medium text-[color:var(--text-primary)]" title={file.path}>
 						{file.name}
 					</p>
 					<Button
@@ -1041,26 +1107,22 @@ function FilePreviewPane({ file, onRefresh }: { file: DesktopPreviewFile; onRefr
 						<RefreshCcw className="size-3.5" />
 					</Button>
 				</div>
-				<div className="grid min-h-0 min-w-0 flex-1 place-items-center overflow-auto bg-muted/20 p-4">
+				<div className="grid min-h-0 min-w-0 flex-1 place-items-center overflow-auto bg-[color:var(--background)] p-4">
 					<img alt={file.name} className="max-h-full max-w-full object-contain" src={file.dataUrl} />
 				</div>
 			</section>
 		);
 	}
 
-	if ((file.kind === "html" || file.kind === "svg") && file.content !== undefined) {
-		return <MarkupPreviewPane file={file} onRefresh={onRefresh} />;
-	}
-
 	if (file.kind === "text" && file.content !== undefined) {
 		return (
 			<section className="flex h-full min-h-0 min-w-0 flex-col" data-slot="workspace-preview-pane">
-				<div className="flex h-10 shrink-0 items-center justify-between border-b border-border/70 px-3">
+				<div className="flex h-10 shrink-0 items-center justify-between bg-[color:var(--surface-1)] px-3">
 					<div className="min-w-0">
-						<p className="truncate text-[13px] font-medium text-foreground" title={file.path}>
+						<p className="truncate text-[13px] font-medium text-[color:var(--text-primary)]" title={file.path}>
 							{file.name}
 						</p>
-						<p className="truncate text-[11px] text-muted-foreground">{file.mimeType}</p>
+						<p className="truncate text-[11px] text-[color:var(--text-tertiary)]">{file.mimeType}</p>
 					</div>
 					<Button
 						aria-label={`Refresh ${file.name}`}
@@ -1072,7 +1134,7 @@ function FilePreviewPane({ file, onRefresh }: { file: DesktopPreviewFile; onRefr
 						<RefreshCcw className="size-3.5" />
 					</Button>
 				</div>
-				<div className="min-h-0 min-w-0 flex-1 overflow-auto bg-background">
+				<div className="min-h-0 min-w-0 flex-1 overflow-auto bg-[color:var(--background)]">
 					<PreviewSourceCode file={file} />
 				</div>
 			</section>
@@ -1081,7 +1143,7 @@ function FilePreviewPane({ file, onRefresh }: { file: DesktopPreviewFile; onRefr
 
 	return (
 		<div className="grid h-full min-h-[360px] place-items-center px-8 py-12 text-center">
-			<div className="grid max-w-xs justify-items-center gap-2 text-muted-foreground">
+			<div className="grid max-w-xs justify-items-center gap-2 text-[color:var(--text-tertiary)]">
 				<AlertCircle className="size-6" />
 				<p className="text-sm">{file.errorMessage ?? "此文件无法预览。"}</p>
 			</div>
@@ -1089,81 +1151,530 @@ function FilePreviewPane({ file, onRefresh }: { file: DesktopPreviewFile; onRefr
 	);
 }
 
-function normalizeBrowserUrl(value: string): string {
-	const trimmedValue = value.trim();
-	if (!trimmedValue) {
-		return "";
-	}
-	const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmedValue) ? trimmedValue : `https://${trimmedValue}`;
-	try {
-		return new URL(withProtocol).toString();
-	} catch {
-		return "";
-	}
-}
-
 function BrowserPreviewPane({
+	isFullscreen,
+	isNativePreviewOccluded,
+	isVisible,
 	item,
+	onFullscreenChange,
+	onNativeWebPreviewOcclusionChange,
 	onUpdateUrl,
 }: {
+	isFullscreen: boolean;
+	isNativePreviewOccluded: boolean;
+	isVisible: boolean;
 	item: Extract<WorkspacePanelItem, { type: "browser" }>;
+	onFullscreenChange: (next: boolean) => void;
+	onNativeWebPreviewOcclusionChange: SetNativeWebPreviewOcclusion;
 	onUpdateUrl: (itemId: string, url: string) => void;
 }) {
 	const [inputValue, setInputValue] = useState(item.url);
+	const [errorMessage, setErrorMessage] = useState<string | undefined>();
+	const [isSelectMode, setIsSelectMode] = useState(false);
+	const [actionsOpen, setActionsOpen] = useState(false);
+	const [consoleLogs, setConsoleLogs] = useState<WebPreviewConsoleLog[]>([]);
+	const [occlusionSnapshotDataUrl, setOcclusionSnapshotDataUrl] = useState<string | undefined>();
+	const [previewState, setPreviewState] = useState<DesktopWebPreviewState | undefined>();
+	const previewViewportRef = useRef<HTMLDivElement>(null);
+	const itemIdRef = useRef(item.id);
+	const isNativePreviewOccludedRef = useRef(isNativePreviewOccluded);
+	const isAddressDirtyRef = useRef(false);
+	const pendingSubmittedUrlRef = useRef<string | undefined>(item.url || undefined);
+	const supersededUrlRef = useRef<string | undefined>(undefined);
+	const canGoBack = previewState?.canGoBack ?? false;
+	const canGoForward = previewState?.canGoForward ?? false;
+	const hasPreviewUrl = Boolean(item.url);
+	const canOpenExternalUrl = Boolean(item.url && !isDesktopStaticWebPreviewUrl(item.url));
 
-	function handleSubmit(): void {
-		const nextUrl = normalizeBrowserUrl(inputValue);
-		if (nextUrl) {
-			onUpdateUrl(item.id, nextUrl);
-			setInputValue(nextUrl);
+	useEffect(() => {
+		if (itemIdRef.current !== item.id) {
+			itemIdRef.current = item.id;
+			setIsSelectMode(false);
+			setPreviewState(undefined);
+			setOcclusionSnapshotDataUrl(undefined);
+			isAddressDirtyRef.current = false;
+			pendingSubmittedUrlRef.current = item.url || undefined;
+			supersededUrlRef.current = undefined;
+			setConsoleLogs(item.url ? [{ level: "log", message: `已打开 ${item.url}`, timestamp: new Date() }] : []);
 		}
+		if (!isAddressDirtyRef.current) {
+			setInputValue(item.url);
+		}
+		setErrorMessage(undefined);
+		if (!isNativePreviewOccludedRef.current) {
+			setOcclusionSnapshotDataUrl(undefined);
+		}
+	}, [item.id, item.url]);
+
+	useEffect(() => {
+		if (!isVisible) {
+			setIsSelectMode(false);
+		}
+	}, [isVisible]);
+
+	const appendConsoleLog = useCallback((level: WebPreviewConsoleLog["level"], message: string): void => {
+		setConsoleLogs((currentLogs) => [...currentLogs.slice(-79), { level, message, timestamp: new Date() }]);
+	}, []);
+
+	const applyPreviewState = useCallback((state: DesktopWebPreviewState): void => {
+		setPreviewState(state);
+		if (!isAddressDirtyRef.current) {
+			setInputValue(state.url);
+		}
+	}, []);
+
+	const isStalePreviewState = useCallback(
+		(state: DesktopWebPreviewState): boolean => {
+			const pendingUrl = pendingSubmittedUrlRef.current;
+			if (pendingUrl && state.url && !isRelatedWebPreviewUrl(pendingUrl, state.url)) {
+				return true;
+			}
+			const supersededUrl = supersededUrlRef.current;
+			return Boolean(
+				supersededUrl &&
+					state.url &&
+					isRelatedWebPreviewUrl(supersededUrl, state.url) &&
+					item.url &&
+					!isRelatedWebPreviewUrl(item.url, state.url),
+			);
+		},
+		[item.url],
+	);
+
+	const applyTrustedPreviewState = useCallback(
+		(state: DesktopWebPreviewState): void => {
+			if (isStalePreviewState(state)) {
+				return;
+			}
+			applyPreviewState(state);
+			const pendingUrl = pendingSubmittedUrlRef.current;
+			if (pendingUrl && state.url && isRelatedWebPreviewUrl(pendingUrl, state.url) && !state.isLoading) {
+				pendingSubmittedUrlRef.current = undefined;
+			}
+		},
+		[applyPreviewState, isStalePreviewState],
+	);
+
+	const getPreviewBounds = useCallback(() => {
+		const viewport = previewViewportRef.current;
+		if (!viewport) {
+			return undefined;
+		}
+		const rect = viewport.getBoundingClientRect();
+		return {
+			height: Math.max(0, Math.round(rect.height)),
+			width: Math.max(0, Math.round(rect.width)),
+			x: Math.max(0, Math.round(rect.x)),
+			y: Math.max(0, Math.round(rect.y)),
+		};
+	}, []);
+
+	const showPreview = useCallback(() => {
+		if (!isVisible || !item.url) {
+			return;
+		}
+		const bounds = getPreviewBounds();
+		if (!bounds) {
+			return;
+		}
+		void window.desktopAgent
+			?.showWebPreview?.({
+				bounds,
+				id: item.id,
+				...(isNativePreviewOccludedRef.current ? { occluded: true } : {}),
+				url: item.url,
+			})
+			.then(applyTrustedPreviewState)
+			.catch((error: unknown) => {
+				setErrorMessage(error instanceof Error ? error.message : String(error));
+			});
+	}, [applyTrustedPreviewState, getPreviewBounds, isVisible, item.id, item.url]);
+
+	const updatePreviewBounds = useCallback(() => {
+		if (!hasPreviewUrl) {
+			return;
+		}
+		const bounds = getPreviewBounds();
+		if (!bounds) {
+			return;
+		}
+		const isOccluded = isNativePreviewOccludedRef.current;
+		if (!isOccluded) {
+			setOcclusionSnapshotDataUrl(undefined);
+		}
+		const requestedItemId = item.id;
+		void window.desktopAgent
+			?.updateWebPreviewBounds?.({
+				bounds,
+				id: requestedItemId,
+				occluded: isOccluded,
+			})
+			.then((snapshot) => {
+				if (itemIdRef.current !== requestedItemId || !isNativePreviewOccludedRef.current) {
+					setOcclusionSnapshotDataUrl(undefined);
+					return;
+				}
+				if (snapshot?.dataUrl) {
+					setOcclusionSnapshotDataUrl(snapshot.dataUrl);
+				}
+			})
+			.catch(() => undefined);
+	}, [getPreviewBounds, hasPreviewUrl, item.id]);
+
+	useLayoutEffect(() => {
+		isNativePreviewOccludedRef.current = isNativePreviewOccluded;
+		if (!hasPreviewUrl || !isVisible) {
+			return;
+		}
+		updatePreviewBounds();
+	}, [hasPreviewUrl, isNativePreviewOccluded, isVisible, updatePreviewBounds]);
+
+	useLayoutEffect(() => {
+		if (!hasPreviewUrl || !isVisible) {
+			return undefined;
+		}
+		return window.desktopAgent?.subscribeToWebPreviewEvents?.((event) => {
+			if (event.type === "web_preview_element_selected") {
+				if (event.id !== item.id) {
+					return;
+				}
+				setIsSelectMode(false);
+				appendConsoleLog("log", formatWebPreviewElementSelection(event.selection));
+				return;
+			}
+			if (event.type !== "web_preview_state" || event.state.id !== item.id) {
+				return;
+			}
+			if (isStalePreviewState(event.state)) {
+				return;
+			}
+			applyTrustedPreviewState(event.state);
+			if (event.state.isSelectingElement !== undefined) {
+				setIsSelectMode(event.state.isSelectingElement);
+			}
+			if (event.state.errorMessage) {
+				setErrorMessage(event.state.errorMessage);
+				appendConsoleLog("error", event.state.errorMessage);
+			} else {
+				setErrorMessage(undefined);
+			}
+			if (!isAddressDirtyRef.current && event.state.url && event.state.url !== item.url) {
+				onUpdateUrl(item.id, event.state.url);
+			}
+		});
+	}, [
+		appendConsoleLog,
+		applyTrustedPreviewState,
+		hasPreviewUrl,
+		isStalePreviewState,
+		isVisible,
+		item.id,
+		item.url,
+		onUpdateUrl,
+	]);
+
+	useLayoutEffect(() => {
+		if (!hasPreviewUrl || !isVisible) {
+			return undefined;
+		}
+		updatePreviewBounds();
+		const viewport = previewViewportRef.current;
+		const resizeObserver =
+			viewport && typeof ResizeObserver !== "undefined"
+				? new ResizeObserver(() => updatePreviewBounds())
+				: undefined;
+		if (viewport) {
+			resizeObserver?.observe(viewport);
+		}
+		window.addEventListener("resize", updatePreviewBounds);
+		window.addEventListener("scroll", updatePreviewBounds, true);
+		const animationFrame = window.requestAnimationFrame(updatePreviewBounds);
+		const settlingTimers = [window.setTimeout(updatePreviewBounds, 120), window.setTimeout(updatePreviewBounds, 260)];
+		return () => {
+			window.cancelAnimationFrame(animationFrame);
+			for (const timer of settlingTimers) {
+				window.clearTimeout(timer);
+			}
+			window.removeEventListener("resize", updatePreviewBounds);
+			window.removeEventListener("scroll", updatePreviewBounds, true);
+			resizeObserver?.disconnect();
+			void window.desktopAgent?.closeWebPreview?.({ id: item.id }).catch(() => undefined);
+		};
+	}, [hasPreviewUrl, isVisible, item.id, updatePreviewBounds]);
+
+	useLayoutEffect(() => {
+		showPreview();
+	}, [showPreview]);
+
+	function navigateToUrl(url: string): void {
+		setPreviewState(undefined);
+		setErrorMessage(undefined);
+		supersededUrlRef.current = item.url && !isRelatedWebPreviewUrl(item.url, url) ? item.url : undefined;
+		pendingSubmittedUrlRef.current = url;
+		onUpdateUrl(item.id, url);
+		isAddressDirtyRef.current = false;
+		setInputValue(url);
+		appendConsoleLog("log", `已打开 ${url}`);
 	}
 
+	function handleSubmit(): void {
+		const nextUrl = normalizeDesktopWebPreviewUrl(inputValue);
+		if (!nextUrl) {
+			setErrorMessage(WEB_PREVIEW_ERROR_MESSAGE);
+			appendConsoleLog("error", WEB_PREVIEW_ERROR_MESSAGE);
+			return;
+		}
+		navigateToUrl(nextUrl);
+	}
+
+	function handleGoBack(): void {
+		if (!canGoBack) {
+			return;
+		}
+		pendingSubmittedUrlRef.current = undefined;
+		supersededUrlRef.current = undefined;
+		void window.desktopAgent
+			?.controlWebPreview?.({
+				action: "back",
+				id: item.id,
+			})
+			.then(applyPreviewState)
+			.catch((error: unknown) => {
+				appendConsoleLog("error", error instanceof Error ? error.message : String(error));
+			});
+	}
+
+	function handleGoForward(): void {
+		if (!canGoForward) {
+			return;
+		}
+		pendingSubmittedUrlRef.current = undefined;
+		supersededUrlRef.current = undefined;
+		void window.desktopAgent
+			?.controlWebPreview?.({
+				action: "forward",
+				id: item.id,
+			})
+			.then(applyPreviewState)
+			.catch((error: unknown) => {
+				appendConsoleLog("error", error instanceof Error ? error.message : String(error));
+			});
+	}
+
+	function handleReload(): void {
+		if (!item.url || inputValue.trim() !== item.url) {
+			handleSubmit();
+			return;
+		}
+		pendingSubmittedUrlRef.current = item.url;
+		supersededUrlRef.current = undefined;
+		void window.desktopAgent
+			?.controlWebPreview?.({
+				action: "reload",
+				id: item.id,
+			})
+			.then(applyPreviewState)
+			.catch((error: unknown) => {
+				appendConsoleLog("error", error instanceof Error ? error.message : String(error));
+			});
+		appendConsoleLog("log", `已刷新 ${item.url}`);
+	}
+
+	function handleToggleSelect(): void {
+		if (!item.url) {
+			appendConsoleLog("warn", "请先打开网页。");
+			return;
+		}
+		const nextIsSelectMode = !isSelectMode;
+		setIsSelectMode(nextIsSelectMode);
+		appendConsoleLog("log", nextIsSelectMode ? "选择模式已开启" : "选择模式已关闭");
+		void window.desktopAgent
+			?.setWebPreviewElementSelectionMode?.({
+				enabled: nextIsSelectMode,
+				id: item.id,
+			})
+			.then((state) => {
+				applyPreviewState(state);
+				setIsSelectMode(Boolean(state.isSelectingElement));
+			})
+			.catch((error: unknown) => {
+				setIsSelectMode(false);
+				appendConsoleLog("error", error instanceof Error ? error.message : String(error));
+			});
+	}
+
+	function handleOpenInNewTab(): void {
+		if (!item.url || !canOpenExternalUrl) {
+			return;
+		}
+		appendConsoleLog("log", `在浏览器打开 ${item.url}`);
+		void window.desktopAgent?.openExternalUrl?.(item.url).catch((error: unknown) => {
+			appendConsoleLog("error", error instanceof Error ? error.message : String(error));
+		});
+	}
+
+	function handleToggleFullscreen(): void {
+		onFullscreenChange(!isFullscreen);
+		appendConsoleLog("log", isFullscreen ? "退出全屏预览" : "进入全屏预览");
+	}
+
+	function handleClearStorage(storage: "cache" | "cookies"): void {
+		if (!item.url) {
+			appendConsoleLog("warn", "请先打开网页。");
+			return;
+		}
+		setActionsOpen(false);
+		onNativeWebPreviewOcclusionChange("browser-actions", false);
+		void window.desktopAgent
+			?.clearWebPreviewStorage?.({
+				id: item.id,
+				storage,
+			})
+			.then((state) => {
+				applyTrustedPreviewState(state);
+				appendConsoleLog("log", storage === "cache" ? "已清除网页预览缓存" : "已清除网页预览 Cookie");
+			})
+			.catch((error: unknown) => {
+				appendConsoleLog("error", error instanceof Error ? error.message : String(error));
+			});
+	}
+
+	function handleActionsOpenChange(nextOpen: boolean): void {
+		setActionsOpen(nextOpen);
+		onNativeWebPreviewOcclusionChange("browser-actions", nextOpen);
+	}
+
+	useEffect(() => {
+		return () => onNativeWebPreviewOcclusionChange("browser-actions", false);
+	}, [onNativeWebPreviewOcclusionChange]);
+
 	return (
-		<section className="flex h-full min-h-0 min-w-0 flex-col" data-slot="workspace-preview-pane">
-			<div className="flex h-11 shrink-0 items-center gap-2 border-b border-border/70 px-3">
+		<WebPreview className="h-full" data-slot="workspace-preview-pane" defaultUrl={item.url}>
+			<WebPreviewNavigation>
+				<WebPreviewNavigationButton disabled={!canGoBack} onClick={handleGoBack} tooltip="后退">
+					<ArrowLeft className="size-3.5" />
+				</WebPreviewNavigationButton>
+				<WebPreviewNavigationButton disabled={!canGoForward} onClick={handleGoForward} tooltip="前进">
+					<ArrowRight className="size-3.5" />
+				</WebPreviewNavigationButton>
+				<WebPreviewNavigationButton onClick={handleReload} tooltip="刷新网页预览">
+					<RefreshCcw className="size-3.5" />
+				</WebPreviewNavigationButton>
 				<label className="sr-only" htmlFor={`${item.id}-url`}>
-					Browser URL
+					Preview URL
 				</label>
-				<Input
-					className="h-8 min-w-0 flex-1 text-sm"
+				<WebPreviewUrl
+					aria-invalid={errorMessage ? true : undefined}
 					id={`${item.id}-url`}
-					onChange={(event) => setInputValue(event.target.value)}
+					onChange={(event) => {
+						const nextValue = event.target.value;
+						isAddressDirtyRef.current = nextValue.trim() !== item.url;
+						setInputValue(nextValue);
+					}}
 					onKeyDown={(event) => {
 						if (event.key === "Enter") {
 							event.preventDefault();
 							handleSubmit();
 						}
 					}}
-					placeholder="https://example.com"
+					placeholder="https://google.com 或 http://localhost:3000"
 					value={inputValue}
 				/>
-				<Button aria-label="刷新浏览器" onClick={handleSubmit} size="sm" type="button" variant="secondary">
-					<RefreshCcw className="size-3.5" />
-					刷新
-				</Button>
-			</div>
-			<div
-				className="relative min-h-0 min-w-0 flex-1 overflow-hidden bg-background"
-				data-slot="workspace-preview-viewport"
-			>
-				{item.url ? (
-					<iframe
-						className="absolute inset-0 block h-full w-full border-0 bg-white"
-						data-slot="workspace-preview-frame"
-						sandbox="allow-scripts allow-forms allow-modals allow-popups"
-						src={item.url}
-						title="Browser preview"
-					/>
-				) : (
-					<div className="grid h-full place-items-center px-8 py-12 text-center">
-						<p className="max-w-xs text-sm leading-5 text-muted-foreground">
-							输入 URL 后在综合面板内打开受限网页预览。
+				<WebPreviewNavigationButton
+					aria-pressed={isSelectMode}
+					className={isSelectMode ? "bg-[color:var(--surface-2)] text-[color:var(--text-primary)]" : undefined}
+					onClick={handleToggleSelect}
+					tooltip="选择页面元素"
+				>
+					<MousePointerClick className="size-3.5" />
+				</WebPreviewNavigationButton>
+				<WebPreviewNavigationButton
+					disabled={!canOpenExternalUrl}
+					onClick={handleOpenInNewTab}
+					tooltip="在浏览器打开"
+				>
+					<ExternalLink className="size-3.5" />
+				</WebPreviewNavigationButton>
+				<Popover onOpenChange={handleActionsOpenChange} open={actionsOpen}>
+					<TooltipProvider>
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<PopoverTrigger asChild>
+									<Button
+										aria-label="更多网页预览操作"
+										className="desktop-window-no-drag"
+										disabled={!item.url}
+										size="icon-xs"
+										type="button"
+										variant="ghost"
+									>
+										<MoreHorizontal className="size-3.5" />
+									</Button>
+								</PopoverTrigger>
+							</TooltipTrigger>
+							<TooltipContent>更多网页预览操作</TooltipContent>
+						</Tooltip>
+					</TooltipProvider>
+					<PopoverContent align="end" className="w-48 p-2">
+						<div className="grid gap-1">
+							<button
+								className="flex h-9 items-center gap-3 rounded-[var(--radius-md)] px-2.5 text-left text-sm text-[color:var(--text-primary)] transition-[background-color,color] duration-[var(--duration-fast)] hover:bg-[color:var(--surface-2)] focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-[color:var(--focus-ring)]"
+								onClick={() => handleClearStorage("cookies")}
+								type="button"
+							>
+								<Cookie className="size-4 text-[color:var(--text-tertiary)]" />
+								<span>清除 Cookie</span>
+							</button>
+							<button
+								className="flex h-9 items-center gap-3 rounded-[var(--radius-md)] px-2.5 text-left text-sm text-[color:var(--text-primary)] transition-[background-color,color] duration-[var(--duration-fast)] hover:bg-[color:var(--surface-2)] focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-[color:var(--focus-ring)]"
+								onClick={() => handleClearStorage("cache")}
+								type="button"
+							>
+								<HardDrive className="size-4 text-[color:var(--text-tertiary)]" />
+								<span>清除缓存</span>
+							</button>
+						</div>
+					</PopoverContent>
+				</Popover>
+				<WebPreviewNavigationButton
+					aria-pressed={isFullscreen}
+					onClick={handleToggleFullscreen}
+					tooltip={isFullscreen ? "退出全屏网页预览" : "全屏网页预览"}
+				>
+					{isFullscreen ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
+				</WebPreviewNavigationButton>
+			</WebPreviewNavigation>
+			{errorMessage ? <p className="px-3 py-2 text-xs text-[color:var(--destructive)]">{errorMessage}</p> : null}
+			{item.url ? (
+				<div
+					className="relative min-h-0 min-w-0 flex-1 overflow-hidden bg-white"
+					data-slot="workspace-preview-viewport"
+					ref={previewViewportRef}
+				>
+					{isNativePreviewOccluded && occlusionSnapshotDataUrl ? (
+						<img
+							alt=""
+							aria-hidden
+							className="pointer-events-none absolute inset-0 z-[1] size-full object-fill"
+							data-slot="workspace-preview-snapshot"
+							src={occlusionSnapshotDataUrl}
+						/>
+					) : null}
+					<div className="pointer-events-none absolute inset-0 grid place-items-center px-8 py-12 text-center">
+						<p className="max-w-xs text-sm leading-5 text-[color:var(--text-tertiary)]">
+							{previewState?.isLoading ? "正在加载网页..." : previewState?.title || "网页预览"}
 						</p>
 					</div>
-				)}
-			</div>
-		</section>
+				</div>
+			) : (
+				<div className="grid min-h-0 min-w-0 flex-1 place-items-center px-8 py-12 text-center">
+					<p className="max-w-xs text-sm leading-5 text-[color:var(--text-tertiary)]">
+						输入网页 URL 后在综合面板内打开。
+					</p>
+				</div>
+			)}
+			<WebPreviewConsole logs={consoleLogs} />
+		</WebPreview>
 	);
 }
 
@@ -1264,10 +1775,10 @@ function ReviewPanelBody({
 		return (
 			<div className="relative flex h-full min-h-0 overflow-hidden">
 				<div className="min-w-0 flex-1 space-y-3 p-4">
-					<div className="h-8 w-2/3 rounded-md bg-muted" />
-					<div className="h-9 rounded-md bg-muted/70" />
-					<div className="h-32 rounded-md bg-muted/50" />
-					<div className="h-48 rounded-md bg-muted/50" />
+					<div className="h-8 w-2/3 rounded-[var(--radius-md)] bg-[color:var(--surface-2)]" />
+					<div className="h-9 rounded-[var(--radius-md)] bg-[color:var(--surface-2)]" />
+					<div className="h-32 rounded-[var(--radius-md)] bg-[color:var(--surface-1)]" />
+					<div className="h-48 rounded-[var(--radius-md)] bg-[color:var(--surface-1)]" />
 				</div>
 				<motion.div
 					aria-hidden="true"
@@ -1278,14 +1789,14 @@ function ReviewPanelBody({
 				>
 					<motion.div
 						aria-hidden={fileTreePanelHidden}
-						className="absolute inset-y-0 right-0 min-h-0 overflow-hidden border-l border-border/70 p-4"
+						className="absolute inset-y-0 right-0 min-h-0 overflow-hidden p-4 shadow-[inset_1px_0_0_var(--border-subtle)]"
 						inert={fileTreePanelHidden}
 						style={{ width: fileTreeWidth }}
 					>
 						<div className="space-y-3">
-							<div className="h-9 rounded-md bg-muted" />
-							<div className="h-7 rounded-md bg-muted/70" />
-							<div className="h-7 rounded-md bg-muted/70" />
+							<div className="h-9 rounded-[var(--radius-md)] bg-[color:var(--surface-2)]" />
+							<div className="h-7 rounded-[var(--radius-md)] bg-[color:var(--surface-1)]" />
+							<div className="h-7 rounded-[var(--radius-md)] bg-[color:var(--surface-1)]" />
 						</div>
 					</motion.div>
 				</motion.div>
@@ -1308,15 +1819,20 @@ function ReviewPanelBody({
 			data-slot="review-workspace-body"
 		>
 			<section className="flex min-h-0 min-w-0 flex-1 flex-col">
-				<div className="flex h-11 shrink-0 items-center gap-2 border-b border-border/70 px-3">
+				<div className="flex h-11 shrink-0 items-center gap-2 bg-[color:var(--surface-1)] px-3">
 					<div className="flex min-w-0 flex-1 items-center text-[13px]" data-slot="review-selected-file-header">
-						<span className="min-w-0 flex-1 truncate font-medium text-foreground" title={selectedFile?.path}>
+						<span
+							className="min-w-0 flex-1 truncate font-medium text-[color:var(--text-primary)]"
+							title={selectedFile?.path}
+						>
 							{selectedFile ? formatPath(selectedFile.path) : "选择文件"}
 						</span>
 						{selectedFile ? (
-							<span className="ml-2 shrink-0 text-emerald-600">+{selectedFile.additions}</span>
+							<span className="ml-2 shrink-0 text-[color:var(--success)]">+{selectedFile.additions}</span>
 						) : null}
-						{selectedFile ? <span className="ml-1 shrink-0 text-red-500">-{selectedFile.deletions}</span> : null}
+						{selectedFile ? (
+							<span className="ml-1 shrink-0 text-[color:var(--destructive)]">-{selectedFile.deletions}</span>
+						) : null}
 					</div>
 					<Tooltip>
 						<TooltipTrigger asChild>
@@ -1334,9 +1850,9 @@ function ReviewPanelBody({
 					</Tooltip>
 				</div>
 				{snapshot.files.length > 1 ? (
-					<div className="hidden shrink-0 border-b border-border/70 p-2 max-lg:block">
+					<div className="hidden shrink-0 bg-[color:var(--surface-1)] p-2 max-lg:block">
 						<select
-							className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm text-foreground outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+							className="h-9 w-full rounded-[var(--radius-md)] border border-transparent bg-[color:var(--surface-2)] px-3 text-sm text-[color:var(--text-primary)] outline-none transition-[background-color,box-shadow] focus-visible:shadow-[var(--control-focus-shadow)]"
 							onChange={(event) => {
 								const nextFile = snapshot.files.find((file) => file.path === event.target.value);
 								if (nextFile) {
@@ -1406,15 +1922,15 @@ function ReviewPanelBody({
 						transition={fileTreeTransition}
 					/>
 					<aside
-						className="flex min-h-0 flex-col border-l border-border/70 bg-background/95"
+						className="flex min-h-0 flex-col bg-[color:var(--surface-1)] shadow-[inset_1px_0_0_var(--border-subtle)]"
 						data-slot="review-file-tree-content"
 						style={{ width: fileTreeWidth }}
 					>
-						<div className="border-b border-border/70 px-2 py-2">
+						<div className="px-2 py-2">
 							<div className="relative">
-								<Search className="-translate-y-1/2 absolute top-1/2 left-2.5 size-4 text-muted-foreground" />
+								<Search className="-translate-y-1/2 absolute top-1/2 left-2.5 size-4 text-[color:var(--text-tertiary)]" />
 								<Input
-									className="h-9 rounded-xl pl-8 text-sm"
+									className="h-9 rounded-[var(--radius-lg)] border-transparent bg-[color:var(--surface-2)] pl-8 text-sm shadow-none"
 									onChange={(event) => setQuery(event.target.value)}
 									placeholder="筛选文件..."
 									value={query}
@@ -1444,6 +1960,7 @@ export function ReviewWorkspacePanel({
 	isFullscreen,
 	isTitlebarSummaryVisible = false,
 	previewRequest,
+	webPreviewRequest,
 	projectId,
 	sessionId,
 	subagentRequest,
@@ -1468,12 +1985,15 @@ export function ReviewWorkspacePanel({
 	const [hasHydratedReviewBody, setHasHydratedReviewBody] = useState(false);
 	const [workspaceItems, setWorkspaceItems] = useState<WorkspacePanelItem[]>([]);
 	const [activeWorkspaceItemId, setActiveWorkspaceItemId] = useState<string>("review");
+	const [isNativeWebPreviewOccluded, setIsNativeWebPreviewOccluded] = useState(false);
 	const closeButtonRef = useRef<HTMLButtonElement | null>(null);
 	const reviewSpacerRef = useRef<HTMLDivElement | null>(null);
 	const reviewResizeDragCleanupRef = useRef<(() => void) | undefined>(undefined);
 	const containerResizeFrameRef = useRef<number | undefined>(undefined);
 	const handledPreviewRequestNonceRef = useRef<number | undefined>(undefined);
+	const handledWebPreviewRequestNonceRef = useRef<number | undefined>(undefined);
 	const handledSubagentRequestNonceRef = useRef<number | undefined>(undefined);
+	const nativeWebPreviewOcclusionSourcesRef = useRef<Set<NativeWebPreviewOcclusionSource>>(new Set());
 	const requestedPatchPathsRef = useRef<Set<string>>(new Set());
 	const workspaceContextKeyRef = useRef<string | undefined>(undefined);
 	const [loadingPatchPath, setLoadingPatchPath] = useState<string | undefined>();
@@ -1500,6 +2020,19 @@ export function ReviewWorkspacePanel({
 	const reviewPanelLayoutDriver = isFullscreenOpen ? "overlay" : "width";
 	const reviewPanelRootWidth = isFullscreenOpen ? "100%" : open ? resolvedReviewPanelWidth : 0;
 	const FullscreenIcon = isFullscreen ? Minimize2 : Maximize2;
+
+	const setNativeWebPreviewOcclusion = useCallback(
+		(source: NativeWebPreviewOcclusionSource, occluded: boolean): void => {
+			const sources = nativeWebPreviewOcclusionSourcesRef.current;
+			if (occluded) {
+				sources.add(source);
+			} else {
+				sources.delete(source);
+			}
+			setIsNativeWebPreviewOccluded(sources.size > 0);
+		},
+		[],
+	);
 
 	const markFollowingContainerResize = useCallback((): void => {
 		setIsFollowingContainerResize(true);
@@ -1532,13 +2065,7 @@ export function ReviewWorkspacePanel({
 		if (files.length === 0) {
 			return;
 		}
-		const nextItems = files.map(
-			(file): WorkspacePanelItem => ({
-				id: `file:${file.path}`,
-				type: "file",
-				file,
-			}),
-		);
+		const nextItems = files.map(createWorkspacePreviewItem);
 		const nextActiveItemId = nextItems.at(-1)?.id ?? "review";
 		setWorkspaceItems((currentItems) => {
 			const nextItemsById = new Map(currentItems.map((item) => [item.id, item]));
@@ -1548,6 +2075,25 @@ export function ReviewWorkspacePanel({
 			return retainRecentWorkspacePreviewFiles(Array.from(nextItemsById.values()), nextActiveItemId);
 		});
 		setActiveWorkspaceItemId(nextActiveItemId);
+	}, []);
+
+	const upsertWebPreviewUrl = useCallback((url: string): void => {
+		const previewUrl = normalizeDesktopWebPreviewUrl(url);
+		if (!previewUrl) {
+			return;
+		}
+		const item: WorkspacePanelItem = {
+			id: `browser:${previewUrl}`,
+			type: "browser",
+			title: getWebPreviewTitle(previewUrl),
+			url: previewUrl,
+		};
+		setWorkspaceItems((currentItems) => {
+			const nextItemsById = new Map(currentItems.map((currentItem) => [currentItem.id, currentItem]));
+			nextItemsById.set(item.id, item);
+			return Array.from(nextItemsById.values());
+		});
+		setActiveWorkspaceItemId(item.id);
 	}, []);
 
 	useEffect(() => {
@@ -1604,6 +2150,7 @@ export function ReviewWorkspacePanel({
 		setWorkspaceItems([]);
 		setActiveWorkspaceItemId("review");
 		handledPreviewRequestNonceRef.current = undefined;
+		handledWebPreviewRequestNonceRef.current = undefined;
 		handledSubagentRequestNonceRef.current = undefined;
 		requestedPatchPathsRef.current = new Set();
 		setLoadingPatchPath(undefined);
@@ -1732,6 +2279,14 @@ export function ReviewWorkspacePanel({
 	}, [open, previewRequest, projectId, sessionId, upsertWorkspacePreviewFiles]);
 
 	useEffect(() => {
+		if (!open || !webPreviewRequest || handledWebPreviewRequestNonceRef.current === webPreviewRequest.nonce) {
+			return;
+		}
+		handledWebPreviewRequestNonceRef.current = webPreviewRequest.nonce;
+		upsertWebPreviewUrl(webPreviewRequest.url);
+	}, [open, upsertWebPreviewUrl, webPreviewRequest]);
+
+	useEffect(() => {
 		if (!open) {
 			return undefined;
 		}
@@ -1740,13 +2295,17 @@ export function ReviewWorkspacePanel({
 			if (event.type !== "agent_end" || (sessionId && event.sessionId !== sessionId)) {
 				return;
 			}
-			const fileItems = workspaceItems.filter((item) => item.type === "file");
+			const fileItems = workspaceItems.filter(isWorkspacePreviewFileItem);
 			if (fileItems.length === 0) {
 				return;
 			}
 			void Promise.all(
 				fileItems.map(async (item) => {
-					await handleRefreshWorkspaceFile(item.id, item.file.path);
+					if (item.type === "file") {
+						await handleRefreshWorkspaceFile(item.id, item.file.path);
+						return;
+					}
+					await window.desktopAgent.controlWebPreview({ action: "reload", id: item.id });
 				}),
 			);
 		});
@@ -1887,7 +2446,7 @@ export function ReviewWorkspacePanel({
 		const item: WorkspacePanelItem = {
 			id,
 			type: "browser",
-			title: "浏览器",
+			title: "网页预览",
 			url: "",
 		};
 		setWorkspaceItems((currentItems) => [...currentItems, item]);
@@ -1900,6 +2459,7 @@ export function ReviewWorkspacePanel({
 				item.id === itemId && item.type === "browser"
 					? {
 							...item,
+							title: item.sourceFile && isDesktopStaticWebPreviewUrl(url) ? item.title : getWebPreviewTitle(url),
 							url,
 						}
 					: item,
@@ -1949,7 +2509,7 @@ export function ReviewWorkspacePanel({
 				<aside
 					aria-hidden={!open}
 					aria-label="Review workspace"
-					className="absolute inset-y-0 right-0 z-10 flex flex-col overflow-hidden border-l border-t border-border/80 bg-background shadow-[0_18px_70px_-48px_rgba(15,23,42,0.75)]"
+					className="absolute inset-y-0 right-0 z-10 flex flex-col overflow-hidden border-l border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] shadow-[var(--shadow-modal)]"
 					data-motion="structural-drawer"
 					data-motion-engine="motion"
 					data-motion-mode="drawer"
@@ -1987,7 +2547,7 @@ export function ReviewWorkspacePanel({
 					<div className="flex h-full min-w-0 flex-col">
 						<header
 							className={cn(
-								"flex h-12 shrink-0 items-center justify-between border-b border-border/70 px-3",
+								"flex h-12 shrink-0 items-center justify-between bg-[color:var(--surface-1)] px-3",
 								!isTitlebarSummaryVisible && "desktop-window-drag-region",
 								showHeaderTitleBlock ? "" : "justify-end",
 							)}
@@ -2001,7 +2561,7 @@ export function ReviewWorkspacePanel({
 							>
 								<Button
 									aria-label="Collapse review workspace"
-									className="desktop-window-no-drag size-8 rounded-lg bg-muted text-foreground hover:bg-muted/80"
+									className="desktop-window-no-drag size-8 rounded-[var(--radius-md)] bg-[color:var(--surface-2)] text-[color:var(--text-primary)] hover:bg-[color:var(--surface-3)]"
 									data-slot="review-workspace-icon"
 									onClick={onClose}
 									size="icon-sm"
@@ -2015,11 +2575,13 @@ export function ReviewWorkspacePanel({
 									data-slot="review-workspace-title-text-region"
 								>
 									<div className="flex min-w-0 items-center gap-2">
-										<p className="truncate text-[13px] font-medium text-foreground">综合面板</p>
-										<span className="text-emerald-600 text-xs">+{reviewAdditions}</span>
-										<span className="text-red-500 text-xs">-{reviewDeletions}</span>
+										<p className="truncate text-[13px] font-medium text-[color:var(--text-primary)]">
+											综合面板
+										</p>
+										<span className="text-xs text-[color:var(--success)]">+{reviewAdditions}</span>
+										<span className="text-xs text-[color:var(--destructive)]">-{reviewDeletions}</span>
 									</div>
-									<p className="truncate text-xs text-muted-foreground">
+									<p className="truncate text-xs text-[color:var(--text-tertiary)]">
 										{isFullscreenOpen
 											? `${reviewBranchLabel} / ${workspaceLabel}`
 											: snapshot?.branch
@@ -2038,7 +2600,12 @@ export function ReviewWorkspacePanel({
 										<Button
 											aria-label={fileTreeOpen ? "Hide changed files panel" : "Show changed files panel"}
 											aria-pressed={fileTreeOpen}
-											className={fileTreeOpen ? "bg-muted" : undefined}
+											className={cn(
+												"desktop-window-no-drag",
+												fileTreeOpen
+													? "bg-[color:var(--surface-2)] text-[color:var(--text-primary)]"
+													: undefined,
+											)}
 											onClick={() => setFileTreeOpen((current) => !current)}
 											size="icon-sm"
 											variant="ghost"
@@ -2048,11 +2615,16 @@ export function ReviewWorkspacePanel({
 									</TooltipTrigger>
 									<TooltipContent>{fileTreeOpen ? "收起文件结构" : "显示文件结构"}</TooltipContent>
 								</Tooltip>
-								<WorkspaceCreateMenu onOpenBrowser={handleOpenBrowser} onOpenFiles={handleOpenPreviewFiles} />
+								<WorkspaceCreateMenu
+									onNativeWebPreviewOcclusionChange={setNativeWebPreviewOcclusion}
+									onOpenBrowser={handleOpenBrowser}
+									onOpenFiles={handleOpenPreviewFiles}
+								/>
 								<Tooltip>
 									<TooltipTrigger asChild>
 										<Button
 											aria-label="Current branch"
+											className="desktop-window-no-drag"
 											size={isFullscreen ? "icon-sm" : "sm"}
 											variant="ghost"
 										>
@@ -2064,7 +2636,10 @@ export function ReviewWorkspacePanel({
 									</TooltipTrigger>
 									<TooltipContent>当前分支: {reviewBranchLabel}</TooltipContent>
 								</Tooltip>
-								<GitActionMenu reason={snapshot?.actions.reason ?? "只读审查模式暂不执行 Git 写操作。"} />
+								<GitActionMenu
+									onNativeWebPreviewOcclusionChange={setNativeWebPreviewOcclusion}
+									reason={snapshot?.actions.reason ?? "只读审查模式暂不执行 Git 写操作。"}
+								/>
 								<Tooltip>
 									<TooltipTrigger asChild>
 										<Button
@@ -2074,6 +2649,7 @@ export function ReviewWorkspacePanel({
 													: "Enter review workspace fullscreen"
 											}
 											aria-pressed={isFullscreen}
+											className="desktop-window-no-drag"
 											onClick={() => onFullscreenChange(!isFullscreen)}
 											size="icon-sm"
 											type="button"
@@ -2114,7 +2690,15 @@ export function ReviewWorkspacePanel({
 									}
 								/>
 							) : activeWorkspaceItem.type === "browser" ? (
-								<BrowserPreviewPane item={activeWorkspaceItem} onUpdateUrl={handleBrowserUrlUpdate} />
+								<BrowserPreviewPane
+									isFullscreen={isFullscreen}
+									isNativePreviewOccluded={isNativeWebPreviewOccluded}
+									isVisible={open}
+									item={activeWorkspaceItem}
+									onFullscreenChange={onFullscreenChange}
+									onNativeWebPreviewOcclusionChange={setNativeWebPreviewOcclusion}
+									onUpdateUrl={handleBrowserUrlUpdate}
+								/>
 							) : activeWorkspaceItem.type === "subagent" ? (
 								<SubagentDetailPane
 									key={activeWorkspaceItem.request.nonce}

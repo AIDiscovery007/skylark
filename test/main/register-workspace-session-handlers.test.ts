@@ -74,6 +74,7 @@ function getHandler(channel: string): IpcHandler {
 function registerHandlers(
 	overrides: {
 		host?: Partial<DesktopRuntimeHost>;
+		previewUrlService?: { createPreviewUrl(path: string): Promise<string> };
 		ptyManager?: Partial<DesktopPtyManager>;
 		settingsStore?: Partial<DesktopSettingsStore>;
 	} = {},
@@ -88,6 +89,7 @@ function registerHandlers(
 		mcpManager: {} as DesktopMcpManager,
 		approvalBroker: {} as DesktopApprovalBroker,
 		getRuntimeCatalog: async () => ({ defaultTools: [], providers: [] }),
+		previewUrlService: overrides.previewUrlService,
 		stores: {
 			eventStore: {
 				markRunAwaitingReviewForSession: vi.fn(async () => undefined),
@@ -219,6 +221,31 @@ describe("session, project, prompt, and preview IPC handlers", () => {
 		expect(opened.path.endsWith("/README.md")).toBe(true);
 		expect(refreshed.path).toBe(opened.path);
 		expect(resolveReviewWorkspaceCwd).toHaveBeenCalledWith({ path: "README.md", projectId: "project-1" });
+	});
+
+	it("returns html preview urls through workspace preview IPC and refresh", async () => {
+		const workspaceDir = await createTempDirectory("desktop-html-preview-ipc-");
+		await writeFile(join(workspaceDir, "index.html"), "<!doctype html><button>Run</button>");
+		const resolveReviewWorkspaceCwd = vi.fn(async () => workspaceDir);
+		const createPreviewUrl = vi.fn(async (path: string) => `skylark-preview://preview/${path.split("/").pop()}`);
+		registerHandlers({
+			host: { resolveReviewWorkspaceCwd },
+			previewUrlService: { createPreviewUrl },
+		});
+
+		const opened = (await getHandler(IPC_CHANNELS.openWorkspacePreviewFile)(undefined, {
+			projectId: "project-1",
+			path: "index.html",
+		})) as { path: string; previewUrl?: string };
+		const refreshed = (await getHandler(IPC_CHANNELS.refreshPreviewFile)(undefined, { path: opened.path })) as {
+			path: string;
+			previewUrl?: string;
+		};
+
+		expect(opened.previewUrl).toBe("skylark-preview://preview/index.html");
+		expect(refreshed.previewUrl).toBe("skylark-preview://preview/index.html");
+		expect(createPreviewUrl).toHaveBeenCalledTimes(2);
+		expect(createPreviewUrl.mock.calls.map(([path]) => path)).toEqual([opened.path, opened.path]);
 	});
 
 	it("merges persisted settings into workspace overview responses", async () => {

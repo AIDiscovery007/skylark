@@ -20,6 +20,8 @@ import type {
 	DesktopReviewSnapshotRequest,
 	DesktopSubagentRuntimeEvent,
 	DesktopSubagentSnapshot,
+	DesktopWebPreviewEvent,
+	DesktopWebPreviewState,
 	DesktopWorkspacePreviewFileRequest,
 } from "../../src/shared/types.ts";
 import {
@@ -138,8 +140,36 @@ const htmlPreviewFile: DesktopPreviewFile = {
 	size: 48,
 	kind: "html",
 	content: "<!doctype html><html><body>Chart</body></html>",
+	previewUrl: "skylark-preview://session/chart.html",
 	updatedAt: "2026-05-01T00:00:00.000Z",
 };
+const svgPreviewFile: DesktopPreviewFile = {
+	path: "/workspace/project/shape.svg",
+	name: "shape.svg",
+	mimeType: "image/svg+xml",
+	size: 70,
+	kind: "svg",
+	content: '<svg xmlns="http://www.w3.org/2000/svg"><circle r="4" /></svg>',
+	previewUrl: "skylark-preview://session/shape.svg",
+	updatedAt: "2026-05-01T00:00:00.000Z",
+};
+
+function createWebPreviewState(
+	id: string,
+	url: string,
+	title = url,
+	isSelectingElement?: boolean,
+): DesktopWebPreviewState {
+	return {
+		canGoBack: false,
+		canGoForward: false,
+		id,
+		...(isSelectingElement === undefined ? {} : { isSelectingElement }),
+		isLoading: false,
+		title,
+		url,
+	};
+}
 
 type ReviewSnapshotSource =
 	| DesktopReviewSnapshot
@@ -232,6 +262,14 @@ function installBridge(snapshot: ReviewSnapshotSource = changedSnapshot, preview
 	const agentEvents = createRendererBridgeEventChannel<SerializedAgentEvent>();
 	const environmentEvents = createRendererBridgeEventChannel<DesktopEnvironmentEvent>();
 	const subagentEvents = createRendererBridgeEventChannel<DesktopSubagentRuntimeEvent>();
+	const webPreviewEvents = createRendererBridgeEventChannel<DesktopWebPreviewEvent>();
+	const webPreviewStatesById = new Map<string, DesktopWebPreviewState>();
+	const getWebPreviewState = (id: string): DesktopWebPreviewState =>
+		webPreviewStatesById.get(id) ?? createWebPreviewState(id, "https://example.com/");
+	const rememberWebPreviewState = (state: DesktopWebPreviewState): DesktopWebPreviewState => {
+		webPreviewStatesById.set(state.id, state);
+		return state;
+	};
 	const resolveSnapshot = async (request: DesktopReviewSnapshotRequest): Promise<DesktopReviewSnapshot> =>
 		typeof snapshot === "function" ? snapshot(request) : snapshot;
 	const stripSnapshotPatches = (sourceSnapshot: DesktopReviewSnapshot): DesktopReviewSnapshot => ({
@@ -252,7 +290,38 @@ function installBridge(snapshot: ReviewSnapshotSource = changedSnapshot, preview
 			return file;
 		}),
 		getSubagentSnapshot: vi.fn(async () => subagentSnapshot),
+		openExternalUrl: vi.fn(async () => undefined),
 		openPreviewFiles: vi.fn(async () => previewFiles),
+		showWebPreview: vi.fn(async (request) => {
+			const currentState = getWebPreviewState(request.id);
+			return rememberWebPreviewState({
+				...createWebPreviewState(request.id, request.url),
+				canGoBack: currentState.canGoBack,
+				canGoForward: currentState.canGoForward,
+			});
+		}),
+		updateWebPreviewBounds: vi.fn(async (request) =>
+			request.occluded ? { dataUrl: "data:image/png;base64,preview" } : undefined,
+		),
+		controlWebPreview: vi.fn(async (request) => {
+			const currentState = getWebPreviewState(request.id);
+			const state = createWebPreviewState(request.id, currentState.url, currentState.title);
+			if (request.action === "back") {
+				state.canGoForward = true;
+			}
+			if (request.action === "forward") {
+				state.canGoBack = true;
+			}
+			return rememberWebPreviewState(state);
+		}),
+		clearWebPreviewStorage: vi.fn(async (request) => getWebPreviewState(request.id)),
+		setWebPreviewElementSelectionMode: vi.fn(async (request) =>
+			rememberWebPreviewState({
+				...getWebPreviewState(request.id),
+				isSelectingElement: request.enabled,
+			}),
+		),
+		closeWebPreview: vi.fn(async () => undefined),
 		openWorkspacePreviewFile: vi.fn(async (request: DesktopWorkspacePreviewFileRequest) => {
 			const previewFile = previewFiles.find(
 				(file) => file.path === request.path || file.path.endsWith(request.path),
@@ -272,17 +341,26 @@ function installBridge(snapshot: ReviewSnapshotSource = changedSnapshot, preview
 		subscribeToAgentEvents: agentEvents.subscribe,
 		subscribeToEnvironmentEvents: environmentEvents.subscribe,
 		subscribeToSubagentEvents: subagentEvents.subscribe,
+		subscribeToWebPreviewEvents: webPreviewEvents.subscribe,
 	} as Pick<
 		DesktopAgentBridge,
+		| "closeWebPreview"
+		| "controlWebPreview"
+		| "clearWebPreviewStorage"
 		| "getSubagentSnapshot"
 		| "getReviewFilePatch"
 		| "getReviewSnapshot"
 		| "openPreviewFiles"
+		| "openExternalUrl"
 		| "openWorkspacePreviewFile"
 		| "refreshPreviewFile"
+		| "setWebPreviewElementSelectionMode"
+		| "showWebPreview"
 		| "subscribeToAgentEvents"
 		| "subscribeToEnvironmentEvents"
 		| "subscribeToSubagentEvents"
+		| "subscribeToWebPreviewEvents"
+		| "updateWebPreviewBounds"
 	>;
 
 	installRendererDesktopAgentBridge(bridge);
@@ -292,6 +370,12 @@ function installBridge(snapshot: ReviewSnapshotSource = changedSnapshot, preview
 		emitAgentEvent: agentEvents.emit,
 		emitEnvironmentEvent: environmentEvents.emit,
 		emitSubagentEvent: subagentEvents.emit,
+		emitWebPreviewEvent: (event: DesktopWebPreviewEvent) => {
+			if (event.type === "web_preview_state") {
+				rememberWebPreviewState(event.state);
+			}
+			webPreviewEvents.emit(event);
+		},
 	};
 }
 
@@ -698,9 +782,9 @@ describe("ReviewWorkspacePanel", () => {
 		await waitFor(() => expect(screen.queryByRole("tab", { name: /notes\.txt/i })).toBeNull());
 	});
 
-	it("previews html files in a sandbox and switches to source", async () => {
+	it("opens local html files through the desktop web preview", async () => {
 		const user = userEvent.setup();
-		installBridge(changedSnapshot, [htmlPreviewFile]);
+		const { bridge } = installBridge(changedSnapshot, [htmlPreviewFile]);
 		render(
 			<TooltipProvider>
 				<div className="relative h-[720px]">
@@ -718,29 +802,214 @@ describe("ReviewWorkspacePanel", () => {
 			</TooltipProvider>,
 		);
 
-		const frame = await screen.findByTitle("HTML preview: chart.html");
-		const viewport = frame.closest('[data-slot="workspace-preview-viewport"]');
-		expect(frame.getAttribute("data-slot")).toBe("workspace-preview-frame");
-		expect(frame.className).toContain("absolute");
-		expect(frame.className).toContain("block");
+		expect(await screen.findByRole("tab", { name: /chart\.html/i })).toBeTruthy();
+		await waitFor(() =>
+			expect(bridge.showWebPreview).toHaveBeenCalledWith({
+				bounds: { height: 0, width: 0, x: 0, y: 0 },
+				id: expect.stringMatching(/^browser:file:/),
+				url: "skylark-preview://session/chart.html",
+			}),
+		);
+		const previewId = vi.mocked(bridge.showWebPreview).mock.calls[0]?.[0].id;
+		expect(previewId).toBeTruthy();
+		const viewport = document.querySelector('[data-slot="workspace-preview-viewport"]');
 		expect(viewport?.className).toContain("relative");
 		expect(viewport?.className).toContain("min-w-0");
-		expect(frame.getAttribute("sandbox")).toContain("allow-scripts");
-		expect(frame.getAttribute("sandbox")).not.toContain("allow-same-origin");
-		expect(frame.getAttribute("srcdoc")).toContain("Chart");
+		expect(screen.queryByTitle("HTML preview: chart.html")).toBeNull();
+		expect(screen.queryByRole("button", { name: "源码" })).toBeNull();
+		expect((screen.getByLabelText("Preview URL") as HTMLInputElement).value).toBe(
+			"skylark-preview://session/chart.html",
+		);
+		expect((screen.getByRole("button", { name: "在浏览器打开" }) as HTMLButtonElement).disabled).toBe(true);
 
-		await user.click(screen.getByRole("button", { name: "源码" }));
-		const sourceCode = document.querySelector('[data-slot="preview-source-code"]');
-		expect(sourceCode?.getAttribute("data-language")).toBe("html");
-		await waitFor(() => {
-			expect(sourceCode?.textContent).toContain("<!doctype html>");
-			expect(sourceCode?.textContent).toContain("Chart");
+		await user.click(screen.getByRole("button", { name: "刷新网页预览" }));
+		expect(bridge.controlWebPreview).toHaveBeenCalledWith({ action: "reload", id: previewId });
+		await user.click(screen.getByRole("button", { name: "选择页面元素" }));
+		expect(bridge.setWebPreviewElementSelectionMode).toHaveBeenCalledWith({
+			enabled: true,
+			id: previewId,
 		});
 	});
 
-	it("opens a restricted browser tab from the workspace panel menu", async () => {
+	it("opens local svg files through the desktop web preview", async () => {
 		const user = userEvent.setup();
-		installBridge();
+		const { bridge } = installBridge(changedSnapshot, [svgPreviewFile]);
+		render(
+			<TooltipProvider>
+				<div className="relative h-[720px]">
+					<ReviewWorkspacePanel
+						isFullscreen={false}
+						onClose={vi.fn()}
+						onFullscreenChange={vi.fn()}
+						open
+						previewRequest={{ nonce: 1, path: "shape.svg" }}
+						projectId="project-1"
+						sessionId="session-1"
+						workspaceLabel="/workspace/project"
+					/>
+				</div>
+			</TooltipProvider>,
+		);
+
+		expect(await screen.findByRole("tab", { name: /shape\.svg/i })).toBeTruthy();
+		await waitFor(() =>
+			expect(bridge.showWebPreview).toHaveBeenCalledWith({
+				bounds: { height: 0, width: 0, x: 0, y: 0 },
+				id: expect.stringMatching(/^browser:file:/),
+				url: "skylark-preview://session/shape.svg",
+			}),
+		);
+		const previewId = vi.mocked(bridge.showWebPreview).mock.calls[0]?.[0].id;
+		expect(previewId).toBeTruthy();
+		expect(screen.queryByTitle("SVG preview: shape.svg")).toBeNull();
+		expect(screen.queryByRole("button", { name: "源码" })).toBeNull();
+		expect((screen.getByLabelText("Preview URL") as HTMLInputElement).value).toBe(
+			"skylark-preview://session/shape.svg",
+		);
+
+		await user.click(screen.getByRole("button", { name: "刷新网页预览" }));
+		expect(bridge.controlWebPreview).toHaveBeenCalledWith({ action: "reload", id: previewId });
+	});
+
+	it("opens a loopback browser tab from the workspace panel menu", async () => {
+		const user = userEvent.setup();
+		const onFullscreenChange = vi.fn();
+		const { bridge, emitWebPreviewEvent } = installBridge();
+		render(
+			<TooltipProvider>
+				<div className="relative h-[720px]">
+					<ReviewWorkspacePanel
+						isFullscreen={false}
+						onClose={vi.fn()}
+						onFullscreenChange={onFullscreenChange}
+						open
+						projectId="project-1"
+						sessionId="session-1"
+						workspaceLabel="/workspace/project"
+					/>
+				</div>
+			</TooltipProvider>,
+		);
+
+		await screen.findByText("综合面板");
+		await user.click(await findWorkspaceCreateMenuItem(user, "网页预览"));
+		await user.type(screen.getByLabelText("Preview URL"), "localhost:3000");
+		await user.click(screen.getByRole("button", { name: "刷新网页预览" }));
+
+		expect(screen.queryByTitle("Browser preview")).toBeNull();
+		await waitFor(() =>
+			expect(bridge.showWebPreview).toHaveBeenCalledWith({
+				bounds: { height: 0, width: 0, x: 0, y: 0 },
+				id: expect.stringMatching(/^browser:/),
+				url: "http://localhost:3000/",
+			}),
+		);
+		const previewId = vi.mocked(bridge.showWebPreview).mock.calls[0]?.[0].id;
+		expect(previewId).toBeTruthy();
+
+		expect((screen.getByRole("button", { name: "后退" }) as HTMLButtonElement).disabled).toBe(true);
+		expect((screen.getByRole("button", { name: "前进" }) as HTMLButtonElement).disabled).toBe(true);
+
+		await user.click(screen.getByRole("button", { name: "Console" }));
+		expect(screen.getByText("Console").closest("button")?.getAttribute("aria-expanded")).toBe("true");
+		expect(screen.getByText("已打开 http://localhost:3000/")).toBeTruthy();
+
+		await user.clear(screen.getByLabelText("Preview URL"));
+		await user.type(screen.getByLabelText("Preview URL"), "localhost:3001");
+		await user.click(screen.getByRole("button", { name: "刷新网页预览" }));
+		await waitFor(() => {
+			expect(bridge.showWebPreview).toHaveBeenLastCalledWith({
+				bounds: { height: 0, width: 0, x: 0, y: 0 },
+				id: previewId,
+				url: "http://localhost:3001/",
+			});
+		});
+		emitWebPreviewEvent({
+			state: {
+				canGoBack: true,
+				canGoForward: false,
+				id: previewId!,
+				isLoading: false,
+				title: "Local app",
+				url: "http://localhost:3001/",
+			},
+			type: "web_preview_state",
+		});
+		await waitFor(() => {
+			expect((screen.getByRole("button", { name: "后退" }) as HTMLButtonElement).disabled).toBe(false);
+		});
+
+		await user.click(screen.getByRole("button", { name: "后退" }));
+		expect(bridge.controlWebPreview).toHaveBeenCalledWith({ action: "back", id: previewId });
+		emitWebPreviewEvent({
+			state: {
+				canGoBack: false,
+				canGoForward: true,
+				id: previewId!,
+				isLoading: false,
+				title: "Local app",
+				url: "http://localhost:3000/",
+			},
+			type: "web_preview_state",
+		});
+		await waitFor(() => {
+			expect((screen.getByLabelText("Preview URL") as HTMLInputElement).value).toBe("http://localhost:3000/");
+			expect((screen.getByRole("button", { name: "前进" }) as HTMLButtonElement).disabled).toBe(false);
+		});
+
+		await user.click(screen.getByRole("button", { name: "前进" }));
+		expect(bridge.controlWebPreview).toHaveBeenCalledWith({ action: "forward", id: previewId });
+
+		const selectButton = screen.getByRole("button", { name: "选择页面元素" });
+		await user.click(selectButton);
+		expect(bridge.setWebPreviewElementSelectionMode).toHaveBeenCalledWith({
+			enabled: true,
+			id: previewId,
+		});
+		await waitFor(() => {
+			expect(selectButton.getAttribute("aria-pressed")).toBe("true");
+		});
+
+		await user.click(screen.getByRole("button", { name: "在浏览器打开" }));
+		expect(bridge.openExternalUrl).toHaveBeenCalledWith("http://localhost:3000/");
+
+		await user.click(screen.getByRole("button", { name: "全屏网页预览" }));
+		expect(onFullscreenChange).toHaveBeenCalledWith(true);
+	});
+
+	it("closes the native web preview when the review panel collapses", async () => {
+		const user = userEvent.setup();
+		const { bridge } = installBridge();
+		render(<ReviewPanelHarness />);
+
+		await screen.findByLabelText("Diff viewer");
+		await user.click(await findWorkspaceCreateMenuItem(user, "网页预览"));
+		await user.type(screen.getByLabelText("Preview URL"), "google.com");
+		await user.click(screen.getByRole("button", { name: "刷新网页预览" }));
+
+		await waitFor(() => expect(bridge.showWebPreview).toHaveBeenCalled());
+		const previewId = vi.mocked(bridge.showWebPreview).mock.calls[0]?.[0].id;
+		expect(previewId).toBeTruthy();
+		expect(bridge.closeWebPreview).not.toHaveBeenCalledWith({ id: previewId });
+
+		await user.click(screen.getByRole("button", { name: "Collapse review workspace" }));
+
+		await waitFor(() => expect(bridge.closeWebPreview).toHaveBeenCalledWith({ id: previewId }));
+
+		const showCallCount = vi.mocked(bridge.showWebPreview).mock.calls.length;
+		await user.click(screen.getByRole("button", { name: "Open review" }));
+
+		await waitFor(() => expect(bridge.showWebPreview).toHaveBeenCalledTimes(showCallCount + 1));
+		expect(bridge.showWebPreview).toHaveBeenLastCalledWith({
+			bounds: { height: 0, width: 0, x: 0, y: 0 },
+			id: previewId,
+			url: "https://google.com/",
+		});
+	});
+
+	it("opens public browser urls through the desktop web preview bridge", async () => {
+		const user = userEvent.setup();
+		const { bridge, emitWebPreviewEvent } = installBridge();
 		render(
 			<TooltipProvider>
 				<div className="relative h-[720px]">
@@ -757,15 +1026,313 @@ describe("ReviewWorkspacePanel", () => {
 			</TooltipProvider>,
 		);
 
-		await screen.findByText("综合面板");
-		await user.click(await findWorkspaceCreateMenuItem(user, "浏览器"));
-		await user.type(screen.getByLabelText("Browser URL"), "example.com");
-		await user.click(screen.getByRole("button", { name: "刷新浏览器" }));
+		await screen.findByLabelText("Diff viewer");
+		await user.click(await findWorkspaceCreateMenuItem(user, "网页预览"));
+		await screen.findByRole("tab", { name: "网页预览" });
+		const urlInput = await screen.findByLabelText("Preview URL");
+		await user.type(urlInput, "youtube");
+		await user.click(screen.getByRole("button", { name: "刷新网页预览" }));
 
-		const frame = screen.getByTitle("Browser preview");
-		expect(frame.getAttribute("sandbox")).toContain("allow-scripts");
-		expect(frame.getAttribute("sandbox")).not.toContain("allow-same-origin");
-		expect(frame.getAttribute("src")).toBe("https://example.com/");
+		expect(screen.queryByTitle("Browser preview")).toBeNull();
+		expect(document.querySelector('[data-slot="workspace-preview-viewport"]')).toBeTruthy();
+		await waitFor(() =>
+			expect(bridge.showWebPreview).toHaveBeenCalledWith({
+				bounds: { height: 0, width: 0, x: 0, y: 0 },
+				id: expect.stringMatching(/^browser:/),
+				url: "https://youtube.com/",
+			}),
+		);
+
+		const previewId = vi.mocked(bridge.showWebPreview).mock.calls[0]?.[0].id;
+		expect(previewId).toBeTruthy();
+		emitWebPreviewEvent({
+			state: {
+				canGoBack: true,
+				canGoForward: false,
+				id: previewId!,
+				isLoading: false,
+				title: "YouTube",
+				url: "https://www.youtube.com/",
+			},
+			type: "web_preview_state",
+		});
+
+		await waitFor(() => {
+			expect((urlInput as HTMLInputElement).value).toBe("https://www.youtube.com/");
+		});
+
+		await user.click(screen.getByRole("button", { name: "刷新网页预览" }));
+		expect(bridge.controlWebPreview).toHaveBeenCalledWith({ action: "reload", id: previewId });
+
+		await user.click(screen.getByRole("button", { name: "更多网页预览操作" }));
+		await user.click(await screen.findByRole("button", { name: "清除 Cookie" }));
+		expect(bridge.clearWebPreviewStorage).toHaveBeenCalledWith({ id: previewId, storage: "cookies" });
+		await user.click(screen.getByRole("button", { name: "更多网页预览操作" }));
+		await user.click(await screen.findByRole("button", { name: "清除缓存" }));
+		expect(bridge.clearWebPreviewStorage).toHaveBeenCalledWith({ id: previewId, storage: "cache" });
+	});
+
+	it("occludes the native web preview while header popovers are open", async () => {
+		const user = userEvent.setup();
+		const { bridge } = installBridge();
+		render(
+			<TooltipProvider>
+				<div className="relative h-[720px]">
+					<ReviewWorkspacePanel
+						isFullscreen={false}
+						onClose={vi.fn()}
+						onFullscreenChange={vi.fn()}
+						open
+						projectId="project-1"
+						sessionId="session-1"
+						workspaceLabel="/workspace/project"
+					/>
+				</div>
+			</TooltipProvider>,
+		);
+
+		await screen.findByLabelText("Diff viewer");
+		await user.click(await findWorkspaceCreateMenuItem(user, "网页预览"));
+		await user.type(screen.getByLabelText("Preview URL"), "google.com");
+		await user.click(screen.getByRole("button", { name: "刷新网页预览" }));
+		await waitFor(() => expect(bridge.showWebPreview).toHaveBeenCalled());
+
+		const previewId = vi.mocked(bridge.showWebPreview).mock.calls[0]?.[0].id;
+		await user.click(screen.getByRole("button", { name: "Open Git actions" }));
+
+		await waitFor(() =>
+			expect(bridge.updateWebPreviewBounds).toHaveBeenLastCalledWith({
+				bounds: { height: 0, width: 0, x: 0, y: 0 },
+				id: previewId,
+				occluded: true,
+			}),
+		);
+		await waitFor(() =>
+			expect(document.querySelector('[data-slot="workspace-preview-snapshot"]')?.getAttribute("src")).toBe(
+				"data:image/png;base64,preview",
+			),
+		);
+		expect(bridge.closeWebPreview).not.toHaveBeenCalledWith({ id: previewId });
+
+		await user.click(screen.getByRole("button", { name: "Open Git actions" }));
+		await waitFor(() =>
+			expect(bridge.updateWebPreviewBounds).toHaveBeenLastCalledWith({
+				bounds: { height: 0, width: 0, x: 0, y: 0 },
+				id: previewId,
+				occluded: false,
+			}),
+		);
+		await waitFor(() => expect(document.querySelector('[data-slot="workspace-preview-snapshot"]')).toBeNull());
+		expect(bridge.closeWebPreview).not.toHaveBeenCalledWith({ id: previewId });
+	});
+
+	it("replaces the browser address when typing after clicking the URL input", async () => {
+		const user = userEvent.setup();
+		const { bridge, emitWebPreviewEvent } = installBridge();
+		render(
+			<TooltipProvider>
+				<div className="relative h-[720px]">
+					<ReviewWorkspacePanel
+						isFullscreen={false}
+						onClose={vi.fn()}
+						onFullscreenChange={vi.fn()}
+						open
+						projectId="project-1"
+						sessionId="session-1"
+						workspaceLabel="/workspace/project"
+					/>
+				</div>
+			</TooltipProvider>,
+		);
+
+		await screen.findByLabelText("Diff viewer");
+		await user.click(await findWorkspaceCreateMenuItem(user, "网页预览"));
+		const urlInput = (await screen.findByLabelText("Preview URL")) as HTMLInputElement;
+		await user.type(urlInput, "youtube");
+		await user.click(screen.getByRole("button", { name: "刷新网页预览" }));
+		await waitFor(() => expect(bridge.showWebPreview).toHaveBeenCalled());
+
+		const previewId = vi.mocked(bridge.showWebPreview).mock.calls[0]?.[0].id;
+		expect(previewId).toBeTruthy();
+		emitWebPreviewEvent({
+			state: createWebPreviewState(previewId!, "https://www.youtube.com/", "YouTube"),
+			type: "web_preview_state",
+		});
+		await waitFor(() => {
+			expect(urlInput.value).toBe("https://www.youtube.com/");
+		});
+
+		await user.click(urlInput);
+		expect(urlInput.selectionStart).toBe(0);
+		expect(urlInput.selectionEnd).toBe("https://www.youtube.com/".length);
+		await user.keyboard("google");
+		expect(urlInput.value).toBe("google");
+		await user.click(screen.getByRole("button", { name: "刷新网页预览" }));
+
+		await waitFor(() =>
+			expect(bridge.showWebPreview).toHaveBeenLastCalledWith({
+				bounds: { height: 0, width: 0, x: 0, y: 0 },
+				id: previewId,
+				url: "https://google.com/",
+			}),
+		);
+		expect(vi.mocked(bridge.showWebPreview).mock.calls.map(([request]) => request.url)).not.toContain(
+			"https://www.youtube.com/google",
+		);
+	});
+
+	it("selects an element from an external web preview and reports it in the console", async () => {
+		const user = userEvent.setup();
+		const { bridge, emitWebPreviewEvent } = installBridge();
+		render(
+			<TooltipProvider>
+				<div className="relative h-[720px]">
+					<ReviewWorkspacePanel
+						isFullscreen={false}
+						onClose={vi.fn()}
+						onFullscreenChange={vi.fn()}
+						open
+						projectId="project-1"
+						sessionId="session-1"
+						workspaceLabel="/workspace/project"
+					/>
+				</div>
+			</TooltipProvider>,
+		);
+
+		await screen.findByLabelText("Diff viewer");
+		await user.click(await findWorkspaceCreateMenuItem(user, "网页预览"));
+		const urlInput = await screen.findByLabelText("Preview URL");
+		await user.type(urlInput, "example.com");
+		await user.click(screen.getByRole("button", { name: "刷新网页预览" }));
+
+		await waitFor(() => expect(bridge.showWebPreview).toHaveBeenCalled());
+		const previewId = vi.mocked(bridge.showWebPreview).mock.calls[0]?.[0].id;
+		expect(previewId).toBeTruthy();
+
+		const selectButton = screen.getByRole("button", { name: "选择页面元素" });
+		await user.click(selectButton);
+
+		expect(bridge.setWebPreviewElementSelectionMode).toHaveBeenCalledWith({
+			enabled: true,
+			id: previewId,
+		});
+		await waitFor(() => {
+			expect(selectButton.getAttribute("aria-pressed")).toBe("true");
+		});
+
+		emitWebPreviewEvent({
+			id: previewId!,
+			selection: {
+				ariaLabel: "Buy now",
+				className: "primary",
+				href: "",
+				id: "buy",
+				selector: "button#buy",
+				tagName: "button",
+				text: "Buy now",
+			},
+			type: "web_preview_element_selected",
+		});
+
+		await waitFor(() => {
+			expect(selectButton.getAttribute("aria-pressed")).toBe("false");
+		});
+		await user.click(screen.getByRole("button", { name: "Console" }));
+		expect(screen.getByText('已选择 button#buy "Buy now"')).toBeTruthy();
+	});
+
+	it("keeps public browser address edits while stale web preview state arrives", async () => {
+		const user = userEvent.setup();
+		const { bridge, emitWebPreviewEvent } = installBridge();
+		render(
+			<TooltipProvider>
+				<div className="relative h-[720px]">
+					<ReviewWorkspacePanel
+						isFullscreen={false}
+						onClose={vi.fn()}
+						onFullscreenChange={vi.fn()}
+						open
+						projectId="project-1"
+						sessionId="session-1"
+						workspaceLabel="/workspace/project"
+					/>
+				</div>
+			</TooltipProvider>,
+		);
+
+		await screen.findByLabelText("Diff viewer");
+		await user.click(await findWorkspaceCreateMenuItem(user, "网页预览"));
+		const urlInput = (await screen.findByLabelText("Preview URL")) as HTMLInputElement;
+		await user.type(urlInput, "youtube");
+		await user.click(screen.getByRole("button", { name: "刷新网页预览" }));
+		await waitFor(() => expect(bridge.showWebPreview).toHaveBeenCalled());
+
+		const previewId = vi.mocked(bridge.showWebPreview).mock.calls[0]?.[0].id;
+		expect(previewId).toBeTruthy();
+		await user.clear(urlInput);
+		await user.type(urlInput, "google");
+		const showUrlsBeforeStaleEvent = vi.mocked(bridge.showWebPreview).mock.calls.map(([request]) => request.url);
+		emitWebPreviewEvent({
+			state: createWebPreviewState(previewId!, "https://www.youtube.com/", "YouTube"),
+			type: "web_preview_state",
+		});
+
+		expect(urlInput.value).toBe("google");
+		expect(vi.mocked(bridge.showWebPreview).mock.calls.map(([request]) => request.url)).toEqual(
+			showUrlsBeforeStaleEvent,
+		);
+		await user.keyboard("{Enter}");
+		await waitFor(() =>
+			expect(bridge.showWebPreview).toHaveBeenLastCalledWith({
+				bounds: { height: 0, width: 0, x: 0, y: 0 },
+				id: previewId,
+				url: "https://google.com/",
+			}),
+		);
+		expect(urlInput.value).toBe("https://google.com/");
+
+		emitWebPreviewEvent({
+			state: createWebPreviewState(previewId!, "https://www.youtube.com/", "YouTube"),
+			type: "web_preview_state",
+		});
+		expect(urlInput.value).toBe("https://google.com/");
+		expect(vi.mocked(bridge.showWebPreview).mock.calls.map(([request]) => request.url)).not.toContain(
+			"https://www.youtube.com/",
+		);
+
+		await user.click(screen.getByRole("button", { name: "刷新网页预览" }));
+		expect(bridge.controlWebPreview).toHaveBeenCalledWith({ action: "reload", id: previewId });
+	});
+
+	it("opens loopback web preview requests in the workspace panel", async () => {
+		const { bridge } = installBridge();
+		render(
+			<TooltipProvider>
+				<div className="relative h-[720px]">
+					<ReviewWorkspacePanel
+						isFullscreen={false}
+						onClose={vi.fn()}
+						onFullscreenChange={vi.fn()}
+						open
+						projectId="project-1"
+						sessionId="session-1"
+						webPreviewRequest={{ nonce: 1, url: "http://127.0.0.1:5173/app" }}
+						workspaceLabel="/workspace/project"
+					/>
+				</div>
+			</TooltipProvider>,
+		);
+
+		await waitFor(() =>
+			expect(bridge.showWebPreview).toHaveBeenCalledWith({
+				bounds: { height: 0, width: 0, x: 0, y: 0 },
+				id: "browser:http://127.0.0.1:5173/app",
+				url: "http://127.0.0.1:5173/app",
+			}),
+		);
+		expect(screen.queryByTitle("Browser preview")).toBeNull();
+		expect(screen.getByRole("tab", { name: /127\.0\.0\.1:5173/i })).toBeTruthy();
 	});
 
 	it("refreshes open preview files after the active agent run ends", async () => {
@@ -893,10 +1460,10 @@ describe("ReviewWorkspacePanel", () => {
 		await screen.findByText("const review = true;");
 		const diffViewer = screen.getByLabelText("Diff viewer");
 		const changedLineBar = Array.from(document.querySelectorAll('[data-slot="diff-change-bar"]')).find((element) =>
-			element.className.includes("bg-emerald-600"),
+			element.className.includes("bg-[color:var(--success)]"),
 		);
 		const normalLineBar = Array.from(document.querySelectorAll('[data-slot="diff-change-bar"]')).find((element) =>
-			element.className.includes("bg-background"),
+			element.className.includes("bg-transparent"),
 		);
 		const lineNumber = document.querySelector('[data-slot="diff-line-number"]');
 		const hunkHeader = document.querySelector('[data-slot="diff-hunk-header"]');
@@ -904,16 +1471,17 @@ describe("ReviewWorkspacePanel", () => {
 		expect(diffViewer.className).toContain("overflow-x-auto");
 		expect(diffViewer.className).toContain("overflow-y-auto");
 		expect(changedLineBar?.className).toContain("sticky left-0");
-		expect(changedLineBar?.className).toContain("bg-emerald-600");
+		expect(changedLineBar?.className).toContain("bg-[color:var(--success)]");
 		expect(normalLineBar?.className).toContain("sticky left-0");
-		expect(normalLineBar?.className).toContain("bg-background");
+		expect(normalLineBar?.className).toContain("bg-transparent");
 		expect(lineNumber?.className).toContain("sticky left-[4px]");
 		expect(document.querySelector('[data-slot="diff-line-marker"]')).toBeNull();
 		expect(hunkHeader?.className).toContain("sticky left-2");
 		expect(hunkHeader?.className).not.toContain("w-[34rem]");
 		expect(hunkHeader?.className).toContain("overflow-hidden");
-		expect(hunkHeader?.className).toContain("border");
-		expect(hunkHeader?.className).toContain("shadow-[");
+		expect(hunkHeader?.className).not.toContain("border");
+		expect(hunkHeader?.className).toContain("bg-[color:var(--surface-2)]");
+		expect(hunkHeader?.className).toContain("shadow-[var(--shadow-minimal)]");
 		expect(hunkHeader?.parentElement?.getAttribute("data-slot")).toBe("diff-hunk-row");
 		expect(hunkHeader?.parentElement?.className).toContain("mb-1.5");
 		expect(hunkHeader?.parentElement?.className).toContain("px-2");
@@ -936,7 +1504,8 @@ describe("ReviewWorkspacePanel", () => {
 		expect(resizer.children).toHaveLength(0);
 		expect(fileTreeSpacer?.className).toContain("overflow-hidden");
 		expect(fileTreePanel?.parentElement).toBe(fileTreeSpacer);
-		expect(fileTreeContent?.className).toContain("border-l");
+		expect(fileTreeContent?.className).not.toContain("border-l");
+		expect(fileTreeContent?.className).toContain("shadow-[inset_1px_0_0_var(--border-subtle)]");
 		expect(fileTreeSpacer?.getAttribute("data-width")).toBe("340");
 		expect(fileTreePanel?.style.width).toBe("340px");
 		expect(fileTreePanel?.getAttribute("data-width")).toBe("340");
@@ -1011,8 +1580,8 @@ describe("ReviewWorkspacePanel", () => {
 		await waitFor(() => expect(reviewSpacer?.getAttribute("data-review-resizing")).toBe("false"));
 	});
 
-	it("marks review panel pointer resizing before the cursor can enter preview iframes", async () => {
-		installBridge(changedSnapshot, [htmlPreviewFile]);
+	it("marks review panel pointer resizing while a local web preview is active", async () => {
+		const { bridge } = installBridge(changedSnapshot, [htmlPreviewFile]);
 		render(
 			<TooltipProvider>
 				<div className="relative h-[720px]">
@@ -1030,11 +1599,13 @@ describe("ReviewWorkspacePanel", () => {
 			</TooltipProvider>,
 		);
 
-		const frame = await screen.findByTitle("HTML preview: chart.html");
+		await waitFor(() => expect(bridge.showWebPreview).toHaveBeenCalled());
 		const resizer = screen.getByRole("separator", { name: "Resize review panel" });
 		const reviewSpacer = document.querySelector('[data-slot="review-workspace-spacer"]') as HTMLElement | null;
+		const viewport = document.querySelector('[data-slot="workspace-preview-viewport"]');
 
-		expect(frame.getAttribute("data-slot")).toBe("workspace-preview-frame");
+		expect(viewport).toBeTruthy();
+		expect(screen.queryByTitle("HTML preview: chart.html")).toBeNull();
 		expect(reviewSpacer?.dataset.reviewResizing).toBe("false");
 
 		fireEvent.pointerDown(resizer);

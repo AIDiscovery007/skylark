@@ -2,6 +2,7 @@ import { GitCompareArrows, PencilLine } from "lucide-react";
 import { LayoutGroup, motion } from "motion/react";
 import { lazy, Suspense, useCallback, useEffect, useOptimistic, useRef, useState, useTransition } from "react";
 import type { DesktopAgentBridge } from "../shared/ipc-contract.ts";
+import { normalizeDesktopWebPreviewUrl } from "../shared/preview-url.ts";
 import type {
 	DesktopEnvironmentResource,
 	DesktopNativeAppearance,
@@ -50,6 +51,11 @@ interface ComposerFocusRequest {
 interface WorkspacePreviewRequest {
 	nonce: number;
 	path: string;
+}
+
+interface WebPreviewRequest {
+	nonce: number;
+	url: string;
 }
 
 interface EnvironmentTerminalRequest {
@@ -218,6 +224,7 @@ function DesktopApp({ desktopAgent }: { desktopAgent: DesktopAgentBridge }) {
 	const [pendingPromptSubmissions, setPendingPromptSubmissions] = useState(0);
 	const [composerFocusRequest, setComposerFocusRequest] = useState<ComposerFocusRequest | undefined>();
 	const [workspacePreviewRequest, setWorkspacePreviewRequest] = useState<WorkspacePreviewRequest | undefined>();
+	const [webPreviewRequest, setWebPreviewRequest] = useState<WebPreviewRequest | undefined>();
 	const [subagentRequest, setSubagentRequest] = useState<DesktopSubagentOpenRequest | undefined>();
 	const [environmentTerminalRequest, setEnvironmentTerminalRequest] = useState<
 		EnvironmentTerminalRequest | undefined
@@ -233,6 +240,7 @@ function DesktopApp({ desktopAgent }: { desktopAgent: DesktopAgentBridge }) {
 	const reviewTriggerRef = useRef<HTMLButtonElement | null>(null);
 	const workbenchViewRequestIdRef = useRef(0);
 	const workspacePreviewRequestNonceRef = useRef(0);
+	const webPreviewRequestNonceRef = useRef(0);
 	const subagentRequestNonceRef = useRef(0);
 	const environmentTerminalRequestIdRef = useRef(0);
 	const wasStreamingRef = useRef(false);
@@ -680,6 +688,27 @@ function DesktopApp({ desktopAgent }: { desktopAgent: DesktopAgentBridge }) {
 		});
 	}
 
+	function openWebPreviewUrl(url: string): void {
+		const previewUrl = normalizeDesktopWebPreviewUrl(url);
+		if (!previewUrl) {
+			return;
+		}
+		primeReviewWorkspacePanel();
+		if (!reviewWorkspaceKey) {
+			return;
+		}
+		setReviewOpenKeys((currentKeys) => {
+			const nextKeys = new Set(currentKeys);
+			nextKeys.add(reviewWorkspaceKey);
+			return nextKeys;
+		});
+		webPreviewRequestNonceRef.current += 1;
+		setWebPreviewRequest({
+			nonce: webPreviewRequestNonceRef.current,
+			url: previewUrl,
+		});
+	}
+
 	const openSubagentDetail = useCallback(
 		(request: Omit<DesktopSubagentOpenRequest, "nonce">): void => {
 			primeReviewWorkspacePanel();
@@ -939,6 +968,7 @@ function DesktopApp({ desktopAgent }: { desktopAgent: DesktopAgentBridge }) {
 														onExecutePlan={handleExecutePlan}
 														onOpenEnvironmentResource={handleOpenEnvironmentResource}
 														onOpenSettings={openSettingsWindow}
+														onOpenWebPreviewUrl={openWebPreviewUrl}
 														onOpenWorkspacePreviewFile={openWorkspacePreviewFile}
 														onRequestCapabilities={requestCapabilitiesCatalog}
 														onSetSessionMode={setSessionMode}
@@ -971,6 +1001,7 @@ function DesktopApp({ desktopAgent }: { desktopAgent: DesktopAgentBridge }) {
 													onFullscreenChange={handleReviewFullscreenChange}
 													open={isReviewOpen}
 													previewRequest={workspacePreviewRequest}
+													webPreviewRequest={webPreviewRequest}
 													projectId={projects.activeProjectId}
 													sessionId={sessions.activeSessionId}
 													subagentRequest={subagentRequest}

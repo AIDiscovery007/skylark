@@ -68,6 +68,10 @@ interface PreviewFileStat {
 	mtime: Date;
 }
 
+export interface DesktopPreviewFileReadOptions {
+	createPreviewUrl?: (path: string) => Promise<string>;
+}
+
 function createBasePreviewFile(
 	path: string,
 	fileStat: PreviewFileStat,
@@ -109,7 +113,10 @@ function getPreviewKind(path: string): DesktopPreviewFileKind {
 	);
 }
 
-export async function readDesktopPreviewFile(path: string): Promise<DesktopPreviewFile> {
+export async function readDesktopPreviewFile(
+	path: string,
+	options: DesktopPreviewFileReadOptions = {},
+): Promise<DesktopPreviewFile> {
 	const fileStat = await stat(path);
 	const kind = getPreviewKind(path);
 	const mimeType = getMimeType(path);
@@ -135,9 +142,11 @@ export async function readDesktopPreviewFile(path: string): Promise<DesktopPrevi
 	}
 
 	const content = await readFile(path, "utf8");
+	const previewUrl = kind === "html" || kind === "svg" ? await options.createPreviewUrl?.(path) : undefined;
 
 	return {
 		...createBasePreviewFile(path, fileStat, mimeType, kind),
 		content,
+		...(previewUrl ? { previewUrl } : {}),
 	};
 }

@@ -13,6 +13,7 @@ const SKYLARK_TMUX_OPTIONS = [
 	"@skylark-cwd",
 	"@skylark-title",
 	"@skylark-resource-kind",
+	"@skylark-preview-url",
 ] as const;
 const LEGACY_PI_TMUX_OPTIONS = ["@pi-session-id", "@pi-cwd", "@pi-title", "@pi-resource-kind"] as const;
 const TMUX_OPTIONS = [...SKYLARK_TMUX_OPTIONS, ...LEGACY_PI_TMUX_OPTIONS] as const;
@@ -136,6 +137,7 @@ export class DefaultTmuxEnvironmentInspector implements TmuxEnvironmentInspector
 			"@pi-session-id": undefined,
 			"@pi-title": undefined,
 			"@skylark-cwd": undefined,
+			"@skylark-preview-url": undefined,
 			"@skylark-resource-kind": undefined,
 			"@skylark-session-id": undefined,
 			"@skylark-title": undefined,
