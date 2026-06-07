@@ -33,6 +33,7 @@ import parseDiff from "parse-diff";
 import {
 	type CSSProperties,
 	type KeyboardEvent,
+	type ReactNode,
 	type PointerEvent as ReactPointerEvent,
 	useCallback,
 	useEffect,
@@ -49,6 +50,8 @@ import type {
 	DesktopSubagentOpenRequest,
 	DesktopWebPreviewElementSelection,
 	DesktopWebPreviewState,
+	DesktopWorkspaceFileEntry,
+	DesktopWorkspaceFileListResult,
 } from "../../../shared/types.ts";
 import { useReviewWorkspace } from "../../hooks/use-review-workspace.ts";
 import { noMotionTransition, panelSpring } from "../../lib/motion.ts";
@@ -65,6 +68,7 @@ import {
 import { Button } from "../ui/button.tsx";
 import { Input } from "../ui/input.tsx";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover.tsx";
+import { Spinner } from "../ui/spinner.tsx";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip.tsx";
 import { VirtualStack } from "../ui/virtual-stack.tsx";
 import { SubagentDetailPane } from "./SubagentDetailPane.tsx";
@@ -99,22 +103,31 @@ export interface ReviewWorkspaceChromeSummary {
 	workspaceLabel: string;
 }
 
-interface FileTreeNode {
+interface PathTreeNode<TFile extends { path: string }> {
 	name: string;
 	path: string;
-	children: FileTreeNode[];
-	file?: DesktopReviewFile;
+	children: PathTreeNode<TFile>[];
+	file?: TFile;
 }
 
-interface FileTreeFlatRow {
-	depth: number;
-	expanded?: boolean;
-	file?: DesktopReviewFile;
-	id: string;
-	name: string;
-	path: string;
-	type: "file" | "folder";
-}
+type PathTreeFlatRow<TFile extends { path: string }> =
+	| {
+			depth: number;
+			expanded: boolean;
+			id: string;
+			name: string;
+			path: string;
+			type: "folder";
+	  }
+	| {
+			depth: number;
+			file: TFile;
+			id: string;
+			name: string;
+			path: string;
+			type: "file";
+	  };
+type PathTreeFileRow<TFile extends { path: string }> = Extract<PathTreeFlatRow<TFile>, { type: "file" }>;
 
 type ParsedDiffFile = ReturnType<typeof parseDiff>[number];
 type WorkspacePanelItem =
@@ -147,6 +160,12 @@ type WorkspacePreviewFileItem =
 	  });
 type NativeWebPreviewOcclusionSource = "browser-actions" | "git-actions" | "workspace-create";
 type SetNativeWebPreviewOcclusion = (source: NativeWebPreviewOcclusionSource, occluded: boolean) => void;
+type WorkspaceFileListStatus = "idle" | "loading" | "loaded" | "error";
+interface FileTreeToggleState {
+	active: boolean;
+	label: string;
+	onClick: () => void;
+}
 
 const PUSH_REVEAL_TRANSITION = { type: "tween", duration: 0.32, ease: [0.32, 0.72, 0, 1] } as const;
 const REVIEW_PANEL_BODY_HYDRATION_DELAY_MS = 340;
@@ -171,6 +190,7 @@ const STATUS_LABELS: Record<DesktopReviewFile["status"], string> = {
 };
 const REVIEW_WORKSPACE_ITEM: WorkspacePanelItem = { id: "review", type: "review", title: "审查" };
 const MAX_WORKSPACE_PREVIEW_FILE_ITEMS = 8;
+const WORKSPACE_FILE_TREE_LIMIT = 5000;
 const PREVIEW_ERROR_TIMESTAMP = new Date(0).toISOString();
 const PREVIEW_SOURCE_LANGUAGE_BY_EXTENSION: Record<string, CodeBlockLanguage> = {
 	bash: "bash",
@@ -300,8 +320,8 @@ function getStatusClassName(status: DesktopReviewFile["status"]): string {
 	}
 }
 
-function createTree(files: DesktopReviewFile[]): FileTreeNode[] {
-	const root: FileTreeNode = { name: "", path: "", children: [] };
+function createPathTree<TFile extends { path: string }>(files: TFile[]): PathTreeNode<TFile>[] {
+	const root: PathTreeNode<TFile> = { name: "", path: "", children: [] };
 	for (const file of files) {
 		const parts = file.path.split("/").filter(Boolean);
 		let current = root;
@@ -321,7 +341,7 @@ function createTree(files: DesktopReviewFile[]): FileTreeNode[] {
 	return sortTree(root.children);
 }
 
-function sortTree(nodes: FileTreeNode[]): FileTreeNode[] {
+function sortTree<TFile extends { path: string }>(nodes: PathTreeNode<TFile>[]): PathTreeNode<TFile>[] {
 	return nodes
 		.map((node) => ({ ...node, children: sortTree(node.children) }))
 		.sort((left, right) => {
@@ -332,13 +352,13 @@ function sortTree(nodes: FileTreeNode[]): FileTreeNode[] {
 		});
 }
 
-function flattenTreeRows(
-	nodes: FileTreeNode[],
+function flattenTreeRows<TFile extends { path: string }>(
+	nodes: PathTreeNode<TFile>[],
 	collapsedPaths: ReadonlySet<string>,
 	forceExpanded: boolean,
 	depth = 0,
-): FileTreeFlatRow[] {
-	const rows: FileTreeFlatRow[] = [];
+): PathTreeFlatRow<TFile>[] {
+	const rows: PathTreeFlatRow<TFile>[] = [];
 	for (const node of nodes) {
 		if (node.file) {
 			rows.push({
@@ -368,7 +388,7 @@ function flattenTreeRows(
 	return rows;
 }
 
-function filterFiles(files: DesktopReviewFile[], query: string): DesktopReviewFile[] {
+function filterTreeFiles<TFile extends { path: string }>(files: TFile[], query: string): TFile[] {
 	const normalizedQuery = query.trim().toLowerCase();
 	if (!normalizedQuery) {
 		return files;
@@ -490,13 +510,17 @@ function GitActionMenu({
 }
 
 function WorkspaceCreateMenu({
+	align = "start",
 	onNativeWebPreviewOcclusionChange,
 	onOpenBrowser,
 	onOpenFiles,
+	onOpenReview,
 }: {
+	align?: "center" | "end" | "start";
 	onNativeWebPreviewOcclusionChange: SetNativeWebPreviewOcclusion;
 	onOpenBrowser: () => void;
 	onOpenFiles: () => Promise<void>;
+	onOpenReview: () => void;
 }) {
 	const [open, setOpen] = useState(false);
 
@@ -524,7 +548,7 @@ function WorkspaceCreateMenu({
 					<Plus className="size-4" />
 				</Button>
 			</PopoverTrigger>
-			<PopoverContent align="end" className="w-56 p-2">
+			<PopoverContent align={align} className="w-56 p-2">
 				<div className="grid gap-1">
 					<button
 						className="flex h-9 items-center gap-3 rounded-[var(--radius-md)] px-2.5 text-left text-sm text-[color:var(--text-primary)] transition-[background-color,color] duration-[var(--duration-fast)] hover:bg-[color:var(--surface-2)] focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-[color:var(--focus-ring)]"
@@ -545,9 +569,76 @@ function WorkspaceCreateMenu({
 						<Globe2 className="size-4 text-[color:var(--text-tertiary)]" />
 						<span>网页预览</span>
 					</button>
+					<button
+						className="flex h-9 items-center gap-3 rounded-[var(--radius-md)] px-2.5 text-left text-sm text-[color:var(--text-primary)] transition-[background-color,color] duration-[var(--duration-fast)] hover:bg-[color:var(--surface-2)] focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-[color:var(--focus-ring)]"
+						onClick={() => {
+							handleOpenChange(false);
+							onOpenReview();
+						}}
+						type="button"
+					>
+						<GitCompareArrows className="size-4 text-[color:var(--text-tertiary)]" />
+						<span>审查</span>
+					</button>
 				</div>
 			</PopoverContent>
 		</Popover>
+	);
+}
+
+function WorkspaceEmptyState({
+	onOpenBrowser,
+	onOpenFiles,
+	onOpenReview,
+}: {
+	onOpenBrowser: () => void;
+	onOpenFiles: () => Promise<void>;
+	onOpenReview: () => void;
+}) {
+	const actions = [
+		{
+			description: "浏览文件",
+			icon: FileText,
+			label: "文件",
+			onClick: () => void onOpenFiles(),
+		},
+		{
+			description: "打开网页",
+			icon: Globe2,
+			label: "浏览器",
+			onClick: onOpenBrowser,
+		},
+		{
+			description: "查看代码更改",
+			icon: GitCompareArrows,
+			label: "审查",
+			onClick: onOpenReview,
+		},
+	];
+
+	return (
+		<div className="grid h-full min-h-[360px] place-items-center bg-[color:var(--background)] px-8 py-12">
+			<div className="grid w-full max-w-[460px] grid-cols-1 gap-3 sm:grid-cols-3">
+				{actions.map((action) => {
+					const Icon = action.icon;
+					return (
+						<button
+							aria-label={action.label}
+							className="group grid min-h-32 justify-items-center gap-2 rounded-[var(--radius-md)] bg-[color:var(--surface-1)] px-4 py-5 text-center shadow-[var(--shadow-minimal)] transition-[background-color,box-shadow,transform] duration-[var(--duration-fast)] hover:bg-[color:var(--surface-2)] hover:shadow-[var(--shadow-soft)] focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-[color:var(--focus-ring)]"
+							key={action.label}
+							onClick={action.onClick}
+							type="button"
+						>
+							<Icon className="size-5 text-[color:var(--text-tertiary)] transition-colors duration-[var(--duration-fast)] group-hover:text-[color:var(--text-secondary)]" />
+							<span className="grid gap-1">
+								<span className="text-[13px] font-medium text-[color:var(--text-primary)]">{action.label}</span>
+								<span className="text-xs text-[color:var(--text-tertiary)]">{action.description}</span>
+							</span>
+						</button>
+					);
+				})}
+			</div>
+		</div>
 	);
 }
 
@@ -680,35 +771,33 @@ function WorkspacePanelTabs({
 	onCloseItem,
 	onSelectItem,
 }: {
-	activeItemId: string;
+	activeItemId?: string;
 	isFullscreen: boolean;
 	items: WorkspacePanelItem[];
 	onCloseItem: (itemId: string) => void;
 	onSelectItem: (itemId: string) => void;
 }) {
-	if (isFullscreen && items.length === 1) {
+	if (items.length === 0) {
 		return null;
 	}
 
 	return (
 		<div
 			aria-label="Workspace panel tabs"
-			className="flex h-9 shrink-0 items-center gap-1 overflow-x-auto bg-[color:var(--surface-1)] px-2 [scrollbar-width:none]"
+			className="desktop-window-no-drag flex h-full min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none]"
 			data-display-mode={isFullscreen ? "fullscreen" : "panel"}
 			role="tablist"
 		>
 			{items.map((item) => (
 				<div className="group relative flex shrink-0 items-center" key={item.id}>
-					{item.type !== "review" ? (
-						<button
-							aria-label={`Close ${getWorkspaceItemTitle(item)}`}
-							className="pointer-events-none absolute left-2 top-1/2 z-10 grid size-3.5 -translate-y-1/2 place-items-center rounded-full bg-[color:color-mix(in_oklch,var(--foreground)_48%,transparent)] text-[color:var(--background)] opacity-0 transition-[background-color,opacity] duration-[var(--duration-fast)] hover:bg-[color:color-mix(in_oklch,var(--foreground)_60%,transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--focus-ring)] group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100"
-							onClick={() => onCloseItem(item.id)}
-							type="button"
-						>
-							<X className="size-2.5" />
-						</button>
-					) : null}
+					<button
+						aria-label={`Close ${getWorkspaceItemTitle(item)}`}
+						className="pointer-events-none absolute left-2 top-1/2 z-10 grid size-3.5 -translate-y-1/2 place-items-center rounded-full bg-[color:color-mix(in_oklch,var(--foreground)_48%,transparent)] text-[color:var(--background)] opacity-0 transition-[background-color,opacity] duration-[var(--duration-fast)] hover:bg-[color:color-mix(in_oklch,var(--foreground)_60%,transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--focus-ring)] group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100"
+						onClick={() => onCloseItem(item.id)}
+						type="button"
+					>
+						<X className="size-2.5" />
+					</button>
 					<button
 						aria-selected={activeItemId === item.id}
 						className={cn(
@@ -723,7 +812,7 @@ function WorkspacePanelTabs({
 						type="button"
 					>
 						{item.type === "review" ? (
-							<GitCompareArrows className="size-3.5" />
+							<GitCompareArrows className="size-3.5 transition-opacity group-focus-within:opacity-0 group-hover:opacity-0" />
 						) : item.type === "browser" ? (
 							<Globe2 className="size-3.5 transition-opacity group-focus-within:opacity-0 group-hover:opacity-0" />
 						) : item.type === "subagent" ? (
@@ -766,37 +855,37 @@ function ReviewPanelBodyDeferredFallback() {
 	);
 }
 
-function FileTreeRow({
-	onSelect,
+function FolderTreeRow<TFile extends { path: string }>({
 	onToggle,
+	row,
+}: {
+	onToggle: (path: string) => void;
+	row: Extract<PathTreeFlatRow<TFile>, { type: "folder" }>;
+}) {
+	return (
+		<button
+			aria-expanded={row.expanded}
+			className="flex h-7 w-full items-center gap-1.5 rounded-[var(--radius-md)] px-2 text-left text-[13px] text-[color:var(--text-secondary)] transition-[background-color,color] duration-[var(--duration-fast)] hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-[color:var(--focus-ring)]"
+			onClick={() => onToggle(row.path)}
+			style={{ paddingLeft: 4 + row.depth * FILE_TREE_INDENT }}
+			type="button"
+		>
+			{row.expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+			<span className="truncate">{row.name}</span>
+		</button>
+	);
+}
+
+function ReviewFileTreeRow({
+	onSelect,
 	row,
 	selectedPath,
 }: {
 	onSelect: (file: DesktopReviewFile) => void;
-	onToggle: (path: string) => void;
-	row: FileTreeFlatRow;
+	row: PathTreeFileRow<DesktopReviewFile>;
 	selectedPath?: string;
 }) {
-	if (row.type === "folder") {
-		return (
-			<button
-				aria-expanded={row.expanded}
-				className="flex h-7 w-full items-center gap-1.5 rounded-[var(--radius-md)] px-2 text-left text-[13px] text-[color:var(--text-secondary)] transition-[background-color,color] duration-[var(--duration-fast)] hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)] focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-[color:var(--focus-ring)]"
-				onClick={() => onToggle(row.path)}
-				style={{ paddingLeft: 4 + row.depth * FILE_TREE_INDENT }}
-				type="button"
-			>
-				{row.expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
-				<span className="truncate">{row.name}</span>
-			</button>
-		);
-	}
-
 	const file = row.file;
-	if (!file) {
-		return null;
-	}
-
 	const selected = selectedPath === file.path;
 	return (
 		<button
@@ -827,47 +916,200 @@ function FileTreeRow({
 	);
 }
 
-function FileTree({
+function WorkspaceFileTreeRow({
+	onSelect,
+	row,
+	selectedPath,
+}: {
+	onSelect: (file: DesktopWorkspaceFileEntry) => void;
+	row: PathTreeFileRow<DesktopWorkspaceFileEntry>;
+	selectedPath?: string;
+}) {
+	const file = row.file;
+	const selected = selectedPath === file.path;
+	return (
+		<button
+			className={cn(
+				"grid h-8 w-full min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-2 rounded-[var(--radius-md)] px-2 text-left text-[13px] transition-[background-color,color,box-shadow] duration-[var(--duration-fast)]",
+				selected
+					? "bg-[color:var(--surface-2)] text-[color:var(--text-primary)] shadow-[var(--shadow-minimal)]"
+					: "text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text-primary)]",
+			)}
+			onClick={() => onSelect(file)}
+			style={{ paddingLeft: 6 + row.depth * FILE_TREE_INDENT }}
+			title={file.path}
+			type="button"
+		>
+			{getFileIcon(file.path)}
+			<span className="min-w-0 truncate" data-slot="workspace-file-tree-name">
+				{row.name}
+			</span>
+		</button>
+	);
+}
+
+function PathTree<TFile extends { path: string }>({
 	ariaLabel,
 	collapsedPaths,
+	dataSlot,
 	files,
 	forceExpanded,
-	onSelect,
 	onToggle,
-	selectedPath,
+	noMatchesMessage,
+	renderFileRow,
 }: {
 	ariaLabel?: string;
 	collapsedPaths: ReadonlySet<string>;
-	files: DesktopReviewFile[];
+	dataSlot: string;
+	files: TFile[];
 	forceExpanded: boolean;
-	onSelect: (file: DesktopReviewFile) => void;
 	onToggle: (path: string) => void;
-	selectedPath?: string;
+	noMatchesMessage: string;
+	renderFileRow: (row: PathTreeFileRow<TFile>) => ReactNode;
 }) {
-	const nodes = useMemo(() => createTree(files), [files]);
+	const nodes = useMemo(() => createPathTree(files), [files]);
 	const rows = useMemo(
 		() => flattenTreeRows(nodes, collapsedPaths, forceExpanded),
 		[collapsedPaths, forceExpanded, nodes],
 	);
 	if (nodes.length === 0) {
-		return <p className="px-2 py-3 text-sm text-[color:var(--text-tertiary)]">没有匹配的文件</p>;
+		return <p className="px-2 py-3 text-sm text-[color:var(--text-tertiary)]">{noMatchesMessage}</p>;
 	}
 
 	return (
 		<VirtualStack
 			ariaLabel={ariaLabel}
 			className="native-scrollbar h-full overflow-y-auto overflow-x-hidden py-2 pr-3 pl-1"
-			dataSlot="review-file-tree-virtual-list"
+			dataSlot={dataSlot}
 			estimateSize={(index) => (rows[index]?.type === "folder" ? 28 : 32)}
 			gap={2}
 			getKey={(row) => row.id}
 			initialViewportHeight={520}
 			items={rows}
 			overscan={8}
-			renderItem={({ item }) => (
-				<FileTreeRow onSelect={onSelect} onToggle={onToggle} row={item} selectedPath={selectedPath} />
-			)}
+			renderItem={({ item }) =>
+				item.type === "folder" ? <FolderTreeRow onToggle={onToggle} row={item} /> : renderFileRow(item)
+			}
 		/>
+	);
+}
+
+function ResizableFileTreePanel({
+	children,
+	contentSlot,
+	open,
+	panelSlot,
+	resizerLabel,
+	resizerSlot,
+	setWidth,
+	spacerSlot,
+	width,
+}: {
+	children: ReactNode;
+	contentSlot: string;
+	open: boolean;
+	panelSlot: string;
+	resizerLabel: string;
+	resizerSlot: string;
+	setWidth: (width: number) => void;
+	spacerSlot: string;
+	width: number;
+}) {
+	const [isResizingFileTree, setIsResizingFileTree] = useState(false);
+	const resizeStartWidthRef = useRef(width);
+	const panelHidden = !open;
+	const panelTransition = isResizingFileTree ? noMotionTransition : PUSH_REVEAL_TRANSITION;
+
+	function setClampedFileTreeWidth(nextWidth: number): void {
+		setWidth(clampFileTreeWidth(nextWidth));
+	}
+
+	function handleFileTreeResizeStart(): void {
+		resizeStartWidthRef.current = width;
+		setIsResizingFileTree(true);
+	}
+
+	function handleFileTreeResize(_event: MouseEvent | TouchEvent | PointerEvent, info: PanInfo): void {
+		setClampedFileTreeWidth(resizeStartWidthRef.current - info.offset.x);
+	}
+
+	function handleFileTreeResizeEnd(): void {
+		setIsResizingFileTree(false);
+	}
+
+	function handleFileTreeResizeKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
+		if (event.key === "ArrowLeft") {
+			event.preventDefault();
+			setClampedFileTreeWidth(width + 16);
+			return;
+		}
+
+		if (event.key === "ArrowRight") {
+			event.preventDefault();
+			setClampedFileTreeWidth(width - 16);
+			return;
+		}
+
+		if (event.key === "Home") {
+			event.preventDefault();
+			setWidth(FILE_TREE_WIDTH.min);
+			return;
+		}
+
+		if (event.key === "End") {
+			event.preventDefault();
+			setWidth(FILE_TREE_WIDTH.max);
+		}
+	}
+
+	return (
+		<motion.div
+			className="relative hidden min-h-0 shrink-0 overflow-hidden lg:block"
+			data-slot={spacerSlot}
+			data-width={width}
+			animate={{ width: open ? width : 0 }}
+			initial={false}
+			transition={panelTransition}
+		>
+			<motion.div
+				aria-hidden={panelHidden}
+				className="absolute inset-y-0 right-0 flex min-h-0 overflow-hidden"
+				data-slot={panelSlot}
+				data-width={width}
+				inert={panelHidden}
+				style={{ width }}
+				transition={panelTransition}
+			>
+				<motion.div
+					aria-label={open ? resizerLabel : undefined}
+					aria-orientation="vertical"
+					aria-valuemax={FILE_TREE_WIDTH.max}
+					aria-valuemin={FILE_TREE_WIDTH.min}
+					aria-valuenow={width}
+					className="-left-1.5 group absolute inset-y-0 z-20 w-3 cursor-col-resize touch-none focus-visible:outline-none"
+					data-slot={resizerSlot}
+					drag="x"
+					dragConstraints={{ left: 0, right: 0 }}
+					dragElastic={0}
+					dragMomentum={false}
+					onDrag={handleFileTreeResize}
+					onDragEnd={handleFileTreeResizeEnd}
+					onDragStart={handleFileTreeResizeStart}
+					onKeyDown={handleFileTreeResizeKeyDown}
+					role="separator"
+					style={{ x: 0 }}
+					tabIndex={panelHidden ? -1 : 0}
+					transition={panelTransition}
+				/>
+				<aside
+					className="flex min-h-0 flex-col bg-[color:var(--surface-1)] shadow-[inset_1px_0_0_var(--border-subtle)]"
+					data-slot={contentSlot}
+					style={{ width }}
+				>
+					{children}
+				</aside>
+			</motion.div>
+		</motion.div>
 	);
 }
 
@@ -1089,24 +1331,85 @@ function PreviewSourceCode({ file }: { file: DesktopPreviewFile }) {
 	);
 }
 
-function FilePreviewPane({ file, onRefresh }: { file: DesktopPreviewFile; onRefresh: () => void }) {
+function FileTreeToggleButton({
+	active,
+	label,
+	onClick,
+	size = "icon-xs",
+}: {
+	active: boolean;
+	label: string;
+	onClick: () => void;
+	size?: "icon-sm" | "icon-xs";
+}) {
+	return (
+		<Tooltip>
+			<TooltipTrigger asChild>
+				<Button
+					aria-label={label}
+					aria-pressed={active}
+					className={active ? "bg-[color:var(--surface-2)] text-[color:var(--text-primary)]" : undefined}
+					onClick={onClick}
+					size={size}
+					type="button"
+					variant="ghost"
+				>
+					<Folder className={size === "icon-sm" ? "size-4" : "size-3.5"} />
+				</Button>
+			</TooltipTrigger>
+			<TooltipContent>{label}</TooltipContent>
+		</Tooltip>
+	);
+}
+
+function FilePreviewToolbar({
+	file,
+	fileTreeToggle,
+	onRefresh,
+}: {
+	file: DesktopPreviewFile;
+	fileTreeToggle: FileTreeToggleState;
+	onRefresh: () => void;
+}) {
+	return (
+		<div className="flex h-10 shrink-0 items-center justify-between gap-2 bg-[color:var(--surface-1)] px-3">
+			<div className="min-w-0">
+				<p className="truncate text-[13px] font-medium text-[color:var(--text-primary)]" title={file.path}>
+					{file.name}
+				</p>
+				{file.kind === "text" && file.content !== undefined ? (
+					<p className="truncate text-[11px] text-[color:var(--text-tertiary)]">{file.mimeType}</p>
+				) : null}
+			</div>
+			<div className="flex shrink-0 items-center gap-1">
+				<FileTreeToggleButton {...fileTreeToggle} />
+				<Button
+					aria-label={`Refresh ${file.name}`}
+					onClick={onRefresh}
+					size="icon-xs"
+					type="button"
+					variant="ghost"
+				>
+					<RefreshCcw className="size-3.5" />
+				</Button>
+			</div>
+		</div>
+	);
+}
+
+function FilePreviewPane({
+	file,
+	fileTreeToggle,
+	onRefresh,
+}: {
+	file: DesktopPreviewFile;
+	fileTreeToggle: FileTreeToggleState;
+	onRefresh: () => void;
+}) {
 	if (file.kind === "image" && file.dataUrl) {
 		return (
 			<section className="flex h-full min-h-0 min-w-0 flex-col" data-slot="workspace-preview-pane">
-				<div className="flex h-10 shrink-0 items-center justify-between bg-[color:var(--surface-1)] px-3">
-					<p className="truncate text-[13px] font-medium text-[color:var(--text-primary)]" title={file.path}>
-						{file.name}
-					</p>
-					<Button
-						aria-label={`Refresh ${file.name}`}
-						onClick={onRefresh}
-						size="icon-xs"
-						type="button"
-						variant="ghost"
-					>
-						<RefreshCcw className="size-3.5" />
-					</Button>
-				</div>
+				<FilePreviewToolbar file={file} fileTreeToggle={fileTreeToggle} onRefresh={onRefresh} />
 				<div className="grid min-h-0 min-w-0 flex-1 place-items-center overflow-auto bg-[color:var(--background)] p-4">
 					<img alt={file.name} className="max-h-full max-w-full object-contain" src={file.dataUrl} />
 				</div>
@@ -1117,23 +1420,7 @@ function FilePreviewPane({ file, onRefresh }: { file: DesktopPreviewFile; onRefr
 	if (file.kind === "text" && file.content !== undefined) {
 		return (
 			<section className="flex h-full min-h-0 min-w-0 flex-col" data-slot="workspace-preview-pane">
-				<div className="flex h-10 shrink-0 items-center justify-between bg-[color:var(--surface-1)] px-3">
-					<div className="min-w-0">
-						<p className="truncate text-[13px] font-medium text-[color:var(--text-primary)]" title={file.path}>
-							{file.name}
-						</p>
-						<p className="truncate text-[11px] text-[color:var(--text-tertiary)]">{file.mimeType}</p>
-					</div>
-					<Button
-						aria-label={`Refresh ${file.name}`}
-						onClick={onRefresh}
-						size="icon-xs"
-						type="button"
-						variant="ghost"
-					>
-						<RefreshCcw className="size-3.5" />
-					</Button>
-				</div>
+				<FilePreviewToolbar file={file} fileTreeToggle={fileTreeToggle} onRefresh={onRefresh} />
 				<div className="min-h-0 min-w-0 flex-1 overflow-auto bg-[color:var(--background)]">
 					<PreviewSourceCode file={file} />
 				</div>
@@ -1142,29 +1429,170 @@ function FilePreviewPane({ file, onRefresh }: { file: DesktopPreviewFile; onRefr
 	}
 
 	return (
-		<div className="grid h-full min-h-[360px] place-items-center px-8 py-12 text-center">
-			<div className="grid max-w-xs justify-items-center gap-2 text-[color:var(--text-tertiary)]">
-				<AlertCircle className="size-6" />
-				<p className="text-sm">{file.errorMessage ?? "此文件无法预览。"}</p>
+		<section className="flex h-full min-h-0 min-w-0 flex-col" data-slot="workspace-preview-pane">
+			<FilePreviewToolbar file={file} fileTreeToggle={fileTreeToggle} onRefresh={onRefresh} />
+			<div className="grid min-h-0 flex-1 place-items-center px-8 py-12 text-center">
+				<div className="grid max-w-xs justify-items-center gap-2 text-[color:var(--text-tertiary)]">
+					<AlertCircle className="size-6" />
+					<p className="text-sm">{file.errorMessage ?? "此文件无法预览。"}</p>
+				</div>
 			</div>
+		</section>
+	);
+}
+
+function getSelectedWorkspaceFilePath(files: DesktopWorkspaceFileEntry[], previewPath: string): string | undefined {
+	return files.find((file) => previewPath === file.path || previewPath.endsWith(`/${file.path}`))?.path;
+}
+
+function WorkspaceFileTreeContent({
+	errorMessage,
+	filesResult,
+	onOpenFile,
+	query,
+	selectedPath,
+	setQuery,
+	status,
+}: {
+	errorMessage?: string;
+	filesResult?: DesktopWorkspaceFileListResult;
+	onOpenFile: (file: DesktopWorkspaceFileEntry) => void;
+	query: string;
+	selectedPath?: string;
+	setQuery: (query: string) => void;
+	status: WorkspaceFileListStatus;
+}) {
+	const files = useMemo(() => filterTreeFiles(filesResult?.files ?? [], query), [filesResult?.files, query]);
+	const [collapsedTreePaths, setCollapsedTreePaths] = useState<Set<string>>(() => new Set());
+	const hasFileQuery = query.trim().length > 0;
+
+	function toggleTreePath(path: string): void {
+		setCollapsedTreePaths((currentPaths) => {
+			const nextPaths = new Set(currentPaths);
+			if (nextPaths.has(path)) {
+				nextPaths.delete(path);
+			} else {
+				nextPaths.add(path);
+			}
+			return nextPaths;
+		});
+	}
+
+	return (
+		<>
+			<div className="px-2 py-2">
+				<div className="relative">
+					<Search className="-translate-y-1/2 absolute top-1/2 left-2.5 size-4 text-[color:var(--text-tertiary)]" />
+					<Input
+						className="h-9 rounded-[var(--radius-lg)] border-transparent bg-[color:var(--surface-2)] pl-8 text-sm shadow-none"
+						onChange={(event) => setQuery(event.target.value)}
+						placeholder="筛选文件..."
+						value={query}
+					/>
+				</div>
+			</div>
+			{filesResult?.truncated ? (
+				<p className="px-3 pb-1 text-[11px] text-[color:var(--text-tertiary)]">仅显示最近 5000 个文件</p>
+			) : null}
+			<section className="min-h-0 flex-1">
+				{status === "idle" || status === "loading" ? (
+					<div className="flex items-center gap-2 px-3 py-3 text-sm text-[color:var(--text-tertiary)]">
+						<Spinner className="size-3.5" label="Loading workspace files" />
+						<span>正在加载文件...</span>
+					</div>
+				) : status === "error" ? (
+					<p className="px-3 py-3 text-sm text-[color:var(--text-tertiary)]">
+						{errorMessage ?? "无法加载项目文件。"}
+					</p>
+				) : (filesResult?.files.length ?? 0) === 0 ? (
+					<p className="px-3 py-3 text-sm text-[color:var(--text-tertiary)]">没有可显示的项目文件</p>
+				) : (
+					<PathTree
+						ariaLabel="Workspace files tree"
+						collapsedPaths={collapsedTreePaths}
+						dataSlot="workspace-file-tree-virtual-list"
+						files={files}
+						forceExpanded={hasFileQuery}
+						noMatchesMessage="没有匹配的文件"
+						onToggle={toggleTreePath}
+						renderFileRow={(row) => (
+							<WorkspaceFileTreeRow onSelect={onOpenFile} row={row} selectedPath={selectedPath} />
+						)}
+					/>
+				)}
+			</section>
+		</>
+	);
+}
+
+function FilePreviewWorkspacePane({
+	file,
+	fileTreeOpen,
+	fileTreeToggle,
+	fileTreeWidth,
+	onOpenWorkspaceFile,
+	onRefresh,
+	setFileTreeWidth,
+	setWorkspaceFileQuery,
+	workspaceFileListError,
+	workspaceFileListResult,
+	workspaceFileListStatus,
+	workspaceFileQuery,
+}: {
+	file: DesktopPreviewFile;
+	fileTreeOpen: boolean;
+	fileTreeToggle: FileTreeToggleState;
+	fileTreeWidth: number;
+	onOpenWorkspaceFile: (file: DesktopWorkspaceFileEntry) => void;
+	onRefresh: () => void;
+	setFileTreeWidth: (width: number) => void;
+	setWorkspaceFileQuery: (query: string) => void;
+	workspaceFileListError?: string;
+	workspaceFileListResult?: DesktopWorkspaceFileListResult;
+	workspaceFileListStatus: WorkspaceFileListStatus;
+	workspaceFileQuery: string;
+}) {
+	const selectedWorkspacePath = getSelectedWorkspaceFilePath(workspaceFileListResult?.files ?? [], file.path);
+
+	return (
+		<div className="relative flex h-full min-h-0 min-w-0 overflow-hidden" data-slot="workspace-file-preview-layout">
+			<section className="min-h-0 min-w-0 flex-1">
+				<FilePreviewPane file={file} fileTreeToggle={fileTreeToggle} onRefresh={onRefresh} />
+			</section>
+			<ResizableFileTreePanel
+				contentSlot="workspace-file-tree-content"
+				open={fileTreeOpen}
+				panelSlot="workspace-file-tree-panel"
+				resizerLabel="Resize workspace files panel"
+				resizerSlot="workspace-file-tree-resizer"
+				setWidth={setFileTreeWidth}
+				spacerSlot="workspace-file-tree-spacer"
+				width={fileTreeWidth}
+			>
+				<WorkspaceFileTreeContent
+					errorMessage={workspaceFileListError}
+					filesResult={workspaceFileListResult}
+					onOpenFile={onOpenWorkspaceFile}
+					query={workspaceFileQuery}
+					selectedPath={selectedWorkspacePath}
+					setQuery={setWorkspaceFileQuery}
+					status={workspaceFileListStatus}
+				/>
+			</ResizableFileTreePanel>
 		</div>
 	);
 }
 
 function BrowserPreviewPane({
-	isFullscreen,
 	isNativePreviewOccluded,
 	isVisible,
 	item,
-	onFullscreenChange,
 	onNativeWebPreviewOcclusionChange,
 	onUpdateUrl,
 }: {
-	isFullscreen: boolean;
 	isNativePreviewOccluded: boolean;
 	isVisible: boolean;
 	item: Extract<WorkspacePanelItem, { type: "browser" }>;
-	onFullscreenChange: (next: boolean) => void;
 	onNativeWebPreviewOcclusionChange: SetNativeWebPreviewOcclusion;
 	onUpdateUrl: (itemId: string, url: string) => void;
 }) {
@@ -1513,11 +1941,6 @@ function BrowserPreviewPane({
 		});
 	}
 
-	function handleToggleFullscreen(): void {
-		onFullscreenChange(!isFullscreen);
-		appendConsoleLog("log", isFullscreen ? "退出全屏预览" : "进入全屏预览");
-	}
-
 	function handleClearStorage(storage: "cache" | "cookies"): void {
 		if (!item.url) {
 			appendConsoleLog("warn", "请先打开网页。");
@@ -1636,13 +2059,6 @@ function BrowserPreviewPane({
 						</div>
 					</PopoverContent>
 				</Popover>
-				<WebPreviewNavigationButton
-					aria-pressed={isFullscreen}
-					onClick={handleToggleFullscreen}
-					tooltip={isFullscreen ? "退出全屏网页预览" : "全屏网页预览"}
-				>
-					{isFullscreen ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
-				</WebPreviewNavigationButton>
 			</WebPreviewNavigation>
 			{errorMessage ? <p className="px-3 py-2 text-xs text-[color:var(--destructive)]">{errorMessage}</p> : null}
 			{item.url ? (
@@ -1681,6 +2097,7 @@ function BrowserPreviewPane({
 function ReviewPanelBody({
 	errorMessage,
 	fileTreeOpen,
+	fileTreeToggle,
 	fileTreeWidth,
 	isLoading,
 	isPatchLoading,
@@ -1695,6 +2112,7 @@ function ReviewPanelBody({
 }: {
 	errorMessage?: string;
 	fileTreeOpen: boolean;
+	fileTreeToggle: FileTreeToggleState;
 	fileTreeWidth: number;
 	isLoading: boolean;
 	isPatchLoading?: boolean;
@@ -1707,53 +2125,9 @@ function ReviewPanelBody({
 	setSelectedFile: (file: DesktopReviewFile) => void;
 	snapshot?: DesktopReviewSnapshot;
 }) {
-	const files = useMemo(() => filterFiles(snapshot?.files ?? [], query), [query, snapshot?.files]);
+	const files = useMemo(() => filterTreeFiles(snapshot?.files ?? [], query), [query, snapshot?.files]);
 	const [collapsedTreePaths, setCollapsedTreePaths] = useState<Set<string>>(() => new Set());
-	const [isResizingFileTree, setIsResizingFileTree] = useState(false);
-	const resizeStartWidthRef = useRef(fileTreeWidth);
 	const hasFileQuery = query.trim().length > 0;
-
-	function setClampedFileTreeWidth(width: number): void {
-		setFileTreeWidth(clampFileTreeWidth(width));
-	}
-
-	function handleFileTreeResizeStart(): void {
-		resizeStartWidthRef.current = fileTreeWidth;
-		setIsResizingFileTree(true);
-	}
-
-	function handleFileTreeResize(_event: MouseEvent | TouchEvent | PointerEvent, info: PanInfo): void {
-		setClampedFileTreeWidth(resizeStartWidthRef.current - info.offset.x);
-	}
-
-	function handleFileTreeResizeEnd(): void {
-		setIsResizingFileTree(false);
-	}
-
-	function handleFileTreeResizeKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
-		if (event.key === "ArrowLeft") {
-			event.preventDefault();
-			setClampedFileTreeWidth(fileTreeWidth + 16);
-			return;
-		}
-
-		if (event.key === "ArrowRight") {
-			event.preventDefault();
-			setClampedFileTreeWidth(fileTreeWidth - 16);
-			return;
-		}
-
-		if (event.key === "Home") {
-			event.preventDefault();
-			setFileTreeWidth(FILE_TREE_WIDTH.min);
-			return;
-		}
-
-		if (event.key === "End") {
-			event.preventDefault();
-			setFileTreeWidth(FILE_TREE_WIDTH.max);
-		}
-	}
 
 	function toggleTreePath(path: string): void {
 		setCollapsedTreePaths((currentPaths) => {
@@ -1766,10 +2140,6 @@ function ReviewPanelBody({
 			return nextPaths;
 		});
 	}
-
-	const fileTreeSpacerWidth = fileTreeOpen ? fileTreeWidth : 0;
-	const fileTreePanelHidden = !fileTreeOpen;
-	const fileTreeTransition = isResizingFileTree ? noMotionTransition : PUSH_REVEAL_TRANSITION;
 
 	if (isLoading && !snapshot) {
 		return (
@@ -1788,9 +2158,9 @@ function ReviewPanelBody({
 					transition={PUSH_REVEAL_TRANSITION}
 				>
 					<motion.div
-						aria-hidden={fileTreePanelHidden}
+						aria-hidden={!fileTreeOpen}
 						className="absolute inset-y-0 right-0 min-h-0 overflow-hidden p-4 shadow-[inset_1px_0_0_var(--border-subtle)]"
-						inert={fileTreePanelHidden}
+						inert={!fileTreeOpen}
 						style={{ width: fileTreeWidth }}
 					>
 						<div className="space-y-3">
@@ -1834,6 +2204,7 @@ function ReviewPanelBody({
 							<span className="ml-1 shrink-0 text-[color:var(--destructive)]">-{selectedFile.deletions}</span>
 						) : null}
 					</div>
+					<FileTreeToggleButton {...fileTreeToggle} />
 					<Tooltip>
 						<TooltipTrigger asChild>
 							<Button
@@ -1883,74 +2254,42 @@ function ReviewPanelBody({
 				</div>
 			</section>
 
-			<motion.div
-				className="relative hidden min-h-0 shrink-0 overflow-hidden lg:block"
-				data-slot="review-file-tree-spacer"
-				data-width={fileTreeWidth}
-				animate={{ width: fileTreeSpacerWidth }}
-				initial={false}
-				transition={fileTreeTransition}
+			<ResizableFileTreePanel
+				contentSlot="review-file-tree-content"
+				open={fileTreeOpen}
+				panelSlot="review-file-tree-panel"
+				resizerLabel="Resize changed files panel"
+				resizerSlot="review-file-tree-resizer"
+				setWidth={setFileTreeWidth}
+				spacerSlot="review-file-tree-spacer"
+				width={fileTreeWidth}
 			>
-				<motion.div
-					aria-hidden={fileTreePanelHidden}
-					className="absolute inset-y-0 right-0 flex min-h-0 overflow-hidden"
-					data-slot="review-file-tree-panel"
-					data-width={fileTreeWidth}
-					inert={fileTreePanelHidden}
-					style={{ width: fileTreeWidth }}
-					transition={fileTreeTransition}
-				>
-					<motion.div
-						aria-label={fileTreeOpen ? "Resize changed files panel" : undefined}
-						aria-orientation="vertical"
-						aria-valuemax={FILE_TREE_WIDTH.max}
-						aria-valuemin={FILE_TREE_WIDTH.min}
-						aria-valuenow={fileTreeWidth}
-						className="-left-1.5 group absolute inset-y-0 z-20 w-3 cursor-col-resize touch-none focus-visible:outline-none"
-						data-slot="review-file-tree-resizer"
-						drag="x"
-						dragConstraints={{ left: 0, right: 0 }}
-						dragElastic={0}
-						dragMomentum={false}
-						onDrag={handleFileTreeResize}
-						onDragEnd={handleFileTreeResizeEnd}
-						onDragStart={handleFileTreeResizeStart}
-						onKeyDown={handleFileTreeResizeKeyDown}
-						role="separator"
-						style={{ x: 0 }}
-						tabIndex={fileTreePanelHidden ? -1 : 0}
-						transition={fileTreeTransition}
+				<div className="px-2 py-2">
+					<div className="relative">
+						<Search className="-translate-y-1/2 absolute top-1/2 left-2.5 size-4 text-[color:var(--text-tertiary)]" />
+						<Input
+							className="h-9 rounded-[var(--radius-lg)] border-transparent bg-[color:var(--surface-2)] pl-8 text-sm shadow-none"
+							onChange={(event) => setQuery(event.target.value)}
+							placeholder="筛选文件..."
+							value={query}
+						/>
+					</div>
+				</div>
+				<section className="min-h-0 flex-1">
+					<PathTree
+						ariaLabel={fileTreeOpen ? "Changed files tree" : undefined}
+						collapsedPaths={collapsedTreePaths}
+						dataSlot="review-file-tree-virtual-list"
+						files={files}
+						forceExpanded={hasFileQuery}
+						noMatchesMessage="没有匹配的文件"
+						onToggle={toggleTreePath}
+						renderFileRow={(row) => (
+							<ReviewFileTreeRow onSelect={setSelectedFile} row={row} selectedPath={selectedFile?.path} />
+						)}
 					/>
-					<aside
-						className="flex min-h-0 flex-col bg-[color:var(--surface-1)] shadow-[inset_1px_0_0_var(--border-subtle)]"
-						data-slot="review-file-tree-content"
-						style={{ width: fileTreeWidth }}
-					>
-						<div className="px-2 py-2">
-							<div className="relative">
-								<Search className="-translate-y-1/2 absolute top-1/2 left-2.5 size-4 text-[color:var(--text-tertiary)]" />
-								<Input
-									className="h-9 rounded-[var(--radius-lg)] border-transparent bg-[color:var(--surface-2)] pl-8 text-sm shadow-none"
-									onChange={(event) => setQuery(event.target.value)}
-									placeholder="筛选文件..."
-									value={query}
-								/>
-							</div>
-						</div>
-						<section className="min-h-0 flex-1">
-							<FileTree
-								ariaLabel={fileTreeOpen ? "Changed files tree" : undefined}
-								collapsedPaths={collapsedTreePaths}
-								files={files}
-								forceExpanded={hasFileQuery}
-								onSelect={setSelectedFile}
-								onToggle={toggleTreePath}
-								selectedPath={selectedFile?.path}
-							/>
-						</section>
-					</aside>
-				</motion.div>
-			</motion.div>
+				</section>
+			</ResizableFileTreePanel>
 		</div>
 	);
 }
@@ -1976,7 +2315,13 @@ export function ReviewWorkspacePanel({
 	});
 	const [fileTreeOpen, setFileTreeOpen] = useState(true);
 	const [fileTreeWidth, setFileTreeWidth] = useState<number>(FILE_TREE_WIDTH.default);
+	const [workspaceFileTreeOpen, setWorkspaceFileTreeOpen] = useState(false);
+	const [workspaceFileTreeWidth, setWorkspaceFileTreeWidth] = useState<number>(FILE_TREE_WIDTH.default);
 	const [query, setQuery] = useState("");
+	const [workspaceFileQuery, setWorkspaceFileQuery] = useState("");
+	const [workspaceFileListStatus, setWorkspaceFileListStatus] = useState<WorkspaceFileListStatus>("idle");
+	const [workspaceFileListResult, setWorkspaceFileListResult] = useState<DesktopWorkspaceFileListResult | undefined>();
+	const [workspaceFileListError, setWorkspaceFileListError] = useState<string | undefined>();
 	const [selectedPath, setSelectedPath] = useState<string | undefined>();
 	const [reviewPanelWidth, setReviewPanelWidth] = useState<number>(REVIEW_PANEL_WIDTH.default);
 	const [containerWidth, setContainerWidth] = useState<number | undefined>();
@@ -1984,7 +2329,7 @@ export function ReviewWorkspacePanel({
 	const [isFollowingContainerResize, setIsFollowingContainerResize] = useState(false);
 	const [hasHydratedReviewBody, setHasHydratedReviewBody] = useState(false);
 	const [workspaceItems, setWorkspaceItems] = useState<WorkspacePanelItem[]>([]);
-	const [activeWorkspaceItemId, setActiveWorkspaceItemId] = useState<string>("review");
+	const [activeWorkspaceItemId, setActiveWorkspaceItemId] = useState<string | undefined>();
 	const [isNativeWebPreviewOccluded, setIsNativeWebPreviewOccluded] = useState(false);
 	const closeButtonRef = useRef<HTMLButtonElement | null>(null);
 	const reviewSpacerRef = useRef<HTMLDivElement | null>(null);
@@ -1996,13 +2341,15 @@ export function ReviewWorkspacePanel({
 	const nativeWebPreviewOcclusionSourcesRef = useRef<Set<NativeWebPreviewOcclusionSource>>(new Set());
 	const requestedPatchPathsRef = useRef<Set<string>>(new Set());
 	const workspaceContextKeyRef = useRef<string | undefined>(undefined);
+	const workspaceFileListRequestKeyRef = useRef<string | undefined>(undefined);
 	const [loadingPatchPath, setLoadingPatchPath] = useState<string | undefined>();
 	const [patchErrorByPath, setPatchErrorByPath] = useState<Record<string, string>>({});
+	const activeWorkspaceItem = workspaceItems.find((item) => item.id === activeWorkspaceItemId);
+	const activeWorkspaceItemLabel = activeWorkspaceItem ? getWorkspaceItemTitle(activeWorkspaceItem) : "空面板";
+	const hasReviewWorkspaceItem = workspaceItems.some((item) => item.type === "review");
+	const isReviewWorkspaceItemActive = activeWorkspaceItem?.type === "review";
+	const isFileWorkspaceItemActive = activeWorkspaceItem?.type === "file";
 	const selectedFile = snapshot?.files.find((file) => file.path === selectedPath) ?? snapshot?.files[0];
-	const allWorkspaceItems = useMemo(() => [REVIEW_WORKSPACE_ITEM, ...workspaceItems], [workspaceItems]);
-	const activeWorkspaceItem =
-		allWorkspaceItems.find((item) => item.id === activeWorkspaceItemId) ?? REVIEW_WORKSPACE_ITEM;
-	const activeWorkspaceItemLabel = getWorkspaceItemTitle(activeWorkspaceItem);
 	const reviewAdditions = snapshot?.totals.additions ?? 0;
 	const reviewDeletions = snapshot?.totals.deletions ?? 0;
 	const reviewBranchLabel = snapshot?.branch ?? "no branch";
@@ -2016,7 +2363,6 @@ export function ReviewWorkspacePanel({
 	const reviewPanelTransition = reviewPanelWidthTransitionMode === "instant" ? noMotionTransition : panelSpring;
 	const isFullscreenOpen = isFullscreen && open;
 	const displayMode = isFullscreenOpen ? "fullscreen" : "panel";
-	const showHeaderTitleBlock = !isFullscreenOpen || !isTitlebarSummaryVisible;
 	const reviewPanelLayoutDriver = isFullscreenOpen ? "overlay" : "width";
 	const reviewPanelRootWidth = isFullscreenOpen ? "100%" : open ? resolvedReviewPanelWidth : 0;
 	const FullscreenIcon = isFullscreen ? Minimize2 : Maximize2;
@@ -2066,7 +2412,10 @@ export function ReviewWorkspacePanel({
 			return;
 		}
 		const nextItems = files.map(createWorkspacePreviewItem);
-		const nextActiveItemId = nextItems.at(-1)?.id ?? "review";
+		const nextActiveItemId = nextItems.at(-1)?.id;
+		if (!nextActiveItemId) {
+			return;
+		}
 		setWorkspaceItems((currentItems) => {
 			const nextItemsById = new Map(currentItems.map((item) => [item.id, item]));
 			for (const item of nextItems) {
@@ -2076,6 +2425,28 @@ export function ReviewWorkspacePanel({
 		});
 		setActiveWorkspaceItemId(nextActiveItemId);
 	}, []);
+
+	const handleOpenWorkspaceTreeFile = useCallback(
+		(file: DesktopWorkspaceFileEntry): void => {
+			const request = projectId
+				? { path: file.path, projectId }
+				: sessionId
+					? { path: file.path, sessionId }
+					: undefined;
+			if (!request) {
+				upsertWorkspacePreviewFiles([createPreviewErrorFile(file.path, "当前 workspace 不可用，无法预览文件。")]);
+				return;
+			}
+
+			void window.desktopAgent
+				.openWorkspacePreviewFile(request)
+				.then((previewFile) => upsertWorkspacePreviewFiles([previewFile]))
+				.catch((error: unknown) => {
+					upsertWorkspacePreviewFiles([createPreviewErrorFile(file.path, getErrorMessage(error))]);
+				});
+		},
+		[projectId, sessionId, upsertWorkspacePreviewFiles],
+	);
 
 	const upsertWebPreviewUrl = useCallback((url: string): void => {
 		const previewUrl = normalizeDesktopWebPreviewUrl(url);
@@ -2101,6 +2472,7 @@ export function ReviewWorkspacePanel({
 			if (containerResizeFrameRef.current !== undefined) {
 				cancelAnimationFrame(containerResizeFrameRef.current);
 			}
+			workspaceFileListRequestKeyRef.current = undefined;
 			reviewResizeDragCleanupRef.current?.();
 		};
 	}, []);
@@ -2148,14 +2520,61 @@ export function ReviewWorkspacePanel({
 		}
 		workspaceContextKeyRef.current = nextWorkspaceContextKey;
 		setWorkspaceItems([]);
-		setActiveWorkspaceItemId("review");
+		setActiveWorkspaceItemId(undefined);
 		handledPreviewRequestNonceRef.current = undefined;
 		handledWebPreviewRequestNonceRef.current = undefined;
 		handledSubagentRequestNonceRef.current = undefined;
 		requestedPatchPathsRef.current = new Set();
 		setLoadingPatchPath(undefined);
 		setPatchErrorByPath({});
+		workspaceFileListRequestKeyRef.current = undefined;
+		setWorkspaceFileTreeOpen(false);
+		setWorkspaceFileQuery("");
+		setWorkspaceFileListStatus("idle");
+		setWorkspaceFileListResult(undefined);
+		setWorkspaceFileListError(undefined);
 	}, [projectId, sessionId]);
+
+	useEffect(() => {
+		if (!open || !isFileWorkspaceItemActive || !workspaceFileTreeOpen || workspaceFileListStatus !== "idle") {
+			return undefined;
+		}
+
+		const request = projectId
+			? { projectId, limit: WORKSPACE_FILE_TREE_LIMIT }
+			: sessionId
+				? { sessionId, limit: WORKSPACE_FILE_TREE_LIMIT }
+				: undefined;
+		if (!request) {
+			setWorkspaceFileListStatus("error");
+			setWorkspaceFileListError("当前 workspace 不可用，无法列出文件。");
+			return undefined;
+		}
+
+		const requestKey = projectId ? `project:${projectId}` : `session:${sessionId}`;
+		workspaceFileListRequestKeyRef.current = requestKey;
+		setWorkspaceFileListStatus("loading");
+		setWorkspaceFileListError(undefined);
+		void window.desktopAgent
+			.listWorkspaceFiles(request)
+			.then((result) => {
+				if (workspaceFileListRequestKeyRef.current !== requestKey) {
+					return;
+				}
+				setWorkspaceFileListResult(result);
+				setWorkspaceFileListStatus(result.errorMessage ? "error" : "loaded");
+				setWorkspaceFileListError(result.errorMessage);
+			})
+			.catch((error: unknown) => {
+				if (workspaceFileListRequestKeyRef.current !== requestKey) {
+					return;
+				}
+				setWorkspaceFileListStatus("error");
+				setWorkspaceFileListError(getErrorMessage(error));
+			});
+
+		return undefined;
+	}, [isFileWorkspaceItemActive, open, projectId, sessionId, workspaceFileTreeOpen, workspaceFileListStatus]);
 
 	const snapshotGeneratedAt = snapshot?.generatedAt;
 
@@ -2202,6 +2621,7 @@ export function ReviewWorkspacePanel({
 	useEffect(() => {
 		if (
 			!open ||
+			!isReviewWorkspaceItemActive ||
 			!selectedFile ||
 			selectedFile.patch ||
 			selectedFile.isBinary ||
@@ -2243,7 +2663,7 @@ export function ReviewWorkspacePanel({
 		return () => {
 			isDisposed = true;
 		};
-	}, [loadFilePatch, open, selectedFile]);
+	}, [isReviewWorkspaceItemActive, loadFilePatch, open, selectedFile]);
 
 	useEffect(() => {
 		if (!open) {
@@ -2313,7 +2733,7 @@ export function ReviewWorkspacePanel({
 	}, [handleRefreshWorkspaceFile, open, sessionId, workspaceItems]);
 
 	useEffect(() => {
-		if (!open || hasHydratedReviewBody) {
+		if (!open || !hasReviewWorkspaceItem || hasHydratedReviewBody) {
 			return undefined;
 		}
 
@@ -2321,7 +2741,7 @@ export function ReviewWorkspacePanel({
 			setHasHydratedReviewBody(true);
 		}, REVIEW_PANEL_BODY_HYDRATION_DELAY_MS);
 		return () => window.clearTimeout(timeoutId);
-	}, [hasHydratedReviewBody, open]);
+	}, [hasHydratedReviewBody, hasReviewWorkspaceItem, open]);
 
 	useEffect(() => {
 		if (isFullscreen) {
@@ -2441,6 +2861,13 @@ export function ReviewWorkspacePanel({
 		upsertWorkspacePreviewFiles(files);
 	}
 
+	function handleOpenReview(): void {
+		setWorkspaceItems((currentItems) =>
+			currentItems.some((item) => item.type === "review") ? currentItems : [...currentItems, REVIEW_WORKSPACE_ITEM],
+		);
+		setActiveWorkspaceItemId(REVIEW_WORKSPACE_ITEM.id);
+	}
+
 	function handleOpenBrowser(): void {
 		const id = `browser:${Date.now()}`;
 		const item: WorkspacePanelItem = {
@@ -2468,11 +2895,24 @@ export function ReviewWorkspacePanel({
 	}
 
 	function handleCloseWorkspaceItem(itemId: string): void {
-		setWorkspaceItems((currentItems) => currentItems.filter((item) => item.id !== itemId));
+		const itemIndex = workspaceItems.findIndex((item) => item.id === itemId);
+		const nextItems = workspaceItems.filter((item) => item.id !== itemId);
+		setWorkspaceItems(nextItems);
 		if (activeWorkspaceItemId === itemId) {
-			setActiveWorkspaceItemId("review");
+			setActiveWorkspaceItemId(nextItems[itemIndex]?.id ?? nextItems[itemIndex - 1]?.id);
 		}
 	}
+
+	const reviewFileTreeToggle: FileTreeToggleState = {
+		active: fileTreeOpen,
+		label: fileTreeOpen ? "收起变更文件列表" : "显示变更文件列表",
+		onClick: () => setFileTreeOpen((current) => !current),
+	};
+	const workspaceFileTreeToggleState: FileTreeToggleState = {
+		active: workspaceFileTreeOpen,
+		label: workspaceFileTreeOpen ? "收起项目文件树" : "显示项目文件树",
+		onClick: () => setWorkspaceFileTreeOpen((current) => !current),
+	};
 
 	return (
 		<MotionConfig reducedMotion="never">
@@ -2547,79 +2987,36 @@ export function ReviewWorkspacePanel({
 					<div className="flex h-full min-w-0 flex-col">
 						<header
 							className={cn(
-								"flex h-12 shrink-0 items-center justify-between bg-[color:var(--surface-1)] px-3",
+								"flex h-12 shrink-0 items-center gap-2 bg-[color:var(--surface-1)] px-2",
 								!isTitlebarSummaryVisible && "desktop-window-drag-region",
-								showHeaderTitleBlock ? "" : "justify-end",
 							)}
 							data-display-mode={displayMode}
 							data-titlebar-summary-visible={isTitlebarSummaryVisible ? "true" : "false"}
 							data-slot="review-workspace-header"
 						>
 							<div
-								className={cn("flex min-w-0 items-center gap-3", showHeaderTitleBlock ? "" : "hidden")}
-								data-slot="review-workspace-title-block"
+								className="flex h-full min-w-0 flex-1 items-center gap-1"
+								data-slot="review-workspace-tab-strip"
 							>
-								<Button
-									aria-label="Collapse review workspace"
-									className="desktop-window-no-drag size-8 rounded-[var(--radius-md)] bg-[color:var(--surface-2)] text-[color:var(--text-primary)] hover:bg-[color:var(--surface-3)]"
-									data-slot="review-workspace-icon"
-									onClick={onClose}
-									size="icon-sm"
-									type="button"
-									variant="ghost"
-								>
-									<GitCompareArrows className="size-4" />
-								</Button>
-								<div
-									className="desktop-window-drag-region min-w-0"
-									data-slot="review-workspace-title-text-region"
-								>
-									<div className="flex min-w-0 items-center gap-2">
-										<p className="truncate text-[13px] font-medium text-[color:var(--text-primary)]">
-											综合面板
-										</p>
-										<span className="text-xs text-[color:var(--success)]">+{reviewAdditions}</span>
-										<span className="text-xs text-[color:var(--destructive)]">-{reviewDeletions}</span>
-									</div>
-									<p className="truncate text-xs text-[color:var(--text-tertiary)]">
-										{isFullscreenOpen
-											? `${reviewBranchLabel} / ${workspaceLabel}`
-											: snapshot?.branch
-												? `${snapshot.branch} / ${snapshot.totals.files} 个文件`
-												: workspaceLabel}
-									</p>
-								</div>
+								<WorkspaceCreateMenu
+									onNativeWebPreviewOcclusionChange={setNativeWebPreviewOcclusion}
+									onOpenBrowser={handleOpenBrowser}
+									onOpenFiles={handleOpenPreviewFiles}
+									onOpenReview={handleOpenReview}
+								/>
+								<WorkspacePanelTabs
+									activeItemId={activeWorkspaceItem?.id}
+									isFullscreen={isFullscreen}
+									items={workspaceItems}
+									onCloseItem={handleCloseWorkspaceItem}
+									onSelectItem={setActiveWorkspaceItemId}
+								/>
 							</div>
 
 							<div
 								className="desktop-window-drag-region flex h-full shrink-0 items-center gap-1"
 								data-slot="review-workspace-header-actions"
 							>
-								<Tooltip>
-									<TooltipTrigger asChild>
-										<Button
-											aria-label={fileTreeOpen ? "Hide changed files panel" : "Show changed files panel"}
-											aria-pressed={fileTreeOpen}
-											className={cn(
-												"desktop-window-no-drag",
-												fileTreeOpen
-													? "bg-[color:var(--surface-2)] text-[color:var(--text-primary)]"
-													: undefined,
-											)}
-											onClick={() => setFileTreeOpen((current) => !current)}
-											size="icon-sm"
-											variant="ghost"
-										>
-											<Folder className="size-4" />
-										</Button>
-									</TooltipTrigger>
-									<TooltipContent>{fileTreeOpen ? "收起文件结构" : "显示文件结构"}</TooltipContent>
-								</Tooltip>
-								<WorkspaceCreateMenu
-									onNativeWebPreviewOcclusionChange={setNativeWebPreviewOcclusion}
-									onOpenBrowser={handleOpenBrowser}
-									onOpenFiles={handleOpenPreviewFiles}
-								/>
 								<Tooltip>
 									<TooltipTrigger asChild>
 										<Button
@@ -2673,29 +3070,35 @@ export function ReviewWorkspacePanel({
 							</div>
 						</header>
 
-						<WorkspacePanelTabs
-							activeItemId={activeWorkspaceItem.id}
-							isFullscreen={isFullscreen}
-							items={allWorkspaceItems}
-							onCloseItem={handleCloseWorkspaceItem}
-							onSelectItem={setActiveWorkspaceItemId}
-						/>
-
 						<div className="min-h-0 min-w-0 flex-1">
-							{activeWorkspaceItem.type === "file" ? (
-								<FilePreviewPane
+							{!activeWorkspaceItem ? (
+								<WorkspaceEmptyState
+									onOpenBrowser={handleOpenBrowser}
+									onOpenFiles={handleOpenPreviewFiles}
+									onOpenReview={handleOpenReview}
+								/>
+							) : activeWorkspaceItem.type === "file" ? (
+								<FilePreviewWorkspacePane
+									fileTreeOpen={workspaceFileTreeOpen}
+									fileTreeToggle={workspaceFileTreeToggleState}
+									fileTreeWidth={workspaceFileTreeWidth}
 									file={activeWorkspaceItem.file}
+									onOpenWorkspaceFile={handleOpenWorkspaceTreeFile}
 									onRefresh={() =>
 										void handleRefreshWorkspaceFile(activeWorkspaceItem.id, activeWorkspaceItem.file.path)
 									}
+									setFileTreeWidth={setWorkspaceFileTreeWidth}
+									setWorkspaceFileQuery={setWorkspaceFileQuery}
+									workspaceFileListError={workspaceFileListError}
+									workspaceFileListResult={workspaceFileListResult}
+									workspaceFileListStatus={workspaceFileListStatus}
+									workspaceFileQuery={workspaceFileQuery}
 								/>
 							) : activeWorkspaceItem.type === "browser" ? (
 								<BrowserPreviewPane
-									isFullscreen={isFullscreen}
 									isNativePreviewOccluded={isNativeWebPreviewOccluded}
 									isVisible={open}
 									item={activeWorkspaceItem}
-									onFullscreenChange={onFullscreenChange}
 									onNativeWebPreviewOcclusionChange={setNativeWebPreviewOcclusion}
 									onUpdateUrl={handleBrowserUrlUpdate}
 								/>
@@ -2708,6 +3111,7 @@ export function ReviewWorkspacePanel({
 								<ReviewPanelBody
 									errorMessage={errorMessage}
 									fileTreeOpen={fileTreeOpen}
+									fileTreeToggle={reviewFileTreeToggle}
 									fileTreeWidth={fileTreeWidth}
 									isLoading={isLoading}
 									isPatchLoading={loadingPatchPath === selectedFile?.path}

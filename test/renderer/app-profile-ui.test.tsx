@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../../src/renderer/App.tsx";
@@ -1690,6 +1690,7 @@ describe("App profile controls", () => {
 
 		await user.click(screen.getByRole("button", { name: "审查" }));
 		await waitFor(() => expect(getReviewSnapshot).toHaveBeenCalledTimes(1));
+		await user.click(await within(screen.getByLabelText("Review workspace")).findByRole("button", { name: "审查" }));
 		await user.click(screen.getByRole("button", { name: "Enter review workspace fullscreen" }));
 
 		const titlebarControls = document.querySelector('[data-slot="desktop-titlebar-controls"]');
@@ -1798,24 +1799,13 @@ describe("App profile controls", () => {
 		await screen.findByText("hello");
 		await user.click(screen.getByRole("button", { name: "审查" }));
 		await waitFor(() => expect(getReviewSnapshot).toHaveBeenCalledTimes(1));
+		await user.click(await within(screen.getByLabelText("Review workspace")).findByRole("button", { name: "审查" }));
 		await user.click(screen.getByRole("button", { name: "Enter review workspace fullscreen" }));
 
 		expect(document.querySelector('[data-slot="review-fullscreen-titlebar-summary"]')).toBeNull();
-		const titleBlock = await waitFor(() => {
-			const mountedTitleBlock = document.querySelector('[data-slot="review-workspace-title-block"]');
-			expect(mountedTitleBlock).toBeTruthy();
-			return mountedTitleBlock as HTMLElement;
-		});
-		expect(titleBlock.className).not.toContain("hidden");
-		const titleText = titleBlock.textContent ?? "";
-		const expectedOrder = ["综合面板", "+2", "-1", "feature/review", "/workspace/project"];
-		let previousIndex = -1;
-		for (const label of expectedOrder) {
-			const currentIndex = titleText.indexOf(label);
-			expect(currentIndex).toBeGreaterThan(previousIndex);
-			previousIndex = currentIndex;
-		}
-		expect(screen.queryByRole("tab", { name: "审查" })).toBeNull();
+		await waitFor(() => expect(document.querySelector('[data-slot="review-workspace-header"]')).toBeTruthy());
+		expect(document.querySelector('[data-slot="review-workspace-title-block"]')).toBeNull();
+		expect(screen.getByRole("tab", { name: "审查" })).toBeTruthy();
 		expect(getReviewSnapshot).toHaveBeenCalledTimes(1);
 	});
 
@@ -2376,9 +2366,10 @@ describe("App profile controls", () => {
 		expect(reviewPanel.getAttribute("data-motion")).toBe("structural-drawer");
 		expect(reviewPanel.getAttribute("data-motion-owner")).toBe("fixed-content");
 		expect(reviewPanel.closest("[data-slot='review-workspace-spacer']")).toBe(reviewSpacer);
-		expect(reviewPanel.querySelector('[data-slot="review-workspace-icon"]')).toBeTruthy();
+		expect(reviewPanel.querySelector('[data-slot="review-workspace-icon"]')).toBeNull();
+		expect(reviewPanel.querySelector('[data-slot="review-workspace-title-block"]')).toBeNull();
 		expect(screen.getByRole("separator", { name: "Resize review panel" })).toBeTruthy();
-		expect(screen.queryByRole("button", { name: "审查" })).toBeNull();
+		await user.click(within(reviewPanel).getByRole("button", { name: "审查" }));
 		expect(await screen.findByText("尚无文件更改")).toBeTruthy();
 
 		await user.click(screen.getByRole("button", { name: "Close review workspace" }));

@@ -288,11 +288,8 @@ describe("UI primitives", () => {
 		];
 		const combinedSource = sources.join("\n");
 		const reviewPanelSource = sources[4] ?? "";
-		const reviewTitleBlock = reviewPanelSource.match(
-			/className=\{cn\("flex min-w-0 items-center gap-3"[\s\S]*?data-slot="review-workspace-title-block"/,
-		)?.[0];
 
-		expect(combinedSource.match(/desktop-window-drag-region/g) ?? []).toHaveLength(10);
+		expect(combinedSource.match(/desktop-window-drag-region/g) ?? []).toHaveLength(9);
 		expect(combinedSource).toContain('data-slot="sidebar-titlebar-drag-region"');
 		expect(combinedSource).toContain('data-slot="desktop-settings-titlebar-drag-region"');
 		expect(combinedSource).toContain('data-slot="workbench-page-header-drag-region"');
@@ -309,9 +306,10 @@ describe("UI primitives", () => {
 		);
 		expect(combinedSource).toContain('data-slot="workbench-header-title-region"');
 		expect(combinedSource).toContain('data-slot="workbench-page-header-title-region"');
-		expect(combinedSource).toContain('data-slot="review-workspace-title-text-region"');
-		expect(reviewTitleBlock).not.toContain("desktop-window-drag-region");
-		expect(reviewPanelSource).toContain("desktop-window-no-drag size-8");
+		expect(combinedSource).toContain('data-slot="review-workspace-tab-strip"');
+		expect(combinedSource).not.toContain('data-slot="review-workspace-title-text-region"');
+		expect(combinedSource).not.toContain('data-slot="review-workspace-title-block"');
+		expect(reviewPanelSource).toContain('className="desktop-window-no-drag flex h-full');
 		expect(reviewPanelSource).toContain('className="desktop-window-no-drag"');
 		expect(combinedSource).toContain(
 			'className="desktop-window-no-drag relative z-10 flex min-w-0 items-center justify-end gap-2 justify-self-end"',

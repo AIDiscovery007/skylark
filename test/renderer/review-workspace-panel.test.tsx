@@ -22,6 +22,8 @@ import type {
 	DesktopSubagentSnapshot,
 	DesktopWebPreviewEvent,
 	DesktopWebPreviewState,
+	DesktopWorkspaceFileEntry,
+	DesktopWorkspaceFileListResult,
 	DesktopWorkspacePreviewFileRequest,
 } from "../../src/shared/types.ts";
 import {
@@ -133,6 +135,29 @@ const typescriptPreviewFile: DesktopPreviewFile = {
 	content: "export const ready: boolean = true;\n",
 	updatedAt: "2026-05-01T00:00:00.000Z",
 };
+const workspaceFileEntries: DesktopWorkspaceFileEntry[] = [
+	{
+		path: "notes.txt",
+		name: "notes.txt",
+		type: "docs",
+		size: 14,
+		updatedAt: "2026-05-01T00:00:00.000Z",
+	},
+	{
+		path: ".pi/extensions/tps.ts",
+		name: "tps.ts",
+		type: "code",
+		size: 34,
+		updatedAt: "2026-05-01T00:00:00.000Z",
+	},
+	{
+		path: "src/App.tsx",
+		name: "App.tsx",
+		type: "code",
+		size: 84,
+		updatedAt: "2026-05-01T00:00:00.000Z",
+	},
+];
 const htmlPreviewFile: DesktopPreviewFile = {
 	path: "/workspace/project/chart.html",
 	name: "chart.html",
@@ -258,7 +283,16 @@ const subagentSnapshot: DesktopSubagentSnapshot = {
 	isStreaming: false,
 };
 
-function installBridge(snapshot: ReviewSnapshotSource = changedSnapshot, previewFiles: DesktopPreviewFile[] = []) {
+function installBridge(
+	snapshot: ReviewSnapshotSource = changedSnapshot,
+	previewFiles: DesktopPreviewFile[] = [],
+	workspaceFileList: DesktopWorkspaceFileListResult = {
+		files: workspaceFileEntries,
+		rootPath: "/workspace/project",
+		truncated: false,
+	},
+	workspacePreviewFiles: DesktopPreviewFile[] = previewFiles,
+) {
 	const agentEvents = createRendererBridgeEventChannel<SerializedAgentEvent>();
 	const environmentEvents = createRendererBridgeEventChannel<DesktopEnvironmentEvent>();
 	const subagentEvents = createRendererBridgeEventChannel<DesktopSubagentRuntimeEvent>();
@@ -292,6 +326,7 @@ function installBridge(snapshot: ReviewSnapshotSource = changedSnapshot, preview
 		getSubagentSnapshot: vi.fn(async () => subagentSnapshot),
 		openExternalUrl: vi.fn(async () => undefined),
 		openPreviewFiles: vi.fn(async () => previewFiles),
+		listWorkspaceFiles: vi.fn(async () => workspaceFileList),
 		showWebPreview: vi.fn(async (request) => {
 			const currentState = getWebPreviewState(request.id);
 			return rememberWebPreviewState({
@@ -323,7 +358,7 @@ function installBridge(snapshot: ReviewSnapshotSource = changedSnapshot, preview
 		),
 		closeWebPreview: vi.fn(async () => undefined),
 		openWorkspacePreviewFile: vi.fn(async (request: DesktopWorkspacePreviewFileRequest) => {
-			const previewFile = previewFiles.find(
+			const previewFile = workspacePreviewFiles.find(
 				(file) => file.path === request.path || file.path.endsWith(request.path),
 			);
 			if (!previewFile) {
@@ -350,6 +385,7 @@ function installBridge(snapshot: ReviewSnapshotSource = changedSnapshot, preview
 		| "getSubagentSnapshot"
 		| "getReviewFilePatch"
 		| "getReviewSnapshot"
+		| "listWorkspaceFiles"
 		| "openPreviewFiles"
 		| "openExternalUrl"
 		| "openWorkspacePreviewFile"
@@ -379,8 +415,15 @@ function installBridge(snapshot: ReviewSnapshotSource = changedSnapshot, preview
 	};
 }
 
-function renderPanel(snapshot?: DesktopReviewSnapshot) {
-	const helpers = installBridge(snapshot);
+function renderPanel(
+	snapshot: ReviewSnapshotSource = changedSnapshot,
+	options: {
+		openReview?: boolean;
+		previewFiles?: DesktopPreviewFile[];
+		workspaceFileList?: DesktopWorkspaceFileListResult;
+	} = {},
+) {
+	const helpers = installBridge(snapshot, options.previewFiles, options.workspaceFileList);
 	render(
 		<TooltipProvider>
 			<div className="relative h-[720px]">
@@ -396,6 +439,9 @@ function renderPanel(snapshot?: DesktopReviewSnapshot) {
 			</div>
 		</TooltipProvider>,
 	);
+	if (options.openReview ?? true) {
+		fireEvent.click(screen.getByRole("button", { name: "审查" }));
+	}
 	return helpers;
 }
 
@@ -474,6 +520,52 @@ describe("ReviewWorkspacePanel", () => {
 		expect(clampReviewPanelWidth(REVIEW_PANEL_WIDTH.default, 800)).toBe(240);
 	});
 
+	it("starts as a tabless workspace with file, browser, and review launch cards", async () => {
+		const user = userEvent.setup();
+		const { bridge } = renderPanel(changedSnapshot, { openReview: false, previewFiles: [textPreviewFile] });
+
+		expect(screen.queryByRole("tablist", { name: "Workspace panel tabs" })).toBeNull();
+		expect(screen.getByRole("button", { name: "文件" })).toBeTruthy();
+		expect(screen.getByRole("button", { name: "浏览器" })).toBeTruthy();
+		expect(screen.getByRole("button", { name: "审查" })).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "显示项目文件树" })).toBeNull();
+		expect(screen.queryByRole("button", { name: "收起变更文件列表" })).toBeNull();
+		expect(document.querySelector('[data-slot="review-workspace-title-block"]')).toBeNull();
+
+		await user.click(screen.getByRole("button", { name: "浏览器" }));
+		expect(await screen.findByRole("tab", { name: "网页预览" })).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "显示项目文件树" })).toBeNull();
+		expect(screen.queryByRole("button", { name: "收起变更文件列表" })).toBeNull();
+		await user.click(screen.getByRole("button", { name: "Close 网页预览" }));
+		expect(screen.queryByRole("tablist", { name: "Workspace panel tabs" })).toBeNull();
+
+		await user.click(screen.getByRole("button", { name: "文件" }));
+		expect(bridge.openPreviewFiles).toHaveBeenCalledWith({ projectId: "project-1" });
+		expect(await screen.findByRole("tab", { name: /notes\.txt/i })).toBeTruthy();
+		expect(screen.getByRole("button", { name: "显示项目文件树" })).toBeTruthy();
+		expect(
+			within(document.querySelector('[data-slot="review-workspace-header-actions"]') as HTMLElement).queryByRole(
+				"button",
+				{ name: "显示项目文件树" },
+			),
+		).toBeNull();
+		expect(screen.queryByRole("button", { name: "收起变更文件列表" })).toBeNull();
+		await user.click(screen.getByRole("button", { name: "Close notes.txt" }));
+
+		await user.click(screen.getByRole("button", { name: "审查" }));
+		expect(await screen.findByRole("tab", { name: "审查" })).toBeTruthy();
+		expect(await screen.findByRole("button", { name: "收起变更文件列表" })).toBeTruthy();
+		expect(
+			within(document.querySelector('[data-slot="review-workspace-header-actions"]') as HTMLElement).queryByRole(
+				"button",
+				{ name: "收起变更文件列表" },
+			),
+		).toBeNull();
+		expect(screen.queryByRole("button", { name: "显示项目文件树" })).toBeNull();
+		await user.click(screen.getByRole("button", { name: "Close 审查" }));
+		expect(screen.queryByRole("tablist", { name: "Workspace panel tabs" })).toBeNull();
+	});
+
 	it("renders changed file tree, selected diff, and disabled git actions", async () => {
 		const user = userEvent.setup();
 		const { bridge } = renderPanel();
@@ -481,7 +573,8 @@ describe("ReviewWorkspacePanel", () => {
 		await waitFor(() => {
 			expect(bridge.getReviewSnapshot).toHaveBeenCalledWith({ projectId: "project-1" });
 		});
-		expect(await screen.findByText("feature/review / 2 个文件")).toBeTruthy();
+		expect(await screen.findByText("feature/review")).toBeTruthy();
+		expect(await screen.findByRole("tab", { name: "审查" })).toBeTruthy();
 		expect(await screen.findByText("App.tsx")).toBeTruthy();
 		expect(await screen.findByText("const review = true;")).toBeTruthy();
 		expect(bridge.getReviewFilePatch).toHaveBeenCalledWith({
@@ -489,17 +582,19 @@ describe("ReviewWorkspacePanel", () => {
 			projectId: "project-1",
 		});
 		const header = document.querySelector('[data-slot="review-workspace-header"]');
-		const titleBlock = document.querySelector('[data-slot="review-workspace-title-block"]');
-		const titleTextRegion = document.querySelector('[data-slot="review-workspace-title-text-region"]');
-		const collapseButton = screen.getByRole("button", { name: "Collapse review workspace" });
+		const tabStrip = document.querySelector('[data-slot="review-workspace-tab-strip"]');
 		expect(header?.className).toContain("desktop-window-drag-region");
-		expect(titleBlock?.className).not.toContain("desktop-window-drag-region");
-		expect(titleTextRegion?.className).toContain("desktop-window-drag-region");
+		expect(document.querySelector('[data-slot="review-workspace-title-block"]')).toBeNull();
+		expect(tabStrip?.className).toContain("min-w-0");
+		expect(tabStrip?.className).toContain("flex-1");
 		const headerActions = document.querySelector('[data-slot="review-workspace-header-actions"]');
 		expect(headerActions?.className).toContain("desktop-window-drag-region");
 		expect(headerActions?.className).toContain("h-full");
 		expect(headerActions?.className).not.toContain("desktop-window-no-drag");
-		expect(collapseButton.className).toContain("desktop-window-no-drag");
+		expect(screen.queryByRole("button", { name: "Collapse review workspace" })).toBeNull();
+		expect(screen.getByRole("button", { name: "Close review workspace" }).className).toContain(
+			"desktop-window-no-drag",
+		);
 		expect(document.querySelector('[data-slot="review-selected-file-header"]')?.className).toContain("min-w-0");
 		expect(screen.getByTitle("src/App.tsx").className).toContain("truncate");
 		const fileRow = screen.getByRole("button", { name: /app.tsx/i });
@@ -539,7 +634,7 @@ describe("ReviewWorkspacePanel", () => {
 
 		await waitFor(() => {
 			expect(onChromeSummaryChange).toHaveBeenLastCalledWith({
-				activeItemLabel: "审查",
+				activeItemLabel: "空面板",
 				additions: 3,
 				branchLabel: "feature/review",
 				deletions: 0,
@@ -569,7 +664,7 @@ describe("ReviewWorkspacePanel", () => {
 			</TooltipProvider>,
 		);
 
-		await screen.findByText("综合面板");
+		await screen.findByRole("button", { name: "New workspace item" });
 		await user.click(await findWorkspaceCreateMenuItem(user, "打开文件"));
 
 		expect(bridge.openPreviewFiles).toHaveBeenCalledWith({ projectId: "project-1" });
@@ -585,6 +680,79 @@ describe("ReviewWorkspacePanel", () => {
 			expect(sourceCode?.textContent).toContain("export");
 			expect(sourceCode?.textContent).toContain("ready");
 		});
+	});
+
+	it("shows a project file tree from file tabs and opens selected workspace files", async () => {
+		const user = userEvent.setup();
+		const { bridge } = installBridge(
+			changedSnapshot,
+			[typescriptPreviewFile],
+			{
+				files: workspaceFileEntries,
+				rootPath: "/workspace/project",
+				truncated: true,
+			},
+			[typescriptPreviewFile, textPreviewFile],
+		);
+		render(
+			<TooltipProvider>
+				<div className="relative h-[720px]">
+					<ReviewWorkspacePanel
+						isFullscreen={false}
+						onClose={vi.fn()}
+						onFullscreenChange={vi.fn()}
+						open
+						projectId="project-1"
+						sessionId="session-1"
+						workspaceLabel="/workspace/project"
+					/>
+				</div>
+			</TooltipProvider>,
+		);
+
+		await screen.findByRole("button", { name: "New workspace item" });
+		await user.click(await findWorkspaceCreateMenuItem(user, "打开文件"));
+		expect(await screen.findByRole("tab", { name: /tps\.ts/i })).toBeTruthy();
+
+		await user.click(screen.getByRole("button", { name: "显示项目文件树" }));
+		expect(await screen.findByLabelText("Workspace files tree")).toBeTruthy();
+		expect(screen.getByText("仅显示最近 5000 个文件")).toBeTruthy();
+		expect(bridge.listWorkspaceFiles).toHaveBeenCalledWith({ limit: 5000, projectId: "project-1" });
+		expect(screen.getByRole("button", { name: "收起项目文件树" }).getAttribute("aria-pressed")).toBe("true");
+
+		await user.click(screen.getByRole("button", { name: /notes\.txt/i }));
+		expect(bridge.openWorkspacePreviewFile).toHaveBeenCalledWith({ path: "notes.txt", projectId: "project-1" });
+		expect(await screen.findByRole("tab", { name: /notes\.txt/i })).toBeTruthy();
+		expect(await screen.findByText("hello preview")).toBeTruthy();
+	});
+
+	it("shows project file tree errors inside file tabs", async () => {
+		const user = userEvent.setup();
+		const { bridge } = renderPanel(changedSnapshot, {
+			openReview: false,
+			previewFiles: [textPreviewFile],
+			workspaceFileList: { errorMessage: "无法读取 workspace", files: [], truncated: false },
+		});
+
+		await user.click(screen.getByRole("button", { name: "文件" }));
+		expect(await screen.findByRole("tab", { name: /notes\.txt/i })).toBeTruthy();
+		await user.click(screen.getByRole("button", { name: "显示项目文件树" }));
+		expect(await screen.findByText("无法读取 workspace")).toBeTruthy();
+		expect(bridge.listWorkspaceFiles).toHaveBeenCalledWith({ limit: 5000, projectId: "project-1" });
+	});
+
+	it("shows an empty project file tree state inside file tabs", async () => {
+		const user = userEvent.setup();
+		renderPanel(changedSnapshot, {
+			openReview: false,
+			previewFiles: [textPreviewFile],
+			workspaceFileList: { files: [], truncated: false },
+		});
+
+		await user.click(screen.getByRole("button", { name: "文件" }));
+		expect(await screen.findByRole("tab", { name: /notes\.txt/i })).toBeTruthy();
+		await user.click(screen.getByRole("button", { name: "显示项目文件树" }));
+		expect(await screen.findByText("没有可显示的项目文件")).toBeTruthy();
 	});
 
 	it("bounds retained workspace file preview tabs to the most recent files", async () => {
@@ -618,7 +786,7 @@ describe("ReviewWorkspacePanel", () => {
 			</TooltipProvider>,
 		);
 
-		await screen.findByText("综合面板");
+		await screen.findByRole("button", { name: "New workspace item" });
 		await user.click(await findWorkspaceCreateMenuItem(user, "打开文件"));
 
 		expect(await screen.findByRole("tab", { name: /preview-09\.txt/i })).toBeTruthy();
@@ -891,7 +1059,7 @@ describe("ReviewWorkspacePanel", () => {
 			</TooltipProvider>,
 		);
 
-		await screen.findByText("综合面板");
+		await screen.findByRole("button", { name: "New workspace item" });
 		await user.click(await findWorkspaceCreateMenuItem(user, "网页预览"));
 		await user.type(screen.getByLabelText("Preview URL"), "localhost:3000");
 		await user.click(screen.getByRole("button", { name: "刷新网页预览" }));
@@ -973,7 +1141,8 @@ describe("ReviewWorkspacePanel", () => {
 		await user.click(screen.getByRole("button", { name: "在浏览器打开" }));
 		expect(bridge.openExternalUrl).toHaveBeenCalledWith("http://localhost:3000/");
 
-		await user.click(screen.getByRole("button", { name: "全屏网页预览" }));
+		expect(screen.queryByRole("button", { name: "全屏网页预览" })).toBeNull();
+		await user.click(screen.getByRole("button", { name: "Enter review workspace fullscreen" }));
 		expect(onFullscreenChange).toHaveBeenCalledWith(true);
 	});
 
@@ -982,7 +1151,7 @@ describe("ReviewWorkspacePanel", () => {
 		const { bridge } = installBridge();
 		render(<ReviewPanelHarness />);
 
-		await screen.findByLabelText("Diff viewer");
+		await screen.findByRole("button", { name: "New workspace item" });
 		await user.click(await findWorkspaceCreateMenuItem(user, "网页预览"));
 		await user.type(screen.getByLabelText("Preview URL"), "google.com");
 		await user.click(screen.getByRole("button", { name: "刷新网页预览" }));
@@ -992,7 +1161,7 @@ describe("ReviewWorkspacePanel", () => {
 		expect(previewId).toBeTruthy();
 		expect(bridge.closeWebPreview).not.toHaveBeenCalledWith({ id: previewId });
 
-		await user.click(screen.getByRole("button", { name: "Collapse review workspace" }));
+		await user.click(screen.getByRole("button", { name: "Close review workspace" }));
 
 		await waitFor(() => expect(bridge.closeWebPreview).toHaveBeenCalledWith({ id: previewId }));
 
@@ -1026,7 +1195,7 @@ describe("ReviewWorkspacePanel", () => {
 			</TooltipProvider>,
 		);
 
-		await screen.findByLabelText("Diff viewer");
+		await screen.findByRole("button", { name: "New workspace item" });
 		await user.click(await findWorkspaceCreateMenuItem(user, "网页预览"));
 		await screen.findByRole("tab", { name: "网页预览" });
 		const urlInput = await screen.findByLabelText("Preview URL");
@@ -1091,7 +1260,7 @@ describe("ReviewWorkspacePanel", () => {
 			</TooltipProvider>,
 		);
 
-		await screen.findByLabelText("Diff viewer");
+		await screen.findByRole("button", { name: "New workspace item" });
 		await user.click(await findWorkspaceCreateMenuItem(user, "网页预览"));
 		await user.type(screen.getByLabelText("Preview URL"), "google.com");
 		await user.click(screen.getByRole("button", { name: "刷新网页预览" }));
@@ -1145,7 +1314,7 @@ describe("ReviewWorkspacePanel", () => {
 			</TooltipProvider>,
 		);
 
-		await screen.findByLabelText("Diff viewer");
+		await screen.findByRole("button", { name: "New workspace item" });
 		await user.click(await findWorkspaceCreateMenuItem(user, "网页预览"));
 		const urlInput = (await screen.findByLabelText("Preview URL")) as HTMLInputElement;
 		await user.type(urlInput, "youtube");
@@ -1200,7 +1369,7 @@ describe("ReviewWorkspacePanel", () => {
 			</TooltipProvider>,
 		);
 
-		await screen.findByLabelText("Diff viewer");
+		await screen.findByRole("button", { name: "New workspace item" });
 		await user.click(await findWorkspaceCreateMenuItem(user, "网页预览"));
 		const urlInput = await screen.findByLabelText("Preview URL");
 		await user.type(urlInput, "example.com");
@@ -1261,7 +1430,7 @@ describe("ReviewWorkspacePanel", () => {
 			</TooltipProvider>,
 		);
 
-		await screen.findByLabelText("Diff viewer");
+		await screen.findByRole("button", { name: "New workspace item" });
 		await user.click(await findWorkspaceCreateMenuItem(user, "网页预览"));
 		const urlInput = (await screen.findByLabelText("Preview URL")) as HTMLInputElement;
 		await user.type(urlInput, "youtube");
@@ -1355,7 +1524,7 @@ describe("ReviewWorkspacePanel", () => {
 			</TooltipProvider>,
 		);
 
-		await screen.findByText("综合面板");
+		await screen.findByRole("button", { name: "New workspace item" });
 		await user.click(await findWorkspaceCreateMenuItem(user, "打开文件"));
 		expect(await screen.findByText("hello preview")).toBeTruthy();
 
@@ -1515,13 +1684,13 @@ describe("ReviewWorkspacePanel", () => {
 		expect(fileTreePanel?.style.width).toBe("356px");
 		expect(fileTreePanel?.getAttribute("data-width")).toBe("356");
 
-		await user.click(screen.getByRole("button", { name: "Hide changed files panel" }));
+		await user.click(screen.getByRole("button", { name: "收起变更文件列表" }));
 		await waitFor(() => {
 			expect(screen.queryByLabelText("Changed files tree")).toBeNull();
 			expect(screen.queryByRole("separator", { name: "Resize changed files panel" })).toBeNull();
 		});
 
-		await user.click(screen.getByRole("button", { name: "Show changed files panel" }));
+		await user.click(screen.getByRole("button", { name: "显示变更文件列表" }));
 		expect(await screen.findByLabelText("Changed files tree")).toBeTruthy();
 		expect(screen.getByRole("separator", { name: "Resize changed files panel" }).getAttribute("aria-valuenow")).toBe(
 			"356",
@@ -1621,6 +1790,7 @@ describe("ReviewWorkspacePanel", () => {
 		installBridge();
 		render(<ReviewPanelHarness />);
 
+		await user.click(await screen.findByRole("button", { name: "审查" }));
 		await screen.findByText("App.tsx");
 		const reviewPanel = screen.getByLabelText("Review workspace");
 		const reviewSpacer = document.querySelector('[data-slot="review-workspace-spacer"]');
@@ -1637,11 +1807,8 @@ describe("ReviewWorkspacePanel", () => {
 		expect(reviewSpacer?.className).toContain("inset-0");
 		expect(reviewSpacer?.className).not.toContain("shrink-0");
 		expect(reviewPanel.getAttribute("data-display-mode")).toBe("fullscreen");
-		const fullscreenTitleBlock = document.querySelector('[data-slot="review-workspace-title-block"]');
-		expect(fullscreenTitleBlock?.className).not.toContain("hidden");
-		expect(fullscreenTitleBlock?.textContent).toContain("综合面板");
-		expect(fullscreenTitleBlock?.textContent).toContain("/workspace/project");
-		expect(screen.queryByRole("tab", { name: "审查" })).toBeNull();
+		expect(document.querySelector('[data-slot="review-workspace-title-block"]')).toBeNull();
+		expect(screen.getByRole("tab", { name: "审查" })).toBeTruthy();
 		expect(screen.queryByRole("separator", { name: "Resize review panel" })).toBeNull();
 		expect(screen.getByRole("button", { name: "New workspace item" })).toBeTruthy();
 		expect(screen.getByRole("button", { name: "Open Git actions" })).toBeTruthy();
@@ -1653,7 +1820,7 @@ describe("ReviewWorkspacePanel", () => {
 		await user.click(screen.getByRole("button", { name: "Exit review workspace fullscreen" }));
 		expect(reviewSpacer?.getAttribute("data-display-mode")).toBe("panel");
 		expect(reviewPanel.getAttribute("data-display-mode")).toBe("panel");
-		expect(document.querySelector('[data-slot="review-workspace-title-block"]')?.className).not.toContain("hidden");
+		expect(document.querySelector('[data-slot="review-workspace-title-block"]')).toBeNull();
 		expect(screen.getByRole("tab", { name: "审查" })).toBeTruthy();
 		expect(screen.getByRole("separator", { name: "Resize review panel" }).getAttribute("aria-valuenow")).toBe("836");
 	});
@@ -1663,10 +1830,11 @@ describe("ReviewWorkspacePanel", () => {
 		installBridge();
 		render(<ReviewPanelHarness isTitlebarSummaryVisible />);
 
+		await user.click(await screen.findByRole("button", { name: "审查" }));
 		await screen.findByText("App.tsx");
 		await user.click(screen.getByRole("button", { name: "Enter review workspace fullscreen" }));
 
-		expect(document.querySelector('[data-slot="review-workspace-title-block"]')?.className).toContain("hidden");
+		expect(document.querySelector('[data-slot="review-workspace-title-block"]')).toBeNull();
 		expect(screen.getByRole("button", { name: "New workspace item" })).toBeTruthy();
 		expect(screen.getByRole("button", { name: "Open Git actions" })).toBeTruthy();
 		expect(screen.getByRole("button", { name: "Current branch" }).querySelector("span")).toBeNull();
@@ -1736,7 +1904,7 @@ describe("ReviewWorkspacePanel", () => {
 		installBridge();
 		render(<ReviewPanelHarness />);
 
-		await screen.findByText("App.tsx");
+		await screen.findByRole("button", { name: "文件" });
 		const resizer = screen.getByRole("separator", { name: "Resize review panel" });
 		fireEvent.keyDown(resizer, { key: "ArrowLeft" });
 		expect(resizer.getAttribute("aria-valuenow")).toBe("836");
@@ -1755,7 +1923,7 @@ describe("ReviewWorkspacePanel", () => {
 
 		await user.click(screen.getByRole("button", { name: "Open review" }));
 		await waitFor(() => expect(bridge.getReviewSnapshot).toHaveBeenCalledWith({ projectId: "project-1" }));
-		await waitFor(() => expect(screen.getByText("feature/review / 2 个文件")).toBeTruthy());
+		await user.click(await screen.findByRole("button", { name: "审查" }));
 
 		expect(document.querySelector('[data-slot="review-workspace-body-deferred"]')).toBeTruthy();
 		expect(screen.queryByLabelText("Diff viewer")).toBeNull();
@@ -1767,24 +1935,24 @@ describe("ReviewWorkspacePanel", () => {
 		expect(screen.getByText("const review = true;")).toBeTruthy();
 	});
 
-	it("lets users collapse the review panel from the header review icon", async () => {
+	it("lets users close the review panel from the header close button", async () => {
 		const user = userEvent.setup();
 		installBridge();
 		render(<ReviewPanelHarness />);
 
-		await screen.findByText("App.tsx");
-		const iconButton = screen.getByRole("button", { name: "Collapse review workspace" });
+		await screen.findByRole("button", { name: "文件" });
+		const closeButton = screen.getByRole("button", { name: "Close review workspace" });
 		const reviewPanel = screen.getByLabelText("Review workspace");
 
-		expect(iconButton.getAttribute("data-slot")).toBe("review-workspace-icon");
-		await user.click(iconButton);
+		expect(screen.queryByRole("button", { name: "Collapse review workspace" })).toBeNull();
+		await user.click(closeButton);
 
 		await waitFor(() => {
 			expect(screen.queryByRole("separator", { name: "Resize review panel" })).toBeNull();
 		});
-		expect(reviewPanel.textContent).toContain("feature/review / 2 个文件");
-		expect(reviewPanel.textContent).toContain("+3");
-		expect(reviewPanel.textContent).toContain("-0");
+		expect(reviewPanel.textContent).toContain("文件");
+		expect(reviewPanel.textContent).toContain("浏览器");
+		expect(reviewPanel.textContent).toContain("审查");
 		expect(screen.getByRole("button", { name: "Open review" })).toBeTruthy();
 	});
 
@@ -1831,6 +1999,7 @@ describe("ReviewWorkspacePanel", () => {
 			</TooltipProvider>,
 		);
 
+		fireEvent.click(await screen.findByRole("button", { name: "审查" }));
 		expect(await screen.findByText("const review = true;")).toBeTruthy();
 
 		rerender(
@@ -1850,6 +2019,7 @@ describe("ReviewWorkspacePanel", () => {
 		);
 
 		await waitFor(() => expect(screen.queryByText("const review = true;")).toBeNull());
+		fireEvent.click(await screen.findByRole("button", { name: "审查" }));
 		resolveSecondSnapshot(secondSnapshot);
 
 		expect(await screen.findByText("const second = true;")).toBeTruthy();
