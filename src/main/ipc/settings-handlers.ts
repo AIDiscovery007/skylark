@@ -1,8 +1,8 @@
-import type { MessagePortMain } from "electron";
 import { IPC_CHANNELS } from "../../shared/ipc-contract.ts";
-import type { DesktopSettingsData } from "../../shared/types.ts";
+import type { DesktopSettingsData, DesktopSettingsEvent } from "../../shared/types.ts";
 import type { DesktopInstructionStore } from "../storage/instruction-store.ts";
 import type { DesktopSettingsStore } from "../storage/settings-store.ts";
+import { PortFanout } from "../util/port-fanout.ts";
 import type { DesktopBridgeGroupDescriptor } from "./desktop-bridge-registry.ts";
 import { type ValidatedDesktopSetting, validateSettingInput } from "./validate-ipc.ts";
 
@@ -59,16 +59,14 @@ export async function readDesktopSettings({
 }
 
 export function createSettingsBridgeGroup(stores: DesktopSettingsBridgeStores): DesktopBridgeGroupDescriptor {
-	const ports = new Set<MessagePortMain>();
+	const ports = new PortFanout<DesktopSettingsEvent>();
 
 	const publishSettingsUpdated = async (): Promise<void> => {
 		const settings = await readDesktopSettings(stores);
-		for (const port of ports) {
-			port.postMessage({
-				type: "settings_updated",
-				settings,
-			});
-		}
+		ports.publish({
+			type: "settings_updated",
+			settings,
+		});
 	};
 
 	return {
@@ -94,10 +92,6 @@ export function createSettingsBridgeGroup(stores: DesktopSettingsBridgeStores): 
 				channel: IPC_CHANNELS.openSettingsStream,
 				open: (port) => {
 					ports.add(port);
-					port.start();
-					port.on("close", () => {
-						ports.delete(port);
-					});
 				},
 			},
 		],

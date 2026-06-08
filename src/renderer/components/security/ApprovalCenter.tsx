@@ -1,5 +1,5 @@
 import { AlertTriangle, Check, X } from "lucide-react";
-import { useEffect, useMemo } from "react";
+import { useMemo } from "react";
 import {
 	Confirmation,
 	ConfirmationAction,
@@ -8,8 +8,10 @@ import {
 	ConfirmationTitle,
 } from "@/components/ai-elements/confirmation";
 import { Button } from "@/components/ui/button";
+import { useSubscribedResource } from "@/hooks/use-subscribed-resource";
 import { cn } from "@/lib/utils";
 import { useApprovalStore } from "@/stores/approval-store";
+import { getErrorMessage } from "../../../shared/errors.ts";
 import type { DesktopApprovalRequest } from "../../../shared/types.ts";
 
 const MAX_DETAILS_LENGTH = 4000;
@@ -77,9 +79,9 @@ export function ApprovalCenter() {
 	const activeRequest = requests[0];
 	const detailsText = useMemo(() => formatDetails(activeRequest?.details), [activeRequest]);
 
-	useEffect(() => {
-		return window.desktopAgent.subscribeToApprovalEvents(applyApprovalEvent);
-	}, [applyApprovalEvent]);
+	useSubscribedResource((onEvent) => window.desktopAgent.subscribeToApprovalEvents(onEvent), applyApprovalEvent, [
+		applyApprovalEvent,
+	]);
 
 	async function resolveActiveRequest(approved: boolean): Promise<void> {
 		if (!activeRequest) {
@@ -94,7 +96,7 @@ export function ApprovalCenter() {
 			});
 			removeApprovalRequest(activeRequest.id);
 		} catch (error: unknown) {
-			setApprovalError(error instanceof Error ? error.message : String(error));
+			setApprovalError(getErrorMessage(error));
 		}
 	}
 

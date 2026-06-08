@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { getErrorMessage } from "../../shared/errors.ts";
 import type { DesktopApprovalDecision, DesktopApprovalRequest, DesktopWorkspacePaneRole } from "../../shared/types.ts";
 import { redactTerminalText } from "../context/context-harvester.ts";
 import type { DesktopApprovalRequester, DesktopApprovalRequestInput } from "../security/approval-broker.ts";
@@ -364,7 +365,7 @@ export class RuntimePermissionGate {
 			await this.executeApprovedRuntimeAction(input, runtimeState);
 			return this.recordResult(input, payloadPreview, requestedAt, decision, "executed");
 		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
+			const message = getErrorMessage(error);
 			return this.recordResult(input, payloadPreview, requestedAt, decision, "failed", message);
 		}
 	}

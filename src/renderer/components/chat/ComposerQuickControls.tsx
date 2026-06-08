@@ -4,6 +4,7 @@ import { type ComponentProps, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Spinner } from "@/components/ui/spinner";
+import { getErrorMessage } from "../../../shared/errors.ts";
 import type { DesktopAgentModel } from "../../../shared/serialized-agent-event.ts";
 import { DESKTOP_THINKING_LEVEL_OPTIONS, getDesktopThinkingLevelsForModel } from "../../../shared/thinking-levels.ts";
 import type {
@@ -375,7 +376,7 @@ function ModelQuickControl({
 			await onUpdateSessionProfile({ provider: option.provider.id, modelId: option.model.id });
 			closeModelSelector();
 		} catch (error: unknown) {
-			setErrorMessage(error instanceof Error ? error.message : String(error));
+			setErrorMessage(getErrorMessage(error));
 		} finally {
 			setApplyingModelKey(undefined);
 		}
@@ -533,7 +534,7 @@ function ThinkingQuickControl({
 			await onUpdateSessionProfile({ thinkingLevel: level });
 			setOpen(false);
 		} catch (error: unknown) {
-			setErrorMessage(error instanceof Error ? error.message : String(error));
+			setErrorMessage(getErrorMessage(error));
 		} finally {
 			setApplyingLevel(undefined);
 		}

@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import type { DesktopEventManagementCriteriaUpdateRequest } from "../../shared/types.ts";
+import type {
+	DesktopEventManagementCriteriaUpdateRequest,
+	DesktopOAuthLoginEvent,
+	DesktopSettingsEvent,
+} from "../../shared/types.ts";
+import { resolveDesktopAgentBridge } from "../lib/desktop-agent-bridge.ts";
 import { markRendererPerformance, measureRendererPerformance } from "../lib/performance-marks.ts";
 import type {
 	AppearanceSettingsInput,
@@ -8,6 +13,7 @@ import type {
 	SettingsStoreBridge,
 } from "../stores/settings-store.ts";
 import { useSettingsStore } from "../stores/settings-store.ts";
+import { useSubscribedResource } from "./use-subscribed-resource.ts";
 
 export interface UseSettingsOptions {
 	bridge?: SettingsStoreBridge;
@@ -17,7 +23,7 @@ export interface UseSettingsOptions {
 }
 
 export function useSettings(options: UseSettingsOptions = {}) {
-	const bridge = options.bridge ?? window.desktopAgent;
+	const bridge = resolveDesktopAgentBridge(options.bridge);
 	const cancelOAuthLogin = useSettingsStore((state) => state.cancelOAuthLogin);
 	const deleteProviderKey = useSettingsStore((state) => state.deleteProviderKey);
 	const errorMessage = useSettingsStore((state) => state.errorMessage);
@@ -116,20 +122,22 @@ export function useSettings(options: UseSettingsOptions = {}) {
 		};
 	}, [bridge, loadDetails, loadSettingsDetails]);
 
-	useEffect(() => {
-		return bridge.subscribeToAuthEvents((event) => {
+	useSubscribedResource<DesktopOAuthLoginEvent>(
+		(onEvent) => bridge.subscribeToAuthEvents(onEvent),
+		(event) => {
 			void handleOAuthLoginEvent(bridge, event);
-		});
-	}, [bridge, handleOAuthLoginEvent]);
+		},
+		[bridge, handleOAuthLoginEvent],
+	);
 
-	useEffect(() => {
-		if (typeof bridge.subscribeToSettingsEvents !== "function") {
-			return;
-		}
-		return bridge.subscribeToSettingsEvents((event) => {
+	useSubscribedResource<DesktopSettingsEvent>(
+		(onEvent) =>
+			typeof bridge.subscribeToSettingsEvents === "function" ? bridge.subscribeToSettingsEvents(onEvent) : undefined,
+		(event) => {
 			applySettingsEvent(event);
-		});
-	}, [applySettingsEvent, bridge]);
+		},
+		[applySettingsEvent, bridge],
+	);
 
 	return {
 		settings,

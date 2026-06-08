@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getErrorMessage } from "../../shared/errors.ts";
+import type { SerializedAgentEvent } from "../../shared/serialized-agent-event.ts";
 import type { DesktopReviewFile, DesktopReviewSnapshot, DesktopReviewSnapshotRequest } from "../../shared/types.ts";
+import { useSubscribedResource } from "./use-subscribed-resource.ts";
 
 export interface UseReviewWorkspaceOptions {
 	open: boolean;
@@ -14,10 +17,6 @@ export interface UseReviewWorkspaceResult {
 	refresh: () => Promise<void>;
 	request?: DesktopReviewSnapshotRequest;
 	snapshot?: DesktopReviewSnapshot;
-}
-
-function getErrorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
 }
 
 export function useReviewWorkspace({
@@ -110,18 +109,15 @@ export function useReviewWorkspace({
 		void refresh();
 	}, [refresh]);
 
-	useEffect(() => {
-		if (!open) {
-			return undefined;
-		}
-
-		const unsubscribe = window.desktopAgent.subscribeToAgentEvents((event) => {
+	useSubscribedResource<SerializedAgentEvent>(
+		(onEvent) => (open ? window.desktopAgent.subscribeToAgentEvents(onEvent) : undefined),
+		(event) => {
 			if (event.type === "agent_end" && (!sessionId || event.sessionId === sessionId)) {
 				void refresh();
 			}
-		});
-		return unsubscribe;
-	}, [open, refresh, sessionId]);
+		},
+		[open, refresh, sessionId],
+	);
 
 	return {
 		errorMessage,

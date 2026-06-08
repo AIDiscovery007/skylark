@@ -6,6 +6,7 @@ import {
 	WebContentsView,
 	type WebPreferences,
 } from "electron";
+import { getErrorMessage } from "../../shared/errors.ts";
 import { normalizeDesktopWebPreviewUrl } from "../../shared/preview-url.ts";
 import type {
 	DesktopWebPreviewBounds,
@@ -16,6 +17,7 @@ import type {
 	DesktopWebPreviewState,
 	DesktopWebPreviewStorageKind,
 } from "../../shared/types.ts";
+import { PortFanout } from "../util/port-fanout.ts";
 
 interface DesktopWebPreviewWindow {
 	readonly contentView: Pick<BrowserWindow["contentView"], "addChildView" | "removeChildView">;
@@ -71,10 +73,6 @@ function normalizeBounds(bounds: DesktopWebPreviewBounds): Rectangle {
 		x: Math.max(0, Math.round(bounds.x)),
 		y: Math.max(0, Math.round(bounds.y)),
 	};
-}
-
-function getErrorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
 }
 
 function getComparableWebPreviewHost(url: string): string | undefined {
@@ -216,7 +214,7 @@ const CANCEL_ELEMENT_SELECTION_SCRIPT = `
 
 export class DesktopWebPreviewViewService {
 	private readonly createView: () => DesktopWebPreviewView;
-	private readonly ports = new Set<MessagePortMain>();
+	private readonly ports = new PortFanout<DesktopWebPreviewEvent>();
 	private readonly records = new Map<string, DesktopWebPreviewRecord>();
 
 	constructor(options: DesktopWebPreviewViewServiceOptions = {}) {
@@ -225,10 +223,6 @@ export class DesktopWebPreviewViewService {
 
 	openPort(port: MessagePortMain): void {
 		this.ports.add(port);
-		port.start();
-		port.on("close", () => {
-			this.ports.delete(port);
-		});
 	}
 
 	show(input: {
@@ -611,8 +605,6 @@ export class DesktopWebPreviewViewService {
 	}
 
 	private publishEvent(event: DesktopWebPreviewEvent): void {
-		for (const port of this.ports) {
-			port.postMessage(event);
-		}
+		this.ports.publish(event);
 	}
 }

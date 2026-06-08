@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { isMissingFileError } from "./fs-errors.ts";
 
 export class JsonFileStore<TData> {
 	constructor(
@@ -38,13 +39,4 @@ export class JsonFileStore<TData> {
 		await this.write(next);
 		return next;
 	}
-}
-
-function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
-	return (
-		typeof error === "object" &&
-		error !== null &&
-		"code" in error &&
-		(error as NodeJS.ErrnoException).code === "ENOENT"
-	);
 }

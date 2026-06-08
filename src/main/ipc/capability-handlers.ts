@@ -2,8 +2,8 @@ import { IPC_CHANNELS } from "../../shared/ipc-contract.ts";
 import type { DesktopMcpManager } from "../mcp/mcp-manager.ts";
 import type { DesktopRuntimeHost } from "../runtime/desktop-runtime-host.ts";
 import type { DesktopApprovalBroker } from "../security/approval-broker.ts";
+import { pipeSubscriptionToPort } from "../util/port-fanout.ts";
 import type { DesktopBridgeGroupDescriptor } from "./desktop-bridge-registry.ts";
-import { openCapabilityStream } from "./open-capability-stream.ts";
 import {
 	validateCapabilityDetailRequest,
 	validateCreateSkillRequest,
@@ -175,7 +175,7 @@ export function createCapabilityBridgeGroup(
 		streams: [
 			{
 				channel: IPC_CHANNELS.openCapabilityStream,
-				open: (port) => openCapabilityStream(options.mcpManager, port),
+				open: (port) => pipeSubscriptionToPort((listener) => options.mcpManager.subscribe(listener), port),
 			},
 		],
 	};

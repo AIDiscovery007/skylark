@@ -1,14 +1,19 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Model } from "@earendil-works/pi-ai";
-import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it } from "vitest";
+import { type FauxProviderRegistration, fauxAssistantMessage, type Model } from "@earendil-works/pi-ai";
+import { type AgentSessionServices, AuthStorage, createAgentSessionServices } from "@earendil-works/pi-coding-agent";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	createModeAwareRuntimePolicy,
 	validatePlanModeBashCommand,
 } from "../../src/main/runtime/mode-aware-runtime-policy.ts";
-import { DESKTOP_SUBAGENT_TOOL_NAME, DESKTOP_TASK_PROGRESS_TOOL_NAME } from "../../src/shared/types.ts";
+import {
+	DESKTOP_SUBAGENT_TOOL_NAME,
+	DESKTOP_TASK_PROGRESS_TOOL_NAME,
+	type DesktopSubagentRuntimeEvent,
+} from "../../src/shared/types.ts";
+import { registerFauxProvider } from "../support/pi-provider-test-registry.ts";
 
 const desktopTestModel = {
 	id: "desktop-test-model",
@@ -29,6 +34,34 @@ const runtimePolicySupport = {
 	getThinkingLevel: () => "off" as const,
 	services: {} as AgentSessionServices,
 };
+
+const registrations: FauxProviderRegistration[] = [];
+const tempDirectories: string[] = [];
+
+async function createTempDirectory(prefix: string): Promise<string> {
+	const directoryPath = await mkdtemp(join(tmpdir(), prefix));
+	tempDirectories.push(directoryPath);
+	return directoryPath;
+}
+
+function createFauxRegistration(): FauxProviderRegistration {
+	const registration = registerFauxProvider({
+		provider: "mode-aware-policy-faux",
+		api: "faux",
+		models: [{ id: "mode-aware-policy-model", name: "Mode Aware Policy Model", reasoning: false }],
+	});
+	registrations.push(registration);
+	return registration;
+}
+
+afterEach(async () => {
+	while (registrations.length > 0) {
+		registrations.pop()?.unregister();
+	}
+	for (const directoryPath of tempDirectories.splice(0)) {
+		await rm(directoryPath, { force: true, recursive: true });
+	}
+});
 
 describe("mode-aware runtime policy", () => {
 	it("exposes only read and exploration tools in plan mode", () => {
@@ -134,7 +167,7 @@ describe("mode-aware runtime policy", () => {
 	});
 
 	it("keeps image read fallback out of the upstream inline size limit path", async () => {
-		const tempDir = await mkdtemp(join(tmpdir(), "skylark-read-image-"));
+		const tempDir = await createTempDirectory("skylark-read-image-");
 		try {
 			await writeFile(join(tempDir, "panel_003.jpg"), Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00]));
 			const policy = createModeAwareRuntimePolicy({
@@ -155,6 +188,116 @@ describe("mode-aware runtime policy", () => {
 		} finally {
 			await rm(tempDir, { force: true, recursive: true });
 		}
+	});
+
+	it("runs the subagent tool through an isolated read-only child session", async () => {
+		const faux = createFauxRegistration();
+		const cwd = await createTempDirectory("skylark-subagent-policy-cwd-");
+		const agentDir = await createTempDirectory("skylark-subagent-policy-agent-");
+		const subagentSessionsDir = join(agentDir, "subagents");
+		const upsertResource = vi.fn(async (input) => ({
+			...input,
+			createdAt: input.createdAt ?? "2026-05-27T01:00:00.000Z",
+			metadata: input.metadata ?? {},
+		}));
+		const subagentEvents: DesktopSubagentRuntimeEvent[] = [];
+		const updates: string[] = [];
+		faux.setResponses([fauxAssistantMessage("## Conclusion\nAuth lives in `src/auth.ts`.")]);
+		const authStorage = AuthStorage.inMemory({
+			[faux.getModel().provider]: { type: "api_key", key: "secret" },
+		});
+		const services = await createAgentSessionServices({ cwd, agentDir, authStorage });
+		const policy = createModeAwareRuntimePolicy({
+			agentDir,
+			agentMode: "execute",
+			cwd,
+			desktopSessionId: "parent-session-1",
+			environmentResourceStore: { upsertResource },
+			getModel: () => faux.getModel(),
+			getThinkingLevel: () => "off",
+			publishSubagentEvent: (event) => subagentEvents.push(event),
+			services,
+			subagentSessionsDir,
+		});
+		const subagentTool = policy.builtInTools.find((tool) => tool.name === DESKTOP_SUBAGENT_TOOL_NAME);
+		if (!subagentTool) {
+			throw new Error("Expected subagent tool.");
+		}
+
+		const result = await subagentTool.execute(
+			"subagent-call-1",
+			{
+				title: "Inspect auth flow",
+				task: "Find the files that define the auth flow.",
+				contextSummary: "The parent is investigating login failures.",
+				scope: "Read-only inspection of auth-related files in the current workspace.",
+				successCriteria: "Identify the file that defines the auth flow.",
+				expectedOutput: "Concise Markdown summary with conclusion and evidence paths.",
+				knownFacts: "The parent is investigating login failures.",
+				suggestedApproach: "Use find or grep to locate auth files.",
+				maxTurns: 2,
+				timeoutSeconds: 30,
+				summaryMaxChars: 2_000,
+			},
+			undefined,
+			(update) => {
+				updates.push(update.content.map((part) => (part.type === "text" ? part.text : "")).join(""));
+			},
+			{} as never,
+		);
+
+		expect(result.content).toEqual([{ type: "text", text: "## Conclusion\nAuth lives in `src/auth.ts`." }]);
+		expect(result.details).toMatchObject({
+			contextSummary: "The parent is investigating login failures.",
+			expectedOutput: "Concise Markdown summary with conclusion and evidence paths.",
+			knownFacts: "The parent is investigating login failures.",
+			maxTurns: 2,
+			scope: "Read-only inspection of auth-related files in the current workspace.",
+			status: "completed",
+			successCriteria: "Identify the file that defines the auth flow.",
+			suggestedApproach: "Use find or grep to locate auth files.",
+			summary: "## Conclusion\nAuth lives in `src/auth.ts`.",
+			summaryMaxChars: 2_000,
+			task: "Find the files that define the auth flow.",
+			timeoutSeconds: 30,
+			title: "Inspect auth flow",
+			turnCount: 1,
+		});
+		expect(updates).toEqual(["Subagent created: Inspect auth flow", "## Conclusion\nAuth lives in `src/auth.ts`."]);
+		expect(upsertResource).toHaveBeenCalledWith(
+			expect.objectContaining({
+				cwd,
+				kind: "subagent",
+				provider: "subagent",
+				sessionId: "parent-session-1",
+				status: "running",
+				title: "Inspect auth flow",
+			}),
+		);
+		expect(upsertResource).toHaveBeenCalledWith(
+			expect.objectContaining({
+				metadata: expect.objectContaining({
+					summary: "## Conclusion\nAuth lives in `src/auth.ts`.",
+					toolCallId: "subagent-call-1",
+					turnCount: "1",
+				}),
+				status: "completed",
+			}),
+		);
+		expect(subagentEvents).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					parentSessionId: "parent-session-1",
+					subagentId: expect.any(String),
+					event: expect.objectContaining({ type: "agent_start" }),
+				}),
+				expect.objectContaining({
+					parentSessionId: "parent-session-1",
+					subagentId: expect.any(String),
+					event: expect.objectContaining({ type: "agent_end" }),
+				}),
+			]),
+		);
 	});
 
 	it("resolves active tools for initial creation and runtime refresh", () => {

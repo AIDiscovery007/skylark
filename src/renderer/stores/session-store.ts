@@ -1,5 +1,6 @@
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
+import { getErrorMessage } from "../../shared/errors.ts";
 import type { DesktopAgentBridge } from "../../shared/ipc-contract.ts";
 import type { DesktopAgentSnapshot, SerializedAgentEvent } from "../../shared/serialized-agent-event.ts";
 import type { DesktopSessionSummary, DesktopWorkspaceOverview } from "../../shared/types.ts";
@@ -80,10 +81,6 @@ function resolveActiveSessionId(
 	}
 
 	return sessions[0]?.id;
-}
-
-function getErrorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
 }
 
 export interface SessionStoreState {

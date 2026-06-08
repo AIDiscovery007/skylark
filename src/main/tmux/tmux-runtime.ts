@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { access, mkdir } from "node:fs/promises";
 import { dirname, isAbsolute } from "node:path";
 import { promisify } from "node:util";
+import { getErrorMessage } from "../../shared/errors.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -112,10 +113,6 @@ function isCommandTimeoutError(error: unknown): boolean {
 		error !== null &&
 		(("killed" in error && (error as { killed?: unknown }).killed === true) || getErrorCode(error) === "ETIMEDOUT")
 	);
-}
-
-function getErrorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
 }
 
 function clampCaptureLines(lines: number | undefined): number {

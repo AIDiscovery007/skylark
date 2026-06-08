@@ -1,5 +1,6 @@
 import { Bot, ChevronDown, ChevronRight, FileText, Gauge, Loader2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { getErrorMessage } from "../../../shared/errors.ts";
 import type {
 	DesktopEnvironmentEvent,
 	DesktopEnvironmentResource,
@@ -8,6 +9,7 @@ import type {
 	DesktopSubagentRuntimeEvent,
 	DesktopSubagentSnapshot,
 } from "../../../shared/types.ts";
+import { useSubscribedResource } from "../../hooks/use-subscribed-resource.ts";
 import {
 	createAgentRendererState,
 	INITIAL_AGENT_RENDERER_STATE,
@@ -83,28 +85,30 @@ function getSubagentResourceFromEnvironmentEvent(
 function useSubagentRuntime(request: DesktopSubagentOpenRequest): SubagentRuntimeView {
 	const [view, setView] = useState<SubagentRuntimeView>(() => createInitialSubagentView());
 	const { parentSessionId, subagentId } = request;
+	const hasHydratedRef = useRef(false);
+	const queuedEventsRef = useRef<DesktopSubagentRuntimeEvent[]>([]);
 
-	useEffect(() => {
-		let cancelled = false;
-		let hasHydrated = false;
-		const queuedEvents: DesktopSubagentRuntimeEvent[] = [];
-		setView(createInitialSubagentView());
-
-		const unsubscribeSubagent = window.desktopAgent.subscribeToSubagentEvents((event) => {
+	useSubscribedResource<DesktopSubagentRuntimeEvent>(
+		(onEvent) => window.desktopAgent.subscribeToSubagentEvents(onEvent),
+		(event) => {
 			if (!isMatchingSubagentEvent(event, parentSessionId, subagentId)) {
 				return;
 			}
-			if (!hasHydrated) {
-				queuedEvents.push(event);
+			if (!hasHydratedRef.current) {
+				queuedEventsRef.current.push(event);
 				return;
 			}
 			setView((current) => ({
 				...current,
 				rendererState: reduceSubagentRuntimeEvent(current.rendererState, event),
 			}));
-		});
+		},
+		[parentSessionId, subagentId],
+	);
 
-		const unsubscribeEnvironment = window.desktopAgent.subscribeToEnvironmentEvents((event) => {
+	useSubscribedResource<DesktopEnvironmentEvent>(
+		(onEvent) => window.desktopAgent.subscribeToEnvironmentEvents(onEvent),
+		(event) => {
 			const resource = getSubagentResourceFromEnvironmentEvent(event, parentSessionId, subagentId);
 			if (!resource) {
 				return;
@@ -113,7 +117,15 @@ function useSubagentRuntime(request: DesktopSubagentOpenRequest): SubagentRuntim
 				...current,
 				snapshot: current.snapshot ? { ...current.snapshot, resource } : current.snapshot,
 			}));
-		});
+		},
+		[parentSessionId, subagentId],
+	);
+
+	useEffect(() => {
+		let cancelled = false;
+		hasHydratedRef.current = false;
+		queuedEventsRef.current = [];
+		setView(createInitialSubagentView());
 
 		void window.desktopAgent
 			.getSubagentSnapshot({
@@ -125,10 +137,11 @@ function useSubagentRuntime(request: DesktopSubagentOpenRequest): SubagentRuntim
 					return;
 				}
 				let rendererState = createAgentRendererState(snapshot);
-				for (const event of queuedEvents) {
+				for (const event of queuedEventsRef.current) {
 					rendererState = reduceSubagentRuntimeEvent(rendererState, event);
 				}
-				hasHydrated = true;
+				hasHydratedRef.current = true;
+				queuedEventsRef.current = [];
 				setView({
 					isLoading: false,
 					rendererState,
@@ -139,9 +152,10 @@ function useSubagentRuntime(request: DesktopSubagentOpenRequest): SubagentRuntim
 				if (cancelled) {
 					return;
 				}
-				hasHydrated = true;
+				hasHydratedRef.current = true;
+				queuedEventsRef.current = [];
 				setView({
-					errorMessage: error instanceof Error ? error.message : String(error),
+					errorMessage: getErrorMessage(error),
 					isLoading: false,
 					rendererState: {
 						...INITIAL_AGENT_RENDERER_STATE,
@@ -152,8 +166,8 @@ function useSubagentRuntime(request: DesktopSubagentOpenRequest): SubagentRuntim
 
 		return () => {
 			cancelled = true;
-			unsubscribeSubagent();
-			unsubscribeEnvironment();
+			hasHydratedRef.current = false;
+			queuedEventsRef.current = [];
 		};
 	}, [parentSessionId, subagentId]);
 

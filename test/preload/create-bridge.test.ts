@@ -15,7 +15,6 @@ import type {
 	DesktopEventEvent,
 	DesktopSettingsEvent,
 	DesktopWebPreviewEvent,
-	DesktopWorkspaceRuntimeEvent,
 } from "../../src/shared/types.ts";
 
 class FakeMessagePort<TData> implements BridgeMessagePort<TData> {
@@ -140,7 +139,6 @@ describe("createDesktopAgentBridge", () => {
 			"subscribeToSubagentEvents",
 			"subscribeToTerminalEvents",
 			"subscribeToWebPreviewEvents",
-			"subscribeToWorkspaceRuntimeEvents",
 			"switchProject",
 			"switchSession",
 			"takeOverWorkspaceRuntimePane",
@@ -548,73 +546,6 @@ describe("createDesktopAgentBridge", () => {
 			resources: [],
 			updatedAt: "2026-05-22T00:00:00.000Z",
 		});
-	});
-
-	it("opens the workspace runtime stream channel once and forwards runtime events", () => {
-		const port = new FakeMessagePort<DesktopWorkspaceRuntimeEvent>();
-		const ipcRenderer = {
-			invoke: vi.fn(),
-			postMessage: vi.fn(),
-		};
-
-		const bridge = createDesktopAgentBridge(
-			ipcRenderer,
-			(): BridgeMessageChannel<DesktopWorkspaceRuntimeEvent> => ({
-				port1: port,
-				port2: { id: "workspace-runtime-port" },
-			}),
-		);
-
-		const listener = vi.fn();
-		const unsubscribe = bridge.subscribeToWorkspaceRuntimeEvents(listener);
-		port.emit({
-			type: "runtime_updated",
-			summary: {
-				errorMessage: "Workspace runtime session is missing.",
-				latestSnapshots: [],
-				panes: [],
-				runtimeStatus: "error",
-				tmuxAvailable: true,
-				workspace: {
-					createdAt: "2026-05-22T00:00:00.000Z",
-					id: "ws-login",
-					paneDefinitions: [],
-					repoPath: "/workspace/project",
-					resourcePolicy: {
-						historyLimit: 20_000,
-						idlePauseMinutes: 120,
-						maxHotWorkspaces: 3,
-						maxWorkspaceLogBytes: 200_000_000,
-						snapshotRetentionDays: 7,
-					},
-					status: "running",
-					updatedAt: "2026-05-22T00:00:00.000Z",
-				},
-			},
-			updatedAt: "2026-05-22T00:00:00.000Z",
-		});
-		unsubscribe();
-		port.emit({
-			type: "audit_recorded",
-			actionType: "send-text",
-			recordedAt: "2026-05-22T00:00:01.000Z",
-			workspaceId: "ws-login",
-		});
-
-		expect(port.start).toHaveBeenCalledTimes(1);
-		expect(ipcRenderer.postMessage).toHaveBeenCalledWith(IPC_CHANNELS.openWorkspaceRuntimeStream, null, [
-			{ id: "workspace-runtime-port" },
-		]);
-		expect(listener).toHaveBeenCalledTimes(1);
-		expect(listener).toHaveBeenCalledWith(
-			expect.objectContaining({
-				type: "runtime_updated",
-				summary: expect.objectContaining({
-					runtimeStatus: "error",
-					workspace: expect.objectContaining({ id: "ws-login" }),
-				}),
-			}),
-		);
 	});
 
 	it("opens the web preview stream channel once and forwards preview state events", () => {

@@ -28,6 +28,7 @@ import { useEvents } from "./hooks/use-events.ts";
 import { useProjects } from "./hooks/use-projects.ts";
 import { useSessions } from "./hooks/use-sessions.ts";
 import { useSettings } from "./hooks/use-settings.ts";
+import { useSubscribedResource } from "./hooks/use-subscribed-resource.ts";
 import { useWorkspaceStatus } from "./hooks/use-workspace-status.ts";
 import { applyDesktopAppearanceTheme } from "./lib/appearance-theme.ts";
 import {
@@ -404,15 +405,15 @@ function DesktopApp({ desktopAgent }: { desktopAgent: DesktopAgentBridge }) {
 		};
 	}, [desktopAgent]);
 
-	useEffect(() => {
-		if (!isDedicatedSettingsWindow) {
-			return;
-		}
-		return desktopAgent.subscribeToSettingsOpenRequests?.((request) => {
+	useSubscribedResource<DesktopSettingsOpenRequest>(
+		(onRequest) =>
+			isDedicatedSettingsWindow ? desktopAgent.subscribeToSettingsOpenRequests?.(onRequest) : undefined,
+		(request) => {
 			setSettingsOpenRequest(request);
 			activateWorkbenchView("settings");
-		});
-	}, [activateWorkbenchView, desktopAgent, isDedicatedSettingsWindow]);
+		},
+		[activateWorkbenchView, desktopAgent, isDedicatedSettingsWindow],
+	);
 
 	useEffect(() => {
 		if (!nativeAppearance) {

@@ -3,6 +3,7 @@
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { getErrorMessage } from "../shared/errors.ts";
 import type { DesktopWorkspacePaneRole } from "../shared/types.ts";
 import { DESKTOP_PRODUCT_NAME } from "./app-identity.ts";
 import { ContextHarvester, JsonPaneSnapshotStore } from "./context/context-harvester.ts";
@@ -259,7 +260,7 @@ export async function runWorkspaceRuntimeCli(
 		io.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
 		return { exitCode: 0, stderr, stdout };
 	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
+		const message = getErrorMessage(error);
 		io.stderr.write(`${message}\n`);
 		return { exitCode: 1, stderr: stderr || `${message}\n`, stdout };
 	}

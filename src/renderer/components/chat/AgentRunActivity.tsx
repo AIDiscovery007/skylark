@@ -1,6 +1,8 @@
 import { BrainIcon, ChevronDownIcon } from "lucide-react";
 import { MotionConfig, motion } from "motion/react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { isRecord } from "../../../shared/guards.ts";
+import { useNowTicker } from "../../hooks/use-now-ticker.ts";
 import {
 	DESKTOP_RUN_ACTIVITY_METADATA_KEY,
 	type DesktopRunActivityMetadata,
@@ -41,10 +43,6 @@ type AgentActivityStatus = { type: "complete" | "incomplete" | "requires-action"
 interface PendingPushCompensation {
 	direction: ActivityPushDirection;
 	open: boolean;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null;
 }
 
 function getNumberProperty(value: unknown, key: string): number | undefined {
@@ -395,7 +393,7 @@ export function AgentRunActivity({
 	const previousAutoCollapseStateRef = useRef<{ activityId: string; isRunning: boolean } | undefined>(undefined);
 	const activeStartedAtRef = useRef(getReasonableTimestamp(metadata?.startedAt) ?? Date.now());
 	const autoCollapseTimeoutRef = useRef<number | undefined>(undefined);
-	const [now, setNow] = useState(() => Date.now());
+	const now = useNowTicker({ enabled: isRunning, getNow: Date.now, intervalMs: 1000, resetKey: activityId });
 	const [isAutoCollapsing, setIsAutoCollapsing] = useState(false);
 	const [pushDirection, setPushDirection] = useState<ActivityPushDirection>("down");
 	const [shouldRenderActivityContent, setShouldRenderActivityContent] = useState(isOpen);
@@ -427,7 +425,6 @@ export function AgentRunActivity({
 		if (previousActivityIdRef.current !== activityId) {
 			previousActivityIdRef.current = activityId;
 			activeStartedAtRef.current = getReasonableTimestamp(metadata?.startedAt) ?? Date.now();
-			setNow(Date.now());
 			setCollapsed(!isRunning);
 		}
 	}, [activityId, isRunning, metadata]);
@@ -477,16 +474,6 @@ export function AgentRunActivity({
 	}, [activityId, clearAutoCollapseTimeout, isRunning, toolCallCount]);
 
 	useEffect(() => clearAutoCollapseTimeout, [clearAutoCollapseTimeout]);
-
-	useEffect(() => {
-		if (!isRunning) {
-			return;
-		}
-
-		setNow(Date.now());
-		const intervalId = window.setInterval(() => setNow(Date.now()), 1000);
-		return () => window.clearInterval(intervalId);
-	}, [isRunning]);
 
 	useEffect(() => {
 		if (isRunning) {

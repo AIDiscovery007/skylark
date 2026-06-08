@@ -1,7 +1,7 @@
 import { IPC_CHANNELS } from "../../shared/ipc-contract.ts";
 import type { DesktopApprovalBroker } from "../security/approval-broker.ts";
+import { pipeSubscriptionToPort } from "../util/port-fanout.ts";
 import type { DesktopBridgeGroupDescriptor } from "./desktop-bridge-registry.ts";
-import { openApprovalStream } from "./open-approval-stream.ts";
 import { validateApprovalDecision } from "./validate-ipc.ts";
 
 export function createApprovalBridgeGroup(approvalBroker: DesktopApprovalBroker): DesktopBridgeGroupDescriptor {
@@ -17,7 +17,7 @@ export function createApprovalBridgeGroup(approvalBroker: DesktopApprovalBroker)
 		streams: [
 			{
 				channel: IPC_CHANNELS.openApprovalStream,
-				open: (port) => openApprovalStream(approvalBroker, port),
+				open: (port) => pipeSubscriptionToPort((listener) => approvalBroker.subscribe(listener), port),
 			},
 		],
 	};

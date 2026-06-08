@@ -1,5 +1,6 @@
 import { access, readFile } from "node:fs/promises";
 import { join, normalize, resolve } from "node:path";
+import { isRecord } from "../../shared/guards.ts";
 import type { DesktopWorkspacePaneDefinition, DesktopWorkspacePaneRole } from "../../shared/types.ts";
 import type { DesktopWorkspaceCreateInput } from "./workspace-store.ts";
 
@@ -18,10 +19,6 @@ const SCRIPT_CANDIDATES: Record<"dev-server" | "logs" | "test", readonly string[
 	logs: ["logs", "log", "logs:dev", "dev:logs"],
 	test: ["test", "test:run", "unit", "test:unit"],
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function normalizeRepoPath(repoPath: string): string {
 	return normalize(resolve(repoPath));

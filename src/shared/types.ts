@@ -1,5 +1,6 @@
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ImageContent, Model } from "@earendil-works/pi-ai";
+import { isRecord } from "./guards.ts";
 import type {
 	DesktopAgentDiagnostic,
 	DesktopAgentModel,
@@ -213,10 +214,6 @@ export function resolveDesktopAgentMode(value: unknown): DesktopAgentMode {
 
 export function isDesktopTaskProgressStatus(value: unknown): value is DesktopTaskProgressStatus {
 	return typeof value === "string" && DESKTOP_TASK_PROGRESS_STATUSES.includes(value as DesktopTaskProgressStatus);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function normalizeOptionalProgressText(value: unknown): string | undefined {

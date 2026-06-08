@@ -27,6 +27,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { VirtualStack } from "@/components/ui/virtual-stack";
 import { subtleReveal } from "@/lib/motion";
 import { cn } from "@/lib/utils";
+import { getErrorMessage } from "../../../shared/errors.ts";
 import type {
 	DesktopCapabilityCatalog,
 	DesktopCapabilityDetail,
@@ -234,7 +235,7 @@ export function CapabilitiesPage({
 			setDetailPreview({ detail, isLoading: false, request, title });
 		} catch (error: unknown) {
 			setDetailPreview({
-				errorMessage: error instanceof Error ? error.message : String(error),
+				errorMessage: getErrorMessage(error),
 				isLoading: false,
 				request,
 				title,

@@ -3,7 +3,9 @@ import { cp, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path";
 import type { FileEntry, SessionEntry, SessionHeader } from "@earendil-works/pi-coding-agent";
 import { CURRENT_SESSION_VERSION, migrateSessionEntries, parseSessionEntries } from "@earendil-works/pi-coding-agent";
+import { isRecord } from "../../shared/guards.ts";
 import type { DesktopPersistedSession } from "../../shared/types.ts";
+import { isMissingFileError } from "./fs-errors.ts";
 import { DESKTOP_SESSION_METADATA_CUSTOM_TYPE, DesktopSessionStore } from "./session-store.ts";
 
 export interface DesktopAgentHomeMigrationOptions {
@@ -44,15 +46,6 @@ const LEGACY_PI_AGENT_RESOURCE_PATHS = [
 	"tools",
 	"bin",
 ] as const;
-
-function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
-	return (
-		typeof error === "object" &&
-		error !== null &&
-		"code" in error &&
-		(error as NodeJS.ErrnoException).code === "ENOENT"
-	);
-}
 
 async function readJsonFile<T>(filePath: string): Promise<T | undefined> {
 	try {
@@ -246,10 +239,6 @@ async function copyResource(
 	await mkdir(dirname(targetPath), { recursive: true });
 	await cp(sourcePath, targetPath, { recursive: true, force: false, errorOnExist: true });
 	return { copiedResources: 1, skippedResources: 0 };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function copyLegacyDesktopSettings(options: DesktopAgentHomeMigrationOptions): Promise<{

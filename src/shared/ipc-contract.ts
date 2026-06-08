@@ -91,7 +91,6 @@ import type {
 	DesktopWorkspaceRuntimeCaptureRequest,
 	DesktopWorkspaceRuntimeCaptureResult,
 	DesktopWorkspaceRuntimeCreateDebugRequest,
-	DesktopWorkspaceRuntimeEvent,
 	DesktopWorkspaceRuntimePaneControlRequest,
 	DesktopWorkspaceRuntimePaneTextRequest,
 	DesktopWorkspaceRuntimeSummary,
@@ -322,7 +321,6 @@ export interface DesktopAgentBridge {
 	subscribeToSettingsEvents(listener: (event: DesktopSettingsEvent) => void): () => void;
 	subscribeToEnvironmentEvents(listener: (event: DesktopEnvironmentEvent) => void): () => void;
 	subscribeToSubagentEvents(listener: (event: DesktopSubagentRuntimeEvent) => void): () => void;
-	subscribeToWorkspaceRuntimeEvents(listener: (event: DesktopWorkspaceRuntimeEvent) => void): () => void;
 }
 
 declare global {

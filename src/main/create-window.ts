@@ -1,10 +1,9 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BrowserWindow, type BrowserWindowConstructorOptions, type Rectangle } from "electron";
+import type { BrowserWindow, BrowserWindowConstructorOptions, Rectangle } from "electron";
 import type { DesktopWindowState } from "../shared/types.ts";
 import { DESKTOP_PRODUCT_NAME } from "./app-identity.ts";
-import { markMainPerformance, measureMainPerformance } from "./performance.ts";
 
 const PRELOAD_ENTRY_CANDIDATES = ["../preload/index.cjs", "../preload/index.js", "../preload/index.mjs"] as const;
 const MODULE_DIR = fileURLToPath(new URL(".", import.meta.url));
@@ -198,35 +197,4 @@ export function applyContentSecurityPolicy(mainWindow: BrowserWindow): void {
 			},
 		});
 	});
-}
-
-export function createMainWindow(): BrowserWindow {
-	markMainPerformance("main:window:create:start");
-	const preloadPath = getPreloadEntryPath();
-	const mainWindow = new BrowserWindow(buildMainWindowOptions(preloadPath));
-	const isDevelopmentRenderer = Boolean(process.env.ELECTRON_RENDERER_URL);
-
-	bindFirstInteractiveShowGate(mainWindow, {
-		onReadyToShow: () => {
-			markMainPerformance("main:window:ready-to-show");
-			measureMainPerformance("main window ready to show", "main:window:create:start", "main:window:ready-to-show");
-		},
-	});
-
-	mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-	mainWindow.webContents.on("will-navigate", (event) => {
-		event.preventDefault();
-	});
-
-	if (!isDevelopmentRenderer) {
-		applyContentSecurityPolicy(mainWindow);
-	}
-
-	if (process.env.ELECTRON_RENDERER_URL) {
-		void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
-	} else {
-		void mainWindow.loadFile(join(MODULE_DIR, "../renderer/index.html"));
-	}
-
-	return mainWindow;
 }

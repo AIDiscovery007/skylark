@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
-import { basename, dirname, extname, isAbsolute, relative, resolve } from "node:path";
+import { basename, dirname, extname, resolve } from "node:path";
 import { Readable } from "node:stream";
+import { containRealPath } from "../util/path-scope.ts";
 
 export const DESKTOP_PREVIEW_PROTOCOL_SCHEME = "skylark-preview";
 
@@ -35,13 +36,6 @@ interface PreviewSession {
 
 function encodePathSegment(value: string): string {
 	return encodeURIComponent(value).replace(/%2F/gi, "/");
-}
-
-function isInsideDirectory(parentPath: string, childPath: string): boolean {
-	const relativePath = relative(parentPath, childPath);
-	return (
-		relativePath === "" || (relativePath.length > 0 && !relativePath.startsWith("..") && !isAbsolute(relativePath))
-	);
 }
 
 function createTextResponse(status: number, message: string): Response {
@@ -99,13 +93,13 @@ export class DesktopPreviewProtocolService {
 		}
 
 		const candidatePath = resolve(session.rootDir, relativePath);
-		let realTargetPath: string;
+		let realTargetPath: string | null;
 		try {
-			realTargetPath = await realpath(candidatePath);
+			realTargetPath = await containRealPath(session.rootDir, candidatePath);
 		} catch {
 			return createTextResponse(404, "Preview asset was not found.");
 		}
-		if (!isInsideDirectory(session.rootDir, realTargetPath)) {
+		if (!realTargetPath) {
 			return createTextResponse(403, "Preview asset is outside the authorized directory.");
 		}
 

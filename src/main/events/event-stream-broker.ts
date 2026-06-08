@@ -1,21 +1,16 @@
 import type { MessagePortMain } from "electron";
 import type { DesktopEventDetail, DesktopEventEvent } from "../../shared/types.ts";
+import { PortFanout } from "../util/port-fanout.ts";
 
 export class DesktopEventStreamBroker {
-	private readonly ports = new Set<MessagePortMain>();
+	private readonly ports = new PortFanout<DesktopEventEvent>();
 
 	openPort(port: MessagePortMain): void {
 		this.ports.add(port);
-		port.start();
-		port.on("close", () => {
-			this.ports.delete(port);
-		});
 	}
 
 	publish(event: DesktopEventEvent): void {
-		for (const port of this.ports) {
-			port.postMessage(event);
-		}
+		this.ports.publish(event);
 	}
 
 	publishEventUpdate(event: DesktopEventDetail | null | undefined): void {

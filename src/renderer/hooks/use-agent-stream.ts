@@ -1,15 +1,18 @@
 import { useCallback, useEffect } from "react";
-import type { SerializedAgentEvent } from "../../shared/serialized-agent-event.ts";
+import type { DesktopAgentSnapshot, SerializedAgentEvent } from "../../shared/serialized-agent-event.ts";
 import type {
 	DesktopAgentMode,
 	DesktopPromptSubmission,
 	DesktopSessionProfileUpdateInput,
 } from "../../shared/types.ts";
 import { createAgentEventCoalescer } from "../lib/agent-event-coalescer.ts";
+import { applySessionSnapshot } from "../lib/apply-session-snapshot.ts";
+import { runBridgeCommand } from "../lib/bridge-command.ts";
 import { markRendererPerformance, measureRendererPerformance } from "../lib/performance-marks.ts";
 import { useAgentStore } from "../stores/agent-store.ts";
 import { useProjectStore } from "../stores/project-store.ts";
 import { useSessionStore } from "../stores/session-store.ts";
+import { useSubscribedResource } from "./use-subscribed-resource.ts";
 
 let hasMeasuredFirstPrompt = false;
 
@@ -34,30 +37,39 @@ export function useAgentStream(activeSessionId?: string): AgentStreamControls {
 	const applyProjectEvent = useProjectStore((state) => state.applyAgentEvent);
 	const applyProjectProfileSnapshot = useProjectStore((state) => state.applyProfileSnapshot);
 
-	useEffect(() => {
-		let disposed = false;
-		const eventCoalescer = createAgentEventCoalescer({
-			emit: (event) => {
-				applyEvent(event);
-				applySessionEvent(event);
-				applyProjectEvent(event);
-			},
-		});
+	const applySnapshot = useCallback(
+		(snapshot: DesktopAgentSnapshot) => {
+			applySessionSnapshot(snapshot, {
+				applyProfileSnapshot,
+				applyProjectProfileSnapshot,
+				hydrateSnapshot,
+			});
+		},
+		[applyProfileSnapshot, applyProjectProfileSnapshot, hydrateSnapshot],
+	);
 
-		const unsubscribe = window.desktopAgent.subscribeToAgentEvents((event: SerializedAgentEvent) => {
-			if (disposed) {
-				return;
-			}
+	useSubscribedResource<SerializedAgentEvent>(
+		(onEvent) => {
+			const eventCoalescer = createAgentEventCoalescer({
+				emit: onEvent,
+			});
 
-			eventCoalescer.push(event);
-		});
+			const unsubscribe = window.desktopAgent.subscribeToAgentEvents((event: SerializedAgentEvent) => {
+				eventCoalescer.push(event);
+			});
 
-		return () => {
-			disposed = true;
-			unsubscribe();
-			eventCoalescer.dispose();
-		};
-	}, [applyEvent, applyProjectEvent, applySessionEvent]);
+			return () => {
+				unsubscribe();
+				eventCoalescer.dispose();
+			};
+		},
+		(event) => {
+			applyEvent(event);
+			applySessionEvent(event);
+			applyProjectEvent(event);
+		},
+		[applyEvent, applyProjectEvent, applySessionEvent],
+	);
 
 	const refreshSnapshot = useCallback(
 		async (sessionId = activeSessionId) => {
@@ -65,22 +77,24 @@ export function useAgentStream(activeSessionId?: string): AgentStreamControls {
 				return;
 			}
 
-			try {
-				markRendererPerformance("renderer:snapshot:load:start");
-				const snapshot = await window.desktopAgent.getSnapshot(sessionId);
-				hydrateSnapshot(snapshot);
-				applyProjectProfileSnapshot(snapshot);
-				markRendererPerformance("renderer:snapshot:load:end");
-				measureRendererPerformance(
-					"renderer snapshot load",
-					"renderer:snapshot:load:start",
-					"renderer:snapshot:load:end",
-				);
-			} catch (error: unknown) {
-				setBridgeError(error instanceof Error ? error.message : String(error));
+			markRendererPerformance("renderer:snapshot:load:start");
+			const snapshot = await runBridgeCommand({
+				command: () => window.desktopAgent.getSnapshot(sessionId),
+				onError: setBridgeError,
+				rethrow: false,
+			});
+			if (!snapshot) {
+				return;
 			}
+			applySnapshot(snapshot);
+			markRendererPerformance("renderer:snapshot:load:end");
+			measureRendererPerformance(
+				"renderer snapshot load",
+				"renderer:snapshot:load:start",
+				"renderer:snapshot:load:end",
+			);
 		},
-		[activeSessionId, applyProjectProfileSnapshot, hydrateSnapshot, setBridgeError],
+		[activeSessionId, applySnapshot, setBridgeError],
 	);
 
 	useEffect(() => {
@@ -100,28 +114,28 @@ export function useAgentStream(activeSessionId?: string): AgentStreamControls {
 				await window.desktopAgent.prompt({ sessionId: activeSessionId, ...request });
 			};
 
-			try {
-				if (hasMeasuredFirstPrompt) {
-					await submitPrompt();
-					return;
-				}
+			await runBridgeCommand({
+				command: async () => {
+					if (hasMeasuredFirstPrompt) {
+						await submitPrompt();
+						return;
+					}
 
-				hasMeasuredFirstPrompt = true;
-				markRendererPerformance("renderer:first-prompt:submit:start");
-				try {
-					await submitPrompt();
-				} finally {
-					markRendererPerformance("renderer:first-prompt:submit:end");
-					measureRendererPerformance(
-						"renderer first prompt submit",
-						"renderer:first-prompt:submit:start",
-						"renderer:first-prompt:submit:end",
-					);
-				}
-			} catch (error: unknown) {
-				setBridgeError(error instanceof Error ? error.message : String(error));
-				throw error;
-			}
+					hasMeasuredFirstPrompt = true;
+					markRendererPerformance("renderer:first-prompt:submit:start");
+					try {
+						await submitPrompt();
+					} finally {
+						markRendererPerformance("renderer:first-prompt:submit:end");
+						measureRendererPerformance(
+							"renderer first prompt submit",
+							"renderer:first-prompt:submit:start",
+							"renderer:first-prompt:submit:end",
+						);
+					}
+				},
+				onError: setBridgeError,
+			});
 		},
 		[activeSessionId, setBridgeError],
 	);
@@ -139,20 +153,17 @@ export function useAgentStream(activeSessionId?: string): AgentStreamControls {
 			if (!activeSessionId) {
 				throw new Error("No active session is selected.");
 			}
-			try {
-				const snapshot = await window.desktopAgent.compact({
-					sessionId: activeSessionId,
-					...(customInstructions ? { customInstructions } : {}),
-				});
-				hydrateSnapshot(snapshot);
-				applyProfileSnapshot(snapshot);
-				applyProjectProfileSnapshot(snapshot);
-			} catch (error: unknown) {
-				setBridgeError(error instanceof Error ? error.message : String(error));
-				throw error;
-			}
+			const snapshot = await runBridgeCommand({
+				command: () =>
+					window.desktopAgent.compact({
+						sessionId: activeSessionId,
+						...(customInstructions ? { customInstructions } : {}),
+					}),
+				onError: setBridgeError,
+			});
+			applySnapshot(snapshot);
 		},
-		[activeSessionId, applyProfileSnapshot, applyProjectProfileSnapshot, hydrateSnapshot, setBridgeError],
+		[activeSessionId, applySnapshot, setBridgeError],
 	);
 
 	const updateSessionProfile = useCallback(
@@ -161,17 +172,13 @@ export function useAgentStream(activeSessionId?: string): AgentStreamControls {
 				throw new Error("No active session is selected.");
 			}
 
-			try {
-				const snapshot = await window.desktopAgent.updateSessionProfile({ sessionId: activeSessionId, ...update });
-				hydrateSnapshot(snapshot);
-				applyProfileSnapshot(snapshot);
-				applyProjectProfileSnapshot(snapshot);
-			} catch (error: unknown) {
-				setBridgeError(error instanceof Error ? error.message : String(error));
-				throw error;
-			}
+			const snapshot = await runBridgeCommand({
+				command: () => window.desktopAgent.updateSessionProfile({ sessionId: activeSessionId, ...update }),
+				onError: setBridgeError,
+			});
+			applySnapshot(snapshot);
 		},
-		[activeSessionId, applyProfileSnapshot, applyProjectProfileSnapshot, hydrateSnapshot, setBridgeError],
+		[activeSessionId, applySnapshot, setBridgeError],
 	);
 
 	const setSessionMode = useCallback(
@@ -180,17 +187,13 @@ export function useAgentStream(activeSessionId?: string): AgentStreamControls {
 				throw new Error("No active session is selected.");
 			}
 
-			try {
-				const snapshot = await window.desktopAgent.setSessionMode({ sessionId: activeSessionId, agentMode });
-				hydrateSnapshot(snapshot);
-				applyProfileSnapshot(snapshot);
-				applyProjectProfileSnapshot(snapshot);
-			} catch (error: unknown) {
-				setBridgeError(error instanceof Error ? error.message : String(error));
-				throw error;
-			}
+			const snapshot = await runBridgeCommand({
+				command: () => window.desktopAgent.setSessionMode({ sessionId: activeSessionId, agentMode }),
+				onError: setBridgeError,
+			});
+			applySnapshot(snapshot);
 		},
-		[activeSessionId, applyProfileSnapshot, applyProjectProfileSnapshot, hydrateSnapshot, setBridgeError],
+		[activeSessionId, applySnapshot, setBridgeError],
 	);
 
 	const consumeProposedPlan = useCallback(
@@ -199,20 +202,17 @@ export function useAgentStream(activeSessionId?: string): AgentStreamControls {
 				throw new Error("No active session is selected.");
 			}
 
-			try {
-				const snapshot = await window.desktopAgent.consumeProposedPlan({
-					sessionId: activeSessionId,
-					planMessageId,
-				});
-				hydrateSnapshot(snapshot);
-				applyProfileSnapshot(snapshot);
-				applyProjectProfileSnapshot(snapshot);
-			} catch (error: unknown) {
-				setBridgeError(error instanceof Error ? error.message : String(error));
-				throw error;
-			}
+			const snapshot = await runBridgeCommand({
+				command: () =>
+					window.desktopAgent.consumeProposedPlan({
+						sessionId: activeSessionId,
+						planMessageId,
+					}),
+				onError: setBridgeError,
+			});
+			applySnapshot(snapshot);
 		},
-		[activeSessionId, applyProfileSnapshot, applyProjectProfileSnapshot, hydrateSnapshot, setBridgeError],
+		[activeSessionId, applySnapshot, setBridgeError],
 	);
 
 	const executePlan = useCallback(async () => {
@@ -220,16 +220,12 @@ export function useAgentStream(activeSessionId?: string): AgentStreamControls {
 			throw new Error("No active session is selected.");
 		}
 
-		try {
-			const snapshot = await window.desktopAgent.executePlan({ sessionId: activeSessionId });
-			hydrateSnapshot(snapshot);
-			applyProfileSnapshot(snapshot);
-			applyProjectProfileSnapshot(snapshot);
-		} catch (error: unknown) {
-			setBridgeError(error instanceof Error ? error.message : String(error));
-			throw error;
-		}
-	}, [activeSessionId, applyProfileSnapshot, applyProjectProfileSnapshot, hydrateSnapshot, setBridgeError]);
+		const snapshot = await runBridgeCommand({
+			command: () => window.desktopAgent.executePlan({ sessionId: activeSessionId }),
+			onError: setBridgeError,
+		});
+		applySnapshot(snapshot);
+	}, [activeSessionId, applySnapshot, setBridgeError]);
 
 	return {
 		abort,

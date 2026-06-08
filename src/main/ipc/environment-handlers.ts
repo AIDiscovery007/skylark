@@ -1,4 +1,3 @@
-import type { MessagePortMain } from "electron";
 import { IPC_CHANNELS } from "../../shared/ipc-contract.ts";
 import type {
 	DesktopEnvironmentEvent,
@@ -8,6 +7,7 @@ import type {
 import type { JsonEnvironmentResourceStore } from "../environment/environment-resource-store.ts";
 import type { DesktopSubagentRuntimeBroker } from "../runtime/subagent-runtime-broker.ts";
 import { readSubagentSnapshot } from "../runtime/subagent-snapshot.ts";
+import { PortFanout } from "../util/port-fanout.ts";
 import type { DesktopBridgeGroupDescriptor } from "./desktop-bridge-registry.ts";
 import {
 	validateEnvironmentResourceDetachRequest,
@@ -30,12 +30,10 @@ export interface DesktopEnvironmentBridgeGroup {
 export function createEnvironmentBridgeGroup(
 	services?: DesktopEnvironmentBridgeServices,
 ): DesktopEnvironmentBridgeGroup {
-	const ports = new Set<MessagePortMain>();
+	const ports = new PortFanout<DesktopEnvironmentEvent>();
 
 	const publishEnvironmentEvent = (event: DesktopEnvironmentEvent): void => {
-		for (const port of ports) {
-			port.postMessage(event);
-		}
+		ports.publish(event);
 	};
 
 	const refreshAndPublishResources = async (
@@ -101,10 +99,6 @@ export function createEnvironmentBridgeGroup(
 					channel: IPC_CHANNELS.openEnvironmentStream,
 					open: (port) => {
 						ports.add(port);
-						port.start();
-						port.on("close", () => {
-							ports.delete(port);
-						});
 					},
 				},
 				{

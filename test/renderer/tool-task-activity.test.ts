@@ -1,7 +1,6 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { ToolOutput } from "../../src/renderer/components/ai-elements/tool.tsx";
 import { InlineToolRail } from "../../src/renderer/components/chat/InlineToolRail.tsx";
 
 describe("tool activity rendering", () => {
@@ -117,23 +116,5 @@ describe("tool activity rendering", () => {
 
 		expect(html).toContain("处理失败 1s");
 		expect(html).toContain("错误");
-	});
-
-	it("keeps fallback tool output in bounded local viewports", () => {
-		const longError = Array.from({ length: 16 }, (_, index) => `error line ${index + 1}`).join("\n");
-		const longResult = Array.from({ length: 16 }, (_, index) => `result line ${index + 1}`).join("\n");
-		const html = renderToStaticMarkup(
-			createElement(ToolOutput, {
-				errorText: longError,
-				output: longResult,
-			}),
-		);
-
-		expect(html).toContain('data-slot="tool-output-error-viewport"');
-		expect(html).toContain('data-slot="tool-output-result-viewport"');
-		expect(html).toContain("runtime-tool-section-scrollport");
-		expect(html).toContain("overflow-auto");
-		expect(html).toContain("error line 16");
-		expect(html).toContain("result line 16");
 	});
 });

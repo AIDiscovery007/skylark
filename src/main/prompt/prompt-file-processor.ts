@@ -7,6 +7,7 @@ import type { ImageContent } from "@earendil-works/pi-ai";
 import { formatDimensionNote, type ResizedImage, resizeImage } from "@earendil-works/pi-coding-agent";
 import mammoth from "mammoth";
 import xlsx, { type WorkSheet } from "xlsx";
+import { getErrorMessage } from "../../shared/errors.ts";
 
 export type PromptFileInput =
 	| { type: "path"; path: string }
@@ -587,7 +588,7 @@ export async function processPromptFileInputs(
 			errors.push({
 				name,
 				path: absolutePath,
-				message: error instanceof Error ? error.message : String(error),
+				message: getErrorMessage(error),
 			});
 		}
 	}

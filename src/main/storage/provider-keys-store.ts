@@ -1,7 +1,7 @@
 import { safeStorage } from "electron";
+import { getDesktopProviderAliases, normalizeDesktopProviderIdentifier } from "../../shared/provider-id.ts";
 import type { DesktopProviderKeyStatus, DesktopStorageSecurityState } from "../../shared/types.ts";
 import { JsonFileStore } from "./json-file-store.ts";
-import { getDesktopProviderAliases, normalizeDesktopProviderIdentifier } from "./provider-id.ts";
 
 interface StoredProviderKey {
 	encrypted: boolean;

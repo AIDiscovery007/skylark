@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { join, relative, resolve, sep } from "node:path";
+import { join } from "node:path";
+import { getErrorMessage } from "../../shared/errors.ts";
 import type {
 	DesktopWorkspace,
 	DesktopWorkspacePaneControlOwner,
@@ -8,6 +9,7 @@ import type {
 } from "../../shared/types.ts";
 import type { TmuxPaneInfo, TmuxRuntime } from "../tmux/tmux-runtime.ts";
 import { TmuxRuntimeError } from "../tmux/tmux-runtime.ts";
+import { isPathInside } from "../util/path-scope.ts";
 import { type DesktopWorkspaceStore, deriveTmuxSessionName } from "./workspace-store.ts";
 
 export type WorkspaceRuntimeStatus = "archived" | "error" | "paused" | "running" | "unavailable";
@@ -60,11 +62,6 @@ function getPaneWindowName(paneDefinition: DesktopWorkspacePaneDefinition): stri
 
 function resolveWorkspaceCwd(workspace: DesktopWorkspace): string {
 	return workspace.worktreePath ?? workspace.repoPath;
-}
-
-function isPathInside(parentPath: string, childPath: string): boolean {
-	const relativePath = relative(resolve(parentPath), resolve(childPath));
-	return relativePath.length === 0 || (!relativePath.startsWith("..") && !relativePath.startsWith(`..${sep}`));
 }
 
 function getUnmanagedRuntimeMessage(workspaceId: string): string {
@@ -238,7 +235,7 @@ export class WorkspaceRuntimeOrchestrator {
 		try {
 			await this.options.snapshotBeforePause?.(workspaceId);
 		} catch (error) {
-			snapshotErrorMessage = error instanceof Error ? error.message : String(error);
+			snapshotErrorMessage = getErrorMessage(error);
 		}
 		if (
 			await this.options.tmuxRuntime.hasSession({ socketPath: runtime.socketPath, sessionName: runtime.sessionName })
@@ -328,7 +325,7 @@ export class WorkspaceRuntimeOrchestrator {
 				panes,
 			};
 		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
+			const message = getErrorMessage(error);
 			if (error instanceof TmuxRuntimeError && error.code === "tmux_unavailable") {
 				return {
 					workspaceId,

@@ -1,5 +1,6 @@
 import { useCallback, useEffect } from "react";
 import type { DesktopSessionSummary } from "../../shared/types.ts";
+import { resolveDesktopAgentBridge } from "../lib/desktop-agent-bridge.ts";
 import type { SessionDeletionBridge } from "../stores/session-store.ts";
 import { useSessionStore } from "../stores/session-store.ts";
 
@@ -27,7 +28,7 @@ export interface UseSessionsResult {
 }
 
 export function useSessions(options: UseSessionsOptions = {}): UseSessionsResult {
-	const bridge = options.bridge ?? window.desktopAgent;
+	const bridge = resolveDesktopAgentBridge(options.bridge);
 	const enabled = options.enabled ?? true;
 	const onSessionActivated = options.onSessionActivated;
 	const preferredSessionId = options.preferredSessionId;

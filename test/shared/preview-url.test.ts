@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
 	isDesktopLoopbackWebPreviewUrl,
 	isDesktopStaticWebPreviewUrl,
-	normalizeDesktopLoopbackWebPreviewUrl,
 	normalizeDesktopWebPreviewUrl,
 } from "../../src/shared/preview-url.ts";
 
@@ -13,7 +12,6 @@ describe("preview-url", () => {
 			"http://127.0.0.1:5173/app?x=1#top",
 		);
 		expect(normalizeDesktopWebPreviewUrl("https://[::1]:4173")).toBe("https://[::1]:4173/");
-		expect(normalizeDesktopLoopbackWebPreviewUrl("localhost:3000")).toBe("http://localhost:3000/");
 		expect(isDesktopLoopbackWebPreviewUrl("http://localhost:3000/")).toBe(true);
 	});
 
@@ -26,7 +24,6 @@ describe("preview-url", () => {
 		expect(normalizeDesktopWebPreviewUrl("http://youtube/")).toBe("http://youtube.com/");
 		expect(normalizeDesktopWebPreviewUrl("http://localhost")).toBe("http://localhost/");
 		expect(normalizeDesktopWebPreviewUrl("http://192.168.0.2:3000")).toBe("http://192.168.0.2:3000/");
-		expect(normalizeDesktopLoopbackWebPreviewUrl("https://example.com")).toBeUndefined();
 		expect(isDesktopLoopbackWebPreviewUrl("https://example.com/")).toBe(false);
 	});
 
@@ -35,7 +32,6 @@ describe("preview-url", () => {
 			"skylark-preview://session/index.html",
 		);
 		expect(isDesktopStaticWebPreviewUrl("skylark-preview://session/index.html")).toBe(true);
-		expect(normalizeDesktopLoopbackWebPreviewUrl("skylark-preview://session/index.html")).toBeUndefined();
 	});
 
 	it("rejects credentialed and unsupported urls", () => {

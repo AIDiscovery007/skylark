@@ -1,101 +1,16 @@
 import { type DesktopAgentBridge, IPC_CHANNELS } from "../shared/ipc-contract.ts";
-import type {
-	DesktopAgentSnapshot,
-	DesktopSessionMessagesRequest,
-	DesktopSessionMessagesResult,
-	SerializedAgentEvent,
-} from "../shared/serialized-agent-event.ts";
+import type { SerializedAgentEvent } from "../shared/serialized-agent-event.ts";
 import type { SerializedTerminalEvent } from "../shared/serialized-terminal-event.ts";
 import type {
-	DesktopApprovalDecision,
 	DesktopApprovalEvent,
-	DesktopCapabilityCatalog,
-	DesktopCapabilityDetail,
-	DesktopCapabilityDetailRequest,
 	DesktopCapabilityEvent,
-	DesktopCompactRequest,
-	DesktopConsumeProposedPlanRequest,
-	DesktopCreateSkillRequest,
 	DesktopEnvironmentEvent,
-	DesktopEnvironmentResource,
-	DesktopEnvironmentResourceDetachRequest,
-	DesktopEnvironmentResourceListRequest,
-	DesktopEventCommentCreateRequest,
-	DesktopEventCreateRequest,
-	DesktopEventDeleteRequest,
-	DesktopEventDetail,
 	DesktopEventEvent,
-	DesktopEventListRequest,
-	DesktopEventManagementApplyRequest,
-	DesktopEventManagementCriteria,
-	DesktopEventManagementCriteriaUpdateRequest,
-	DesktopEventManagementProposal,
-	DesktopEventManagementProposalRequest,
-	DesktopEventRunRequest,
-	DesktopEventRunResult,
-	DesktopEventStatusUpdateRequest,
-	DesktopEventSummary,
-	DesktopEventUpdateRequest,
-	DesktopExecutePlanRequest,
-	DesktopMcpServerSummary,
-	DesktopMcpServerUpsertRequest,
-	DesktopNativeAppearance,
 	DesktopOAuthLoginEvent,
-	DesktopOAuthProviderStatus,
-	DesktopOpenEventAttachmentsRequest,
-	DesktopOpenPromptAttachmentsRequest,
-	DesktopPrepareEventAttachmentsRequest,
-	DesktopPrepareEventAttachmentsResult,
-	DesktopPreparePromptAttachmentsRequest,
-	DesktopPreparePromptAttachmentsResult,
-	DesktopPreviewFile,
-	DesktopPreviewFileRequest,
-	DesktopProjectSummary,
-	DesktopPromptRequest,
-	DesktopPromptTemplateDeleteRequest,
-	DesktopPromptTemplateUpsertRequest,
-	DesktopProviderKeyStatus,
-	DesktopProviderKeyTestResult,
-	DesktopReviewFile,
-	DesktopReviewFilePatchRequest,
-	DesktopReviewSnapshot,
-	DesktopReviewSnapshotRequest,
-	DesktopRuntimeCatalog,
-	DesktopSessionModeUpdateRequest,
-	DesktopSessionProfileUpdateRequest,
-	DesktopSessionSummary,
-	DesktopSettingKey,
-	DesktopSettingsData,
 	DesktopSettingsEvent,
 	DesktopSettingsOpenRequest,
-	DesktopStorageSecurityState,
 	DesktopSubagentRuntimeEvent,
-	DesktopSubagentSnapshot,
-	DesktopSubagentSnapshotRequest,
-	DesktopTerminalCreateRequest,
-	DesktopTerminalDisposeRequest,
-	DesktopTerminalResizeRequest,
-	DesktopTerminalWriteRequest,
-	DesktopWebPreviewBoundsRequest,
-	DesktopWebPreviewCloseRequest,
-	DesktopWebPreviewControlRequest,
 	DesktopWebPreviewEvent,
-	DesktopWebPreviewSelectionModeRequest,
-	DesktopWebPreviewShowRequest,
-	DesktopWebPreviewSnapshot,
-	DesktopWebPreviewState,
-	DesktopWebPreviewStorageRequest,
-	DesktopWorkspaceFileListRequest,
-	DesktopWorkspaceFileListResult,
-	DesktopWorkspaceOverview,
-	DesktopWorkspacePreviewFileRequest,
-	DesktopWorkspaceRuntimeCaptureRequest,
-	DesktopWorkspaceRuntimeCaptureResult,
-	DesktopWorkspaceRuntimeCreateDebugRequest,
-	DesktopWorkspaceRuntimeEvent,
-	DesktopWorkspaceRuntimePaneControlRequest,
-	DesktopWorkspaceRuntimePaneTextRequest,
-	DesktopWorkspaceRuntimeSummary,
 } from "../shared/types.ts";
 
 export interface BridgeMessageEvent<TData = unknown> {
@@ -124,6 +39,137 @@ function createDefaultMessageChannel(): BridgeMessageChannel {
 	return new MessageChannel() as unknown as BridgeMessageChannel;
 }
 
+type DesktopAgentInvokeMethodName = {
+	[TName in keyof DesktopAgentBridge]: DesktopAgentBridge[TName] extends (...args: never[]) => Promise<unknown>
+		? TName
+		: never;
+}[keyof DesktopAgentBridge];
+
+interface BridgeInvokeDescriptor {
+	channel: (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];
+	mapArgs?: (...args: unknown[]) => unknown[];
+}
+
+const optionalSingleArgument = (value?: unknown): unknown[] => (value === undefined ? [] : [value]);
+
+const BRIDGE_INVOKE_DESCRIPTORS = {
+	getWorkspaceOverview: { channel: IPC_CHANNELS.getWorkspaceOverview },
+	getSnapshot: { channel: IPC_CHANNELS.getSnapshot },
+	getSessionMessages: { channel: IPC_CHANNELS.getSessionMessages },
+	getSubagentSnapshot: { channel: IPC_CHANNELS.getSubagentSnapshot },
+	getRuntimeCatalog: { channel: IPC_CHANNELS.getRuntimeCatalog },
+	getSettings: { channel: IPC_CHANNELS.getSettings },
+	setSetting: { channel: IPC_CHANNELS.setSetting },
+	listProviderKeys: { channel: IPC_CHANNELS.listProviderKeys },
+	setProviderKey: { channel: IPC_CHANNELS.setProviderKey },
+	deleteProviderKey: { channel: IPC_CHANNELS.deleteProviderKey },
+	testProviderKey: { channel: IPC_CHANNELS.testProviderKey },
+	listOAuthProviders: { channel: IPC_CHANNELS.listOAuthProviders },
+	startOAuthLogin: { channel: IPC_CHANNELS.startOAuthLogin },
+	submitOAuthLoginCode: { channel: IPC_CHANNELS.submitOAuthLoginCode },
+	cancelOAuthLogin: { channel: IPC_CHANNELS.cancelOAuthLogin },
+	logoutOAuthProvider: { channel: IPC_CHANNELS.logoutOAuthProvider },
+	getStorageSecurityState: { channel: IPC_CHANNELS.getStorageSecurityState },
+	listCapabilities: { channel: IPC_CHANNELS.listCapabilities },
+	getCapabilityDetail: { channel: IPC_CHANNELS.getCapabilityDetail },
+	createSkill: { channel: IPC_CHANNELS.createSkill },
+	upsertPromptTemplate: { channel: IPC_CHANNELS.upsertPromptTemplate },
+	deletePromptTemplate: { channel: IPC_CHANNELS.deletePromptTemplate },
+	upsertMcpServer: { channel: IPC_CHANNELS.upsertMcpServer },
+	setMcpServerEnabled: { channel: IPC_CHANNELS.setMcpServerEnabled },
+	testMcpServer: { channel: IPC_CHANNELS.testMcpServer },
+	restartMcpServer: { channel: IPC_CHANNELS.restartMcpServer },
+	reloadCapabilities: { channel: IPC_CHANNELS.reloadCapabilities },
+	listProjects: { channel: IPC_CHANNELS.listProjects },
+	createProjectFromFolder: { channel: IPC_CHANNELS.createProjectFromFolder },
+	switchProject: { channel: IPC_CHANNELS.switchProject },
+	listSessions: { channel: IPC_CHANNELS.listSessions, mapArgs: optionalSingleArgument },
+	newSession: { channel: IPC_CHANNELS.newSession, mapArgs: optionalSingleArgument },
+	switchSession: { channel: IPC_CHANNELS.switchSession },
+	deleteSession: { channel: IPC_CHANNELS.deleteSession },
+	listEnvironmentResources: { channel: IPC_CHANNELS.listEnvironmentResources, mapArgs: optionalSingleArgument },
+	detachEnvironmentResource: { channel: IPC_CHANNELS.detachEnvironmentResource },
+	listWorkspaceRuntimes: { channel: IPC_CHANNELS.listWorkspaceRuntimes },
+	createDebugWorkspaceRuntime: { channel: IPC_CHANNELS.createDebugWorkspaceRuntime },
+	openWorkspaceRuntime: { channel: IPC_CHANNELS.openWorkspaceRuntime },
+	pauseWorkspaceRuntime: { channel: IPC_CHANNELS.pauseWorkspaceRuntime },
+	resumeWorkspaceRuntime: { channel: IPC_CHANNELS.resumeWorkspaceRuntime },
+	archiveWorkspaceRuntime: { channel: IPC_CHANNELS.archiveWorkspaceRuntime },
+	captureWorkspaceRuntimeContext: { channel: IPC_CHANNELS.captureWorkspaceRuntimeContext },
+	takeOverWorkspaceRuntimePane: { channel: IPC_CHANNELS.takeOverWorkspaceRuntimePane },
+	sendWorkspaceRuntimePaneText: { channel: IPC_CHANNELS.sendWorkspaceRuntimePaneText },
+	returnWorkspaceRuntimePaneControl: { channel: IPC_CHANNELS.returnWorkspaceRuntimePaneControl },
+	createTerminal: { channel: IPC_CHANNELS.createTerminal },
+	writeTerminal: { channel: IPC_CHANNELS.writeTerminal },
+	resizeTerminal: { channel: IPC_CHANNELS.resizeTerminal },
+	disposeTerminal: { channel: IPC_CHANNELS.disposeTerminal },
+	resolveApproval: { channel: IPC_CHANNELS.resolveApproval },
+	getNativeAppearance: { channel: IPC_CHANNELS.getNativeAppearance },
+	openSettingsWindow: { channel: IPC_CHANNELS.openSettingsWindow, mapArgs: optionalSingleArgument },
+	notifyFirstInteractive: { channel: IPC_CHANNELS.notifyFirstInteractive },
+	openExternalUrl: { channel: IPC_CHANNELS.openExternalUrl },
+	showWebPreview: { channel: IPC_CHANNELS.showWebPreview },
+	updateWebPreviewBounds: { channel: IPC_CHANNELS.updateWebPreviewBounds },
+	controlWebPreview: { channel: IPC_CHANNELS.controlWebPreview },
+	clearWebPreviewStorage: { channel: IPC_CHANNELS.clearWebPreviewStorage },
+	setWebPreviewElementSelectionMode: { channel: IPC_CHANNELS.setWebPreviewElementSelectionMode },
+	closeWebPreview: { channel: IPC_CHANNELS.closeWebPreview },
+	prompt: { channel: IPC_CHANNELS.prompt },
+	preparePromptAttachments: { channel: IPC_CHANNELS.preparePromptAttachments },
+	openPromptAttachments: { channel: IPC_CHANNELS.openPromptAttachments },
+	listEvents: { channel: IPC_CHANNELS.listEvents, mapArgs: optionalSingleArgument },
+	getEvent: { channel: IPC_CHANNELS.getEvent },
+	createEvent: { channel: IPC_CHANNELS.createEvent },
+	updateEvent: { channel: IPC_CHANNELS.updateEvent },
+	addEventComment: { channel: IPC_CHANNELS.addEventComment },
+	getEventManagementCriteria: { channel: IPC_CHANNELS.getEventManagementCriteria },
+	saveEventManagementCriteria: { channel: IPC_CHANNELS.saveEventManagementCriteria },
+	createEventManagementProposal: {
+		channel: IPC_CHANNELS.createEventManagementProposal,
+		mapArgs: optionalSingleArgument,
+	},
+	applyEventManagementProposal: { channel: IPC_CHANNELS.applyEventManagementProposal },
+	setEventStatus: { channel: IPC_CHANNELS.setEventStatus },
+	deleteEvent: { channel: IPC_CHANNELS.deleteEvent },
+	prepareEventAttachments: { channel: IPC_CHANNELS.prepareEventAttachments },
+	openEventAttachments: { channel: IPC_CHANNELS.openEventAttachments, mapArgs: optionalSingleArgument },
+	runEvent: { channel: IPC_CHANNELS.runEvent },
+	compact: { channel: IPC_CHANNELS.compact },
+	updateSessionProfile: { channel: IPC_CHANNELS.updateSessionProfile },
+	setSessionMode: { channel: IPC_CHANNELS.setSessionMode },
+	consumeProposedPlan: { channel: IPC_CHANNELS.consumeProposedPlan },
+	executePlan: { channel: IPC_CHANNELS.executePlan },
+	abort: { channel: IPC_CHANNELS.abort },
+	getReviewSnapshot: { channel: IPC_CHANNELS.getReviewSnapshot },
+	getReviewFilePatch: { channel: IPC_CHANNELS.getReviewFilePatch },
+	openPreviewFiles: { channel: IPC_CHANNELS.openPreviewFiles },
+	openWorkspacePreviewFile: { channel: IPC_CHANNELS.openWorkspacePreviewFile },
+	listWorkspaceFiles: { channel: IPC_CHANNELS.listWorkspaceFiles },
+	refreshPreviewFile: { channel: IPC_CHANNELS.refreshPreviewFile },
+} satisfies Record<DesktopAgentInvokeMethodName, BridgeInvokeDescriptor>;
+
+function createInvokeBridgeMethods(
+	ipcRenderer: BridgeIpcRenderer,
+): Pick<DesktopAgentBridge, DesktopAgentInvokeMethodName> {
+	const methods: Partial<Record<DesktopAgentInvokeMethodName, unknown>> = {};
+	for (const methodName of Object.keys(BRIDGE_INVOKE_DESCRIPTORS) as DesktopAgentInvokeMethodName[]) {
+		const descriptor: BridgeInvokeDescriptor = BRIDGE_INVOKE_DESCRIPTORS[methodName];
+		methods[methodName] = async (...args: unknown[]) => {
+			const invokeArgs = descriptor.mapArgs ? descriptor.mapArgs(...args) : args;
+			return ipcRenderer.invoke(descriptor.channel, ...invokeArgs);
+		};
+	}
+	return methods as Pick<DesktopAgentBridge, DesktopAgentInvokeMethodName>;
+}
+
+function subscribeToPort<TData>(port: BridgeMessagePort<TData>, listener: (event: TData) => void): () => void {
+	const handleMessage = (event: BridgeMessageEvent<TData>) => {
+		listener(event.data);
+	};
+	port.addEventListener("message", handleMessage);
+	return () => port.removeEventListener("message", handleMessage);
+}
+
 export function createDesktopAgentBridge(
 	ipcRenderer: BridgeIpcRenderer,
 	createMessageChannel: () => BridgeMessageChannel = createDefaultMessageChannel,
@@ -137,7 +183,6 @@ export function createDesktopAgentBridge(
 	let settingsStreamPort: BridgeMessagePort<DesktopSettingsEvent> | undefined;
 	let environmentStreamPort: BridgeMessagePort<DesktopEnvironmentEvent> | undefined;
 	let subagentStreamPort: BridgeMessagePort<DesktopSubagentRuntimeEvent> | undefined;
-	let workspaceRuntimeStreamPort: BridgeMessagePort<DesktopWorkspaceRuntimeEvent> | undefined;
 	let webPreviewStreamPort: BridgeMessagePort<DesktopWebPreviewEvent> | undefined;
 
 	const ensureAgentStreamPort = (): BridgeMessagePort<SerializedAgentEvent> => {
@@ -248,18 +293,6 @@ export function createDesktopAgentBridge(
 		return subagentStreamPort;
 	};
 
-	const ensureWorkspaceRuntimeStreamPort = (): BridgeMessagePort<DesktopWorkspaceRuntimeEvent> => {
-		if (workspaceRuntimeStreamPort) {
-			return workspaceRuntimeStreamPort;
-		}
-
-		const channel = createMessageChannel() as BridgeMessageChannel<DesktopWorkspaceRuntimeEvent>;
-		workspaceRuntimeStreamPort = channel.port1;
-		workspaceRuntimeStreamPort.start();
-		ipcRenderer.postMessage(IPC_CHANNELS.openWorkspaceRuntimeStream, null, [channel.port2]);
-		return workspaceRuntimeStreamPort;
-	};
-
 	const ensureWebPreviewStreamPort = (): BridgeMessagePort<DesktopWebPreviewEvent> => {
 		if (webPreviewStreamPort) {
 			return webPreviewStreamPort;
@@ -272,222 +305,10 @@ export function createDesktopAgentBridge(
 		return webPreviewStreamPort;
 	};
 
+	const invokeMethods = createInvokeBridgeMethods(ipcRenderer);
+
 	return {
-		async getWorkspaceOverview(): Promise<DesktopWorkspaceOverview> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.getWorkspaceOverview)) as DesktopWorkspaceOverview;
-		},
-		async getSnapshot(sessionId: string): Promise<DesktopAgentSnapshot> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.getSnapshot, sessionId)) as DesktopAgentSnapshot;
-		},
-		async getSessionMessages(request: DesktopSessionMessagesRequest): Promise<DesktopSessionMessagesResult> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.getSessionMessages, request)) as DesktopSessionMessagesResult;
-		},
-		async getSubagentSnapshot(request: DesktopSubagentSnapshotRequest): Promise<DesktopSubagentSnapshot> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.getSubagentSnapshot, request)) as DesktopSubagentSnapshot;
-		},
-		async getRuntimeCatalog(): Promise<DesktopRuntimeCatalog> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.getRuntimeCatalog)) as DesktopRuntimeCatalog;
-		},
-		async getSettings(): Promise<DesktopSettingsData> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.getSettings)) as DesktopSettingsData;
-		},
-		async setSetting<TKey extends DesktopSettingKey>(key: TKey, value: DesktopSettingsData[TKey]): Promise<void> {
-			await ipcRenderer.invoke(IPC_CHANNELS.setSetting, key, value);
-		},
-		async listProviderKeys(): Promise<DesktopProviderKeyStatus[]> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.listProviderKeys)) as DesktopProviderKeyStatus[];
-		},
-		async setProviderKey(provider: string, key: string): Promise<void> {
-			await ipcRenderer.invoke(IPC_CHANNELS.setProviderKey, provider, key);
-		},
-		async deleteProviderKey(provider: string): Promise<void> {
-			await ipcRenderer.invoke(IPC_CHANNELS.deleteProviderKey, provider);
-		},
-		async testProviderKey(provider: string): Promise<DesktopProviderKeyTestResult> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.testProviderKey, provider)) as DesktopProviderKeyTestResult;
-		},
-		async listOAuthProviders(): Promise<DesktopOAuthProviderStatus[]> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.listOAuthProviders)) as DesktopOAuthProviderStatus[];
-		},
-		async startOAuthLogin(provider: string): Promise<void> {
-			await ipcRenderer.invoke(IPC_CHANNELS.startOAuthLogin, provider);
-		},
-		async submitOAuthLoginCode(provider: string, code: string): Promise<void> {
-			await ipcRenderer.invoke(IPC_CHANNELS.submitOAuthLoginCode, provider, code);
-		},
-		async cancelOAuthLogin(provider: string): Promise<void> {
-			await ipcRenderer.invoke(IPC_CHANNELS.cancelOAuthLogin, provider);
-		},
-		async logoutOAuthProvider(provider: string): Promise<void> {
-			await ipcRenderer.invoke(IPC_CHANNELS.logoutOAuthProvider, provider);
-		},
-		async getStorageSecurityState(): Promise<DesktopStorageSecurityState> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.getStorageSecurityState)) as DesktopStorageSecurityState;
-		},
-		async listCapabilities(): Promise<DesktopCapabilityCatalog> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.listCapabilities)) as DesktopCapabilityCatalog;
-		},
-		async getCapabilityDetail(request: DesktopCapabilityDetailRequest): Promise<DesktopCapabilityDetail> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.getCapabilityDetail, request)) as DesktopCapabilityDetail;
-		},
-		async createSkill(request: DesktopCreateSkillRequest): Promise<DesktopCapabilityCatalog> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.createSkill, request)) as DesktopCapabilityCatalog;
-		},
-		async upsertPromptTemplate(request: DesktopPromptTemplateUpsertRequest): Promise<DesktopCapabilityCatalog> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.upsertPromptTemplate, request)) as DesktopCapabilityCatalog;
-		},
-		async deletePromptTemplate(request: DesktopPromptTemplateDeleteRequest): Promise<DesktopCapabilityCatalog> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.deletePromptTemplate, request)) as DesktopCapabilityCatalog;
-		},
-		async upsertMcpServer(request: DesktopMcpServerUpsertRequest): Promise<DesktopCapabilityCatalog> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.upsertMcpServer, request)) as DesktopCapabilityCatalog;
-		},
-		async setMcpServerEnabled(serverId: string, enabled: boolean): Promise<DesktopCapabilityCatalog> {
-			return (await ipcRenderer.invoke(
-				IPC_CHANNELS.setMcpServerEnabled,
-				serverId,
-				enabled,
-			)) as DesktopCapabilityCatalog;
-		},
-		async testMcpServer(serverId: string): Promise<DesktopMcpServerSummary> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.testMcpServer, serverId)) as DesktopMcpServerSummary;
-		},
-		async restartMcpServer(serverId: string): Promise<DesktopCapabilityCatalog> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.restartMcpServer, serverId)) as DesktopCapabilityCatalog;
-		},
-		async reloadCapabilities(): Promise<DesktopCapabilityCatalog> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.reloadCapabilities)) as DesktopCapabilityCatalog;
-		},
-		async listProjects(): Promise<DesktopProjectSummary[]> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.listProjects)) as DesktopProjectSummary[];
-		},
-		async createProjectFromFolder(): Promise<DesktopProjectSummary | undefined> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.createProjectFromFolder)) as DesktopProjectSummary | undefined;
-		},
-		async switchProject(projectId: string): Promise<DesktopProjectSummary | undefined> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.switchProject, projectId)) as DesktopProjectSummary | undefined;
-		},
-		async listSessions(projectId?: string): Promise<DesktopSessionSummary[]> {
-			return (await ipcRenderer.invoke(
-				IPC_CHANNELS.listSessions,
-				...(projectId === undefined ? [] : [projectId]),
-			)) as DesktopSessionSummary[];
-		},
-		async newSession(projectId?: string): Promise<DesktopSessionSummary | undefined> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.newSession, ...(projectId === undefined ? [] : [projectId]))) as
-				| DesktopSessionSummary
-				| undefined;
-		},
-		async switchSession(sessionId: string): Promise<DesktopSessionSummary | undefined> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.switchSession, sessionId)) as DesktopSessionSummary | undefined;
-		},
-		async deleteSession(sessionId: string): Promise<DesktopSessionSummary | undefined> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.deleteSession, sessionId)) as DesktopSessionSummary | undefined;
-		},
-		async listEnvironmentResources(
-			request?: DesktopEnvironmentResourceListRequest,
-		): Promise<DesktopEnvironmentResource[]> {
-			return (await ipcRenderer.invoke(
-				IPC_CHANNELS.listEnvironmentResources,
-				...(request === undefined ? [] : [request]),
-			)) as DesktopEnvironmentResource[];
-		},
-		async detachEnvironmentResource(
-			request: DesktopEnvironmentResourceDetachRequest,
-		): Promise<DesktopEnvironmentResource> {
-			return (await ipcRenderer.invoke(
-				IPC_CHANNELS.detachEnvironmentResource,
-				request,
-			)) as DesktopEnvironmentResource;
-		},
-		async listWorkspaceRuntimes(): Promise<DesktopWorkspaceRuntimeSummary[]> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.listWorkspaceRuntimes)) as DesktopWorkspaceRuntimeSummary[];
-		},
-		async createDebugWorkspaceRuntime(
-			request: DesktopWorkspaceRuntimeCreateDebugRequest,
-		): Promise<DesktopWorkspaceRuntimeSummary> {
-			return (await ipcRenderer.invoke(
-				IPC_CHANNELS.createDebugWorkspaceRuntime,
-				request,
-			)) as DesktopWorkspaceRuntimeSummary;
-		},
-		async openWorkspaceRuntime(workspaceId: string): Promise<DesktopWorkspaceRuntimeSummary> {
-			return (await ipcRenderer.invoke(
-				IPC_CHANNELS.openWorkspaceRuntime,
-				workspaceId,
-			)) as DesktopWorkspaceRuntimeSummary;
-		},
-		async pauseWorkspaceRuntime(workspaceId: string): Promise<DesktopWorkspaceRuntimeSummary> {
-			return (await ipcRenderer.invoke(
-				IPC_CHANNELS.pauseWorkspaceRuntime,
-				workspaceId,
-			)) as DesktopWorkspaceRuntimeSummary;
-		},
-		async resumeWorkspaceRuntime(workspaceId: string): Promise<DesktopWorkspaceRuntimeSummary> {
-			return (await ipcRenderer.invoke(
-				IPC_CHANNELS.resumeWorkspaceRuntime,
-				workspaceId,
-			)) as DesktopWorkspaceRuntimeSummary;
-		},
-		async archiveWorkspaceRuntime(workspaceId: string): Promise<DesktopWorkspaceRuntimeSummary> {
-			return (await ipcRenderer.invoke(
-				IPC_CHANNELS.archiveWorkspaceRuntime,
-				workspaceId,
-			)) as DesktopWorkspaceRuntimeSummary;
-		},
-		async captureWorkspaceRuntimeContext(
-			request: DesktopWorkspaceRuntimeCaptureRequest,
-		): Promise<DesktopWorkspaceRuntimeCaptureResult> {
-			return (await ipcRenderer.invoke(
-				IPC_CHANNELS.captureWorkspaceRuntimeContext,
-				request,
-			)) as DesktopWorkspaceRuntimeCaptureResult;
-		},
-		async takeOverWorkspaceRuntimePane(
-			request: DesktopWorkspaceRuntimePaneControlRequest,
-		): Promise<DesktopWorkspaceRuntimeSummary> {
-			return (await ipcRenderer.invoke(
-				IPC_CHANNELS.takeOverWorkspaceRuntimePane,
-				request,
-			)) as DesktopWorkspaceRuntimeSummary;
-		},
-		async sendWorkspaceRuntimePaneText(
-			request: DesktopWorkspaceRuntimePaneTextRequest,
-		): Promise<DesktopWorkspaceRuntimeSummary> {
-			return (await ipcRenderer.invoke(
-				IPC_CHANNELS.sendWorkspaceRuntimePaneText,
-				request,
-			)) as DesktopWorkspaceRuntimeSummary;
-		},
-		async returnWorkspaceRuntimePaneControl(
-			request: DesktopWorkspaceRuntimePaneControlRequest,
-		): Promise<DesktopWorkspaceRuntimeCaptureResult> {
-			return (await ipcRenderer.invoke(
-				IPC_CHANNELS.returnWorkspaceRuntimePaneControl,
-				request,
-			)) as DesktopWorkspaceRuntimeCaptureResult;
-		},
-		async createTerminal(request: DesktopTerminalCreateRequest): Promise<void> {
-			await ipcRenderer.invoke(IPC_CHANNELS.createTerminal, request);
-		},
-		async writeTerminal(request: DesktopTerminalWriteRequest): Promise<void> {
-			await ipcRenderer.invoke(IPC_CHANNELS.writeTerminal, request);
-		},
-		async resizeTerminal(request: DesktopTerminalResizeRequest): Promise<void> {
-			await ipcRenderer.invoke(IPC_CHANNELS.resizeTerminal, request);
-		},
-		async disposeTerminal(request: DesktopTerminalDisposeRequest): Promise<void> {
-			await ipcRenderer.invoke(IPC_CHANNELS.disposeTerminal, request);
-		},
-		async resolveApproval(decision: DesktopApprovalDecision): Promise<void> {
-			await ipcRenderer.invoke(IPC_CHANNELS.resolveApproval, decision);
-		},
-		async getNativeAppearance(): Promise<DesktopNativeAppearance> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.getNativeAppearance)) as DesktopNativeAppearance;
-		},
-		async openSettingsWindow(request?: DesktopSettingsOpenRequest): Promise<void> {
-			await ipcRenderer.invoke(IPC_CHANNELS.openSettingsWindow, ...(request === undefined ? [] : [request]));
-		},
+		...invokeMethods,
 		subscribeToSettingsOpenRequests(listener: (request: DesktopSettingsOpenRequest) => void): () => void {
 			if (!ipcRenderer.on) {
 				return () => undefined;
@@ -498,284 +319,35 @@ export function createDesktopAgentBridge(
 			ipcRenderer.on(IPC_CHANNELS.settingsNavigationRequest, handler);
 			return () => ipcRenderer.off?.(IPC_CHANNELS.settingsNavigationRequest, handler);
 		},
-		async notifyFirstInteractive(): Promise<void> {
-			await ipcRenderer.invoke(IPC_CHANNELS.notifyFirstInteractive);
-		},
-		async openExternalUrl(url: string): Promise<void> {
-			await ipcRenderer.invoke(IPC_CHANNELS.openExternalUrl, url);
-		},
-		async showWebPreview(request: DesktopWebPreviewShowRequest): Promise<DesktopWebPreviewState> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.showWebPreview, request)) as DesktopWebPreviewState;
-		},
-		async updateWebPreviewBounds(
-			request: DesktopWebPreviewBoundsRequest,
-		): Promise<DesktopWebPreviewSnapshot | undefined> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.updateWebPreviewBounds, request)) as
-				| DesktopWebPreviewSnapshot
-				| undefined;
-		},
-		async controlWebPreview(request: DesktopWebPreviewControlRequest): Promise<DesktopWebPreviewState> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.controlWebPreview, request)) as DesktopWebPreviewState;
-		},
-		async clearWebPreviewStorage(request: DesktopWebPreviewStorageRequest): Promise<DesktopWebPreviewState> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.clearWebPreviewStorage, request)) as DesktopWebPreviewState;
-		},
-		async setWebPreviewElementSelectionMode(
-			request: DesktopWebPreviewSelectionModeRequest,
-		): Promise<DesktopWebPreviewState> {
-			return (await ipcRenderer.invoke(
-				IPC_CHANNELS.setWebPreviewElementSelectionMode,
-				request,
-			)) as DesktopWebPreviewState;
-		},
-		async closeWebPreview(request: DesktopWebPreviewCloseRequest): Promise<void> {
-			await ipcRenderer.invoke(IPC_CHANNELS.closeWebPreview, request);
-		},
 		subscribeToWebPreviewEvents(listener: (event: DesktopWebPreviewEvent) => void): () => void {
-			const port = ensureWebPreviewStreamPort();
-			const handler = (event: BridgeMessageEvent<DesktopWebPreviewEvent>): void => listener(event.data);
-			port.addEventListener("message", handler);
-			return () => port.removeEventListener("message", handler);
-		},
-		async prompt(request: DesktopPromptRequest): Promise<void> {
-			await ipcRenderer.invoke(IPC_CHANNELS.prompt, request);
-		},
-		async preparePromptAttachments(
-			request: DesktopPreparePromptAttachmentsRequest,
-		): Promise<DesktopPreparePromptAttachmentsResult> {
-			return (await ipcRenderer.invoke(
-				IPC_CHANNELS.preparePromptAttachments,
-				request,
-			)) as DesktopPreparePromptAttachmentsResult;
-		},
-		async openPromptAttachments(
-			request: DesktopOpenPromptAttachmentsRequest,
-		): Promise<DesktopPreparePromptAttachmentsResult> {
-			return (await ipcRenderer.invoke(
-				IPC_CHANNELS.openPromptAttachments,
-				request,
-			)) as DesktopPreparePromptAttachmentsResult;
-		},
-		async listEvents(request?: DesktopEventListRequest): Promise<DesktopEventSummary[]> {
-			return (await ipcRenderer.invoke(
-				IPC_CHANNELS.listEvents,
-				...(request === undefined ? [] : [request]),
-			)) as DesktopEventSummary[];
-		},
-		async getEvent(eventId: string): Promise<DesktopEventDetail | undefined> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.getEvent, eventId)) as DesktopEventDetail | undefined;
-		},
-		async createEvent(request: DesktopEventCreateRequest): Promise<DesktopEventDetail> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.createEvent, request)) as DesktopEventDetail;
-		},
-		async updateEvent(request: DesktopEventUpdateRequest): Promise<DesktopEventDetail> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.updateEvent, request)) as DesktopEventDetail;
-		},
-		async addEventComment(request: DesktopEventCommentCreateRequest): Promise<DesktopEventDetail> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.addEventComment, request)) as DesktopEventDetail;
-		},
-		async getEventManagementCriteria(): Promise<DesktopEventManagementCriteria> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.getEventManagementCriteria)) as DesktopEventManagementCriteria;
-		},
-		async saveEventManagementCriteria(
-			request: DesktopEventManagementCriteriaUpdateRequest,
-		): Promise<DesktopEventManagementCriteria> {
-			return (await ipcRenderer.invoke(
-				IPC_CHANNELS.saveEventManagementCriteria,
-				request,
-			)) as DesktopEventManagementCriteria;
-		},
-		async createEventManagementProposal(
-			request?: DesktopEventManagementProposalRequest,
-		): Promise<DesktopEventManagementProposal> {
-			return (await ipcRenderer.invoke(
-				IPC_CHANNELS.createEventManagementProposal,
-				...(request === undefined ? [] : [request]),
-			)) as DesktopEventManagementProposal;
-		},
-		async applyEventManagementProposal(request: DesktopEventManagementApplyRequest): Promise<DesktopEventDetail[]> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.applyEventManagementProposal, request)) as DesktopEventDetail[];
-		},
-		async setEventStatus(request: DesktopEventStatusUpdateRequest): Promise<DesktopEventDetail> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.setEventStatus, request)) as DesktopEventDetail;
-		},
-		async deleteEvent(request: DesktopEventDeleteRequest): Promise<void> {
-			await ipcRenderer.invoke(IPC_CHANNELS.deleteEvent, request);
-		},
-		async prepareEventAttachments(
-			request: DesktopPrepareEventAttachmentsRequest,
-		): Promise<DesktopPrepareEventAttachmentsResult> {
-			return (await ipcRenderer.invoke(
-				IPC_CHANNELS.prepareEventAttachments,
-				request,
-			)) as DesktopPrepareEventAttachmentsResult;
-		},
-		async openEventAttachments(
-			request?: DesktopOpenEventAttachmentsRequest,
-		): Promise<DesktopPrepareEventAttachmentsResult> {
-			return (await ipcRenderer.invoke(
-				IPC_CHANNELS.openEventAttachments,
-				...(request === undefined ? [] : [request]),
-			)) as DesktopPrepareEventAttachmentsResult;
-		},
-		async runEvent(request: DesktopEventRunRequest): Promise<DesktopEventRunResult> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.runEvent, request)) as DesktopEventRunResult;
-		},
-		async compact(request: DesktopCompactRequest): Promise<DesktopAgentSnapshot> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.compact, request)) as DesktopAgentSnapshot;
-		},
-		async updateSessionProfile(request: DesktopSessionProfileUpdateRequest): Promise<DesktopAgentSnapshot> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.updateSessionProfile, request)) as DesktopAgentSnapshot;
-		},
-		async setSessionMode(request: DesktopSessionModeUpdateRequest): Promise<DesktopAgentSnapshot> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.setSessionMode, request)) as DesktopAgentSnapshot;
-		},
-		async consumeProposedPlan(request: DesktopConsumeProposedPlanRequest): Promise<DesktopAgentSnapshot> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.consumeProposedPlan, request)) as DesktopAgentSnapshot;
-		},
-		async executePlan(request: DesktopExecutePlanRequest): Promise<DesktopAgentSnapshot> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.executePlan, request)) as DesktopAgentSnapshot;
-		},
-		async abort(sessionId: string): Promise<void> {
-			await ipcRenderer.invoke(IPC_CHANNELS.abort, sessionId);
-		},
-		async getReviewSnapshot(request: DesktopReviewSnapshotRequest): Promise<DesktopReviewSnapshot> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.getReviewSnapshot, request)) as DesktopReviewSnapshot;
-		},
-		async getReviewFilePatch(request: DesktopReviewFilePatchRequest): Promise<DesktopReviewFile> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.getReviewFilePatch, request)) as DesktopReviewFile;
-		},
-		async openPreviewFiles(request: DesktopReviewSnapshotRequest): Promise<DesktopPreviewFile[]> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.openPreviewFiles, request)) as DesktopPreviewFile[];
-		},
-		async openWorkspacePreviewFile(request: DesktopWorkspacePreviewFileRequest): Promise<DesktopPreviewFile> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.openWorkspacePreviewFile, request)) as DesktopPreviewFile;
-		},
-		async listWorkspaceFiles(request: DesktopWorkspaceFileListRequest): Promise<DesktopWorkspaceFileListResult> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.listWorkspaceFiles, request)) as DesktopWorkspaceFileListResult;
-		},
-		async refreshPreviewFile(request: DesktopPreviewFileRequest): Promise<DesktopPreviewFile> {
-			return (await ipcRenderer.invoke(IPC_CHANNELS.refreshPreviewFile, request)) as DesktopPreviewFile;
+			return subscribeToPort(ensureWebPreviewStreamPort(), listener);
 		},
 		subscribeToAgentEvents(listener: (event: SerializedAgentEvent) => void): () => void {
-			const port = ensureAgentStreamPort();
-			const handleMessage = (event: BridgeMessageEvent<SerializedAgentEvent>) => {
-				listener(event.data);
-			};
-
-			port.addEventListener("message", handleMessage);
-
-			return () => {
-				port.removeEventListener("message", handleMessage);
-			};
+			return subscribeToPort(ensureAgentStreamPort(), listener);
 		},
 		subscribeToTerminalEvents(listener: (event: SerializedTerminalEvent) => void): () => void {
-			const port = ensureTerminalStreamPort();
-			const handleMessage = (event: BridgeMessageEvent<SerializedTerminalEvent>) => {
-				listener(event.data);
-			};
-
-			port.addEventListener("message", handleMessage);
-
-			return () => {
-				port.removeEventListener("message", handleMessage);
-			};
+			return subscribeToPort(ensureTerminalStreamPort(), listener);
 		},
 		subscribeToAuthEvents(listener: (event: DesktopOAuthLoginEvent) => void): () => void {
-			const port = ensureAuthStreamPort();
-			const handleMessage = (event: BridgeMessageEvent<DesktopOAuthLoginEvent>) => {
-				listener(event.data);
-			};
-
-			port.addEventListener("message", handleMessage);
-
-			return () => {
-				port.removeEventListener("message", handleMessage);
-			};
+			return subscribeToPort(ensureAuthStreamPort(), listener);
 		},
 		subscribeToCapabilityEvents(listener: (event: DesktopCapabilityEvent) => void): () => void {
-			const port = ensureCapabilityStreamPort();
-			const handleMessage = (event: BridgeMessageEvent<DesktopCapabilityEvent>) => {
-				listener(event.data);
-			};
-
-			port.addEventListener("message", handleMessage);
-
-			return () => {
-				port.removeEventListener("message", handleMessage);
-			};
+			return subscribeToPort(ensureCapabilityStreamPort(), listener);
 		},
 		subscribeToApprovalEvents(listener: (event: DesktopApprovalEvent) => void): () => void {
-			const port = ensureApprovalStreamPort();
-			const handleMessage = (event: BridgeMessageEvent<DesktopApprovalEvent>) => {
-				listener(event.data);
-			};
-
-			port.addEventListener("message", handleMessage);
-
-			return () => {
-				port.removeEventListener("message", handleMessage);
-			};
+			return subscribeToPort(ensureApprovalStreamPort(), listener);
 		},
 		subscribeToEventEvents(listener: (event: DesktopEventEvent) => void): () => void {
-			const port = ensureEventStreamPort();
-			const handleMessage = (event: BridgeMessageEvent<DesktopEventEvent>) => {
-				listener(event.data);
-			};
-
-			port.addEventListener("message", handleMessage);
-
-			return () => {
-				port.removeEventListener("message", handleMessage);
-			};
+			return subscribeToPort(ensureEventStreamPort(), listener);
 		},
 		subscribeToSettingsEvents(listener: (event: DesktopSettingsEvent) => void): () => void {
-			const port = ensureSettingsStreamPort();
-			const handleMessage = (event: BridgeMessageEvent<DesktopSettingsEvent>) => {
-				listener(event.data);
-			};
-
-			port.addEventListener("message", handleMessage);
-
-			return () => {
-				port.removeEventListener("message", handleMessage);
-			};
+			return subscribeToPort(ensureSettingsStreamPort(), listener);
 		},
 		subscribeToEnvironmentEvents(listener: (event: DesktopEnvironmentEvent) => void): () => void {
-			const port = ensureEnvironmentStreamPort();
-			const handleMessage = (event: BridgeMessageEvent<DesktopEnvironmentEvent>) => {
-				listener(event.data);
-			};
-
-			port.addEventListener("message", handleMessage);
-
-			return () => {
-				port.removeEventListener("message", handleMessage);
-			};
+			return subscribeToPort(ensureEnvironmentStreamPort(), listener);
 		},
 		subscribeToSubagentEvents(listener: (event: DesktopSubagentRuntimeEvent) => void): () => void {
-			const port = ensureSubagentStreamPort();
-			const handleMessage = (event: BridgeMessageEvent<DesktopSubagentRuntimeEvent>) => {
-				listener(event.data);
-			};
-
-			port.addEventListener("message", handleMessage);
-
-			return () => {
-				port.removeEventListener("message", handleMessage);
-			};
-		},
-		subscribeToWorkspaceRuntimeEvents(listener: (event: DesktopWorkspaceRuntimeEvent) => void): () => void {
-			const port = ensureWorkspaceRuntimeStreamPort();
-			const handleMessage = (event: BridgeMessageEvent<DesktopWorkspaceRuntimeEvent>) => {
-				listener(event.data);
-			};
-
-			port.addEventListener("message", handleMessage);
-
-			return () => {
-				port.removeEventListener("message", handleMessage);
-			};
+			return subscribeToPort(ensureSubagentStreamPort(), listener);
 		},
 	};
 }

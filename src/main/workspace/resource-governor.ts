@@ -1,7 +1,10 @@
 import { readdir } from "node:fs/promises";
-import { join, relative, resolve, sep } from "node:path";
+import { join } from "node:path";
+import { getErrorMessage } from "../../shared/errors.ts";
 import type { DesktopWorkspace, DesktopWorkspacePaneRole } from "../../shared/types.ts";
+import { isMissingFileError } from "../storage/fs-errors.ts";
 import type { TmuxRuntime } from "../tmux/tmux-runtime.ts";
+import { isPathInside } from "../util/path-scope.ts";
 import type { WorkspaceRuntimeState } from "./workspace-runtime-orchestrator.ts";
 import type { DesktopWorkspaceStore } from "./workspace-store.ts";
 
@@ -94,20 +97,6 @@ const INTERACTIVE_SHELL_COMMANDS = new Set([
 
 function toTimestamp(date: Date): string {
 	return date.toISOString();
-}
-
-function isMissingFileError(error: unknown): boolean {
-	return (
-		typeof error === "object" &&
-		error !== null &&
-		"code" in error &&
-		(error as NodeJS.ErrnoException).code === "ENOENT"
-	);
-}
-
-function isPathInside(parentPath: string, childPath: string): boolean {
-	const relativePath = relative(resolve(parentPath), resolve(childPath));
-	return relativePath.length === 0 || (!relativePath.startsWith("..") && !relativePath.startsWith(`..${sep}`));
 }
 
 function getWorkspaceLastActivity(workspace: DesktopWorkspace): string | undefined {
@@ -213,7 +202,7 @@ export class WorkspaceResourceGovernor {
 					});
 				}
 			} catch (error) {
-				report.errors.push(error instanceof Error ? error.message : String(error));
+				report.errors.push(getErrorMessage(error));
 			}
 		}
 
@@ -282,7 +271,7 @@ export class WorkspaceResourceGovernor {
 			try {
 				activities.push(await this.getWorkspaceRuntimeActivity(workspace.id));
 			} catch (error) {
-				report.errors.push(error instanceof Error ? error.message : String(error));
+				report.errors.push(getErrorMessage(error));
 			}
 		}
 
@@ -383,7 +372,7 @@ export class WorkspaceResourceGovernor {
 			await this.options.workspaceRuntime.pauseWorkspace(workspaceId);
 			report.pausedWorkspaceIds.push(workspaceId);
 		} catch (error) {
-			report.errors.push(error instanceof Error ? error.message : String(error));
+			report.errors.push(getErrorMessage(error));
 		}
 	}
 

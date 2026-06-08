@@ -8,6 +8,7 @@ import type {
 	DesktopWorkspaceFileListResult,
 	DesktopWorkspaceFileType,
 } from "../../shared/types.ts";
+import { containRealPath } from "../util/path-scope.ts";
 
 const execFileAsync = promisify(execFile);
 const MAX_GIT_OUTPUT_BYTES = 16 * 1024 * 1024;
@@ -89,13 +90,6 @@ async function defaultRunGit(cwd: string, args: string[]): Promise<string> {
 	return stdout;
 }
 
-function isInsideDirectory(parentPath: string, childPath: string): boolean {
-	const relativePath = relative(parentPath, childPath);
-	return (
-		relativePath === "" || (relativePath.length > 0 && !relativePath.startsWith("..") && !isAbsolute(relativePath))
-	);
-}
-
 function normalizeRelativePath(path: string): string {
 	return path.split(sep).join("/");
 }
@@ -128,13 +122,13 @@ async function createFileEntry(rootPath: string, relativePath: string): Promise<
 		return undefined;
 	}
 	const absolutePath = resolve(rootPath, relativePath);
-	let realTargetPath: string;
+	let realTargetPath: string | null;
 	try {
-		realTargetPath = await realpath(absolutePath);
+		realTargetPath = await containRealPath(rootPath, absolutePath);
 	} catch {
 		return undefined;
 	}
-	if (!isInsideDirectory(rootPath, realTargetPath)) {
+	if (!realTargetPath) {
 		return undefined;
 	}
 	const metadata = await stat(realTargetPath);

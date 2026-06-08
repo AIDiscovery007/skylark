@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import type { MessagePortMain } from "electron";
 import { IPC_CHANNELS } from "../../shared/ipc-contract.ts";
 import type {
 	DesktopProjectSummary,
@@ -22,6 +21,7 @@ import type {
 } from "../context/context-harvester.ts";
 import type { RuntimeAuditEvent, RuntimePermissionGate } from "../runtime-permissions/runtime-permission-gate.ts";
 import type { DesktopProjectStore } from "../storage/project-store.ts";
+import { PortFanout } from "../util/port-fanout.ts";
 import { createDebugWorkspaceInputFromProject } from "../workspace/debug-workspace.ts";
 import type {
 	WorkspaceRuntimeOrchestrator,
@@ -140,13 +140,11 @@ function createUserPaneAuditEvent(input: {
 export function createWorkspaceRuntimeBridgeGroup(
 	options: WorkspaceRuntimeBridgeGroupOptions,
 ): DesktopBridgeGroupDescriptor {
-	const ports = new Set<MessagePortMain>();
+	const ports = new PortFanout<DesktopWorkspaceRuntimeEvent>();
 	const { contextHarvester, runtimePermissionGate, workspaceRuntime, workspaceStore } = options.services;
 
 	const publish = (event: DesktopWorkspaceRuntimeEvent): void => {
-		for (const port of ports) {
-			port.postMessage(event);
-		}
+		ports.publish(event);
 	};
 
 	const readWorkspaceRuntimeSummary = async (workspaceId: string): Promise<DesktopWorkspaceRuntimeSummary> => {
@@ -366,10 +364,6 @@ export function createWorkspaceRuntimeBridgeGroup(
 				channel: IPC_CHANNELS.openWorkspaceRuntimeStream,
 				open: (port) => {
 					ports.add(port);
-					port.start();
-					port.on("close", () => {
-						ports.delete(port);
-					});
 				},
 			},
 		],

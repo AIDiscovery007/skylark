@@ -24,6 +24,7 @@ import {
 	isGenericSessionTitle,
 	isLegacyAutoDerivedSessionTitle,
 } from "../session-title-utils.ts";
+import { isMissingFileError } from "./fs-errors.ts";
 
 export const DESKTOP_SESSION_METADATA_CUSTOM_TYPE = "desktop_session_metadata";
 
@@ -73,15 +74,6 @@ export interface CreateDesktopSessionOptions {
 
 export interface DesktopSessionStoreOptions {
 	now?: () => Date;
-}
-
-function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
-	return (
-		typeof error === "object" &&
-		error !== null &&
-		"code" in error &&
-		(error as NodeJS.ErrnoException).code === "ENOENT"
-	);
 }
 
 function deriveSessionTitle(messages: AgentMessage[], currentTitle?: string): string {

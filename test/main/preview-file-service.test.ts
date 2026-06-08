@@ -185,7 +185,7 @@ describe("preview-file-service", () => {
 		writeFileSync(outsidePath, "secret\n");
 
 		await expect(readWorkspacePreviewFile(dir, outsidePath)).resolves.toMatchObject({
-			path: realpathSync(outsidePath),
+			path: outsidePath,
 			kind: "unsupported",
 			errorMessage: "只能预览当前 workspace 内的文件。",
 		});
@@ -200,7 +200,7 @@ describe("preview-file-service", () => {
 		symlinkSync(outsidePath, linkPath);
 
 		await expect(readWorkspacePreviewFile(dir, "secret-link.txt")).resolves.toMatchObject({
-			path: realpathSync(outsidePath),
+			path: linkPath,
 			kind: "unsupported",
 			errorMessage: "只能预览当前 workspace 内的文件。",
 		});

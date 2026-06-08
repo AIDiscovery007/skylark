@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DEFAULT_DESKTOP_COMPACT_INSTRUCTION, type DesktopSettingsData } from "../../shared/types.ts";
+import { isMissingFileError } from "./fs-errors.ts";
 import type { DesktopSettingsStore } from "./settings-store.ts";
 
 export const DESKTOP_GLOBAL_AGENTS_FILE_NAME = "AGENTS.md";
@@ -9,15 +10,6 @@ export const DESKTOP_COMPACT_INSTRUCTION_FILE_NAME = "COMPACT.md";
 
 interface DesktopInstructionStoreOptions {
 	agentDir: string;
-}
-
-function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
-	return (
-		typeof error === "object" &&
-		error !== null &&
-		"code" in error &&
-		(error as NodeJS.ErrnoException).code === "ENOENT"
-	);
 }
 
 function normalizeInstruction(value: string | undefined): string | undefined {

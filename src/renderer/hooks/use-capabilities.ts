@@ -1,14 +1,17 @@
 import { useEffect } from "react";
 import type {
 	DesktopCapabilityDetailRequest,
+	DesktopCapabilityEvent,
 	DesktopCreateSkillRequest,
 	DesktopMcpServerUpsertRequest,
 	DesktopPromptTemplateDeleteRequest,
 	DesktopPromptTemplateUpsertRequest,
 } from "../../shared/types.ts";
+import { resolveDesktopAgentBridge } from "../lib/desktop-agent-bridge.ts";
 import { markRendererPerformance, measureRendererPerformance, scheduleIdleWork } from "../lib/performance-marks.ts";
 import type { CapabilitiesStoreBridge } from "../stores/capabilities-store.ts";
 import { useCapabilitiesStore } from "../stores/capabilities-store.ts";
+import { useSubscribedResource } from "./use-subscribed-resource.ts";
 
 export interface UseCapabilitiesOptions {
 	bridge?: CapabilitiesStoreBridge;
@@ -17,7 +20,7 @@ export interface UseCapabilitiesOptions {
 }
 
 export function useCapabilities(options: UseCapabilitiesOptions = {}) {
-	const bridge = options.bridge ?? window.desktopAgent;
+	const bridge = resolveDesktopAgentBridge(options.bridge);
 	const defer = options.defer ?? "immediate";
 	const enabled = options.enabled ?? true;
 	const catalog = useCapabilitiesStore((state) => state.catalog);
@@ -61,11 +64,13 @@ export function useCapabilities(options: UseCapabilitiesOptions = {}) {
 		load();
 	}, [bridge, defer, enabled, loadCapabilities]);
 
-	useEffect(() => {
-		return bridge.subscribeToCapabilityEvents((event) => {
+	useSubscribedResource<DesktopCapabilityEvent>(
+		(onEvent) => bridge.subscribeToCapabilityEvents(onEvent),
+		(event) => {
 			handleCapabilityEvent(event);
-		});
-	}, [bridge, handleCapabilityEvent]);
+		},
+		[bridge, handleCapabilityEvent],
+	);
 
 	return {
 		catalog,

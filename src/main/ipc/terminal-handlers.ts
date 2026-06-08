@@ -2,8 +2,8 @@ import { IPC_CHANNELS } from "../../shared/ipc-contract.ts";
 import { measureMainAsync } from "../performance.ts";
 import type { DesktopApprovalBroker } from "../security/approval-broker.ts";
 import type { DesktopPtyManager } from "../terminal/pty-manager.ts";
+import { pipeSubscriptionToPort } from "../util/port-fanout.ts";
 import type { DesktopBridgeGroupDescriptor } from "./desktop-bridge-registry.ts";
-import { openTerminalStream } from "./open-terminal-stream.ts";
 import {
 	validateTerminalCreateRequest,
 	validateTerminalDisposeRequest,
@@ -64,7 +64,7 @@ export function createTerminalBridgeGroup(options: DesktopTerminalBridgeGroupOpt
 		streams: [
 			{
 				channel: IPC_CHANNELS.openTerminalStream,
-				open: (port) => openTerminalStream(options.ptyManager, port),
+				open: (port) => pipeSubscriptionToPort((listener) => options.ptyManager.subscribe(listener), port),
 			},
 		],
 	};

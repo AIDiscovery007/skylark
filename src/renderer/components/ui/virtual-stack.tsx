@@ -1,6 +1,7 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { ReactNode, Ref, UIEventHandler } from "react";
 import { useCallback, useEffect, useMemo, useRef } from "react";
+import { observeElementResize } from "@/lib/resize-observer";
 import { cn } from "@/lib/utils";
 
 function assignRef<T>(ref: Ref<T> | undefined, value: T | null): void {
@@ -85,13 +86,7 @@ function VirtualStack<T>({
 					width: element.clientWidth,
 				});
 			};
-			notify();
-			if (typeof ResizeObserver === "undefined") {
-				return undefined;
-			}
-			const resizeObserver = new ResizeObserver(notify);
-			resizeObserver.observe(element);
-			return () => resizeObserver.disconnect();
+			return observeElementResize(element, notify);
 		},
 		[initialViewportHeight],
 	);

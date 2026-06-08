@@ -3,6 +3,7 @@ import { access, readFile, stat } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { createTwoFilesPatch } from "diff";
+import { getErrorMessage } from "../../shared/errors.ts";
 import type {
 	DesktopReviewActionAvailability,
 	DesktopReviewFile,
@@ -60,10 +61,6 @@ function createBaseSnapshot(status: DesktopReviewSnapshot["status"], generatedAt
 		generatedAt,
 		actions: DISABLED_GIT_ACTIONS,
 	};
-}
-
-function getErrorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
 }
 
 async function defaultRunGit(cwd: string, args: string[]): Promise<string> {

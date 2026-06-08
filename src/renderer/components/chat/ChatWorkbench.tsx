@@ -1,5 +1,4 @@
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { FileUIPart } from "ai";
 import {
 	ArrowDown,
 	Box,
@@ -55,6 +54,8 @@ import { StatusDot, type StatusDotStatus } from "@/components/ui/status-dot";
 import { VirtualStack } from "@/components/ui/virtual-stack";
 import { activityDrawerTransition, softRevealTransition, subtleReveal } from "@/lib/motion";
 import { markRendererPerformance, measureRendererPerformance } from "@/lib/performance-marks";
+import { observeElementResize } from "@/lib/resize-observer";
+import { getErrorMessage } from "../../../shared/errors.ts";
 import type { DesktopAgentBridge } from "../../../shared/ipc-contract.ts";
 import { normalizeDesktopWebPreviewUrl } from "../../../shared/preview-url.ts";
 import type { DesktopAgentModel } from "../../../shared/serialized-agent-event.ts";
@@ -81,21 +82,55 @@ import type {
 	DesktopTaskProgressStatus,
 	DesktopWorkspaceFileEntry,
 } from "../../../shared/types.ts";
+import { useWorkspaceFiles } from "../../hooks/use-workspace-files.ts";
 import { useWorkspaceStatus, type WorkspaceStatusState } from "../../hooks/use-workspace-status.ts";
 import {
 	createAssistantUiRuntimeMessages,
-	DESKTOP_CAPABILITY_INVOCATIONS_METADATA_KEY,
 	DESKTOP_COMPACTION_NOTICE_METADATA_KEY,
-	DESKTOP_FILE_REFERENCES_METADATA_KEY,
-	DESKTOP_PROPOSED_PLAN_METADATA_KEY,
-	type DesktopCompactionNoticeMetadata,
-	type DesktopProposedPlanMetadata,
-	type DesktopThreadContentPart,
 	type DesktopThreadFileReference,
 	type DesktopThreadMessage,
 	type DesktopThreadMessageStatus,
 	getUserPromptAttachments,
 } from "../../lib/assistant-runtime-adapter.ts";
+import {
+	filterWorkspaceFileSuggestions,
+	formatWorkspaceFileReference,
+	groupSlashCommandSuggestions,
+	resolveAtReferenceToken,
+	resolveSlashCommandSuggestions,
+} from "../../lib/chat-composer-model.ts";
+import {
+	createMarkdownImagePreviewItem,
+	decodeWorkspacePreviewLinkHref,
+	isExternalBrowserHref,
+	isWorkspacePreviewHref,
+	splitAssistantMarkdownImageBlocks,
+	workspacePreviewLinkRemarkPlugin,
+} from "../../lib/chat-markdown-model.ts";
+import {
+	type AssistantTimelineItem,
+	createCapabilityInvocationFromSlashCommand,
+	type DesktopImagePart,
+	emptyCapabilityCatalog,
+	estimateAssistantTimelineItemSize,
+	findLatestCompletedProposedPlanMessageId,
+	getCapabilityInvocationLabel,
+	getCompactInstructions,
+	getCompactionNotice,
+	getMessageCapabilityInvocations,
+	getMessageFileReferences,
+	getMessageProposedPlan,
+	getThreadActivityParts,
+	getThreadImageParts,
+	getThreadTextParts,
+	isCompactCommand,
+	removeCapabilityInvocation,
+	shouldCollapseProposedPlan,
+	shouldRenderTimelineMessage,
+	toPromptAttachmentFilePart,
+	toThreadImageAttachmentFilePart,
+	upsertCapabilityInvocation,
+} from "../../lib/chat-workbench-model.ts";
 import { cn } from "../../lib/utils.ts";
 import { useAgentStore } from "../../stores/agent-store.ts";
 import {
@@ -131,7 +166,6 @@ import {
 	type ResolvedThreadImagePreview,
 	type ThreadImagePreview,
 	ThreadImagePreviewGrid,
-	type ThreadImagePreviewGridItem,
 	type WorkspaceImagePreviewResolver,
 } from "./ThreadImagePreviewGrid.tsx";
 import { ThreadRunStatusTask } from "./ThreadRunStatusTask.tsx";
@@ -145,78 +179,8 @@ const ASSISTANT_HISTORY_LOAD_TOP_THRESHOLD_PX = 96;
 const ASSISTANT_HISTORY_PAGE_LIMIT = 80;
 const ASSISTANT_USER_SCROLL_DIRECTION_EPSILON_PX = 1;
 const PROPOSED_PLAN_COLLAPSED_HEIGHT_PX = 360;
-const PROPOSED_PLAN_COLLAPSED_LINES = 12;
-const PROPOSED_PLAN_COLLAPSED_LENGTH = 900;
 const HYDRATION_STATUS_DELAY_MS = 200;
 const STREAMING_RENDER_THROTTLE_MS = 150;
-type DesktopTextPart = Extract<DesktopThreadContentPart, { type: "text" }>;
-type DesktopImagePart = Extract<DesktopThreadContentPart, { type: "image" }>;
-type DesktopActivityPart = Extract<DesktopThreadContentPart, { type: "reasoning" | "tool-call" }>;
-type DesktopAttachmentFilePart = FileUIPart & {
-	id: string;
-	desktopKind: DesktopPromptAttachmentDisplay["kind"];
-	size: number;
-};
-type ThreadImageAttachmentFilePart = FileUIPart & {
-	id: string;
-};
-
-function getThreadContentParts(message: DesktopThreadMessage): DesktopThreadContentPart[] {
-	if (typeof message.content === "string") {
-		return message.content.length > 0 ? [{ type: "text", text: message.content }] : [];
-	}
-	return [...message.content];
-}
-
-function getThreadTextParts(message: DesktopThreadMessage): DesktopTextPart[] {
-	return getThreadContentParts(message).filter((part): part is DesktopTextPart => part.type === "text");
-}
-
-function getThreadImageParts(message: DesktopThreadMessage): DesktopImagePart[] {
-	return getThreadContentParts(message).filter((part): part is DesktopImagePart => part.type === "image");
-}
-
-function getThreadActivityParts(message: DesktopThreadMessage): DesktopActivityPart[] {
-	return getThreadContentParts(message).filter(
-		(part): part is DesktopActivityPart => part.type === "reasoning" || part.type === "tool-call",
-	);
-}
-
-function toPromptAttachmentFilePart(
-	attachment: DesktopPromptAttachmentDisplay | DesktopPreparedPromptAttachment,
-): DesktopAttachmentFilePart {
-	const image = "images" in attachment ? attachment.images[0] : undefined;
-	const canPreviewImage = attachment.kind === "image" && image !== undefined;
-	return {
-		type: "file",
-		desktopKind: attachment.kind,
-		filename: attachment.name,
-		id: attachment.id,
-		mediaType: canPreviewImage
-			? attachment.mimeType
-			: attachment.kind === "image"
-				? "application/octet-stream"
-				: attachment.mimeType,
-		size: attachment.size,
-		url: canPreviewImage ? `data:${image.mimeType};base64,${image.data}` : `desktop-attachment://${attachment.id}`,
-	};
-}
-
-function getDataUrlMediaType(value: string): string {
-	const match = /^data:([^;,]+)[;,]/i.exec(value);
-	return match?.[1] ?? "image/*";
-}
-
-function toThreadImageAttachmentFilePart(image: DesktopImagePart, id: string): ThreadImageAttachmentFilePart {
-	const filename = image.filename ?? "Attached visual";
-	return {
-		type: "file",
-		filename,
-		id,
-		mediaType: getDataUrlMediaType(image.image),
-		url: image.image,
-	};
-}
 
 const ASSISTANT_MARKDOWN_CLASSNAME = cn(
 	"grid gap-3 text-[13px] leading-6 text-foreground",
@@ -225,13 +189,6 @@ const ASSISTANT_MARKDOWN_CLASSNAME = cn(
 	"[&_li]:pl-1 [&_ol]:ml-5 [&_ol]:list-decimal [&_p]:m-0 [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_pre_code]:text-foreground [&_ul]:ml-5 [&_ul]:list-disc",
 	"[&_table]:w-full [&_table]:border-collapse [&_td]:border [&_td]:border-border [&_td]:px-2 [&_td]:py-1.5 [&_th]:border [&_th]:border-border [&_th]:px-2 [&_th]:py-1.5 [&_th]:text-left",
 );
-const WORKSPACE_PREVIEW_LINK_PREFIX = "https://workspace-preview.invalid/";
-
-interface MarkdownAstNode {
-	children?: MarkdownAstNode[];
-	type?: string;
-	url?: unknown;
-}
 
 const WorkspacePreviewLinkContext = createContext<((path: string) => void) | undefined>(undefined);
 const WebPreviewLinkContext = createContext<((url: string) => void) | undefined>(undefined);
@@ -436,18 +393,6 @@ async function createPromptAttachmentCandidatesFromFiles(
 	return candidates;
 }
 
-function isCompactCommand(text: string): boolean {
-	return text === "/compact" || text.startsWith("/compact ");
-}
-
-function getCompactInstructions(text: string): string | undefined {
-	if (!text.startsWith("/compact ")) {
-		return undefined;
-	}
-	const instructions = text.slice("/compact ".length).trim();
-	return instructions.length > 0 ? instructions : undefined;
-}
-
 function getRefTextareaValue(ref: Ref<HTMLTextAreaElement>): string | undefined {
 	if (typeof ref === "function" || ref === null) {
 		return undefined;
@@ -477,8 +422,7 @@ function AssistantScrollToBottomButton({ viewport }: { viewport: HTMLDivElement 
 
 		updateIsAtBottom();
 		viewport.addEventListener("scroll", updateIsAtBottom, { passive: true });
-		const resizeObserver = typeof ResizeObserver !== "undefined" ? new ResizeObserver(updateIsAtBottom) : undefined;
-		resizeObserver?.observe(viewport);
+		const cleanupResizeObserver = observeElementResize(viewport, updateIsAtBottom, { notifyImmediately: false });
 		const mutationObserver =
 			typeof MutationObserver !== "undefined" ? new MutationObserver(updateIsAtBottom) : undefined;
 		mutationObserver?.observe(viewport, {
@@ -490,7 +434,7 @@ function AssistantScrollToBottomButton({ viewport }: { viewport: HTMLDivElement 
 
 		return () => {
 			viewport.removeEventListener("scroll", updateIsAtBottom);
-			resizeObserver?.disconnect();
+			cleanupResizeObserver();
 			mutationObserver?.disconnect();
 		};
 	}, [updateIsAtBottom, viewport]);
@@ -1028,100 +972,6 @@ function useThrottledStreamingMessage(
 	return visibleStreamingMessage ?? streamingMessage;
 }
 
-function resolveSlashCommandSuggestions(
-	text: string,
-	commands: DesktopSlashCommandSummary[],
-): DesktopSlashCommandSummary[] {
-	if (!text.startsWith("/") || text.includes("\n")) {
-		return [];
-	}
-	const slashBody = text.slice(1);
-	if (/\s/.test(slashBody)) {
-		return [];
-	}
-	const query = slashBody.toLowerCase();
-	return commands
-		.filter((command) => !query || command.name.toLowerCase().includes(query))
-		.sort((left, right) => left.name.localeCompare(right.name));
-}
-
-function emptyCapabilityCatalog(): DesktopCapabilityCatalog {
-	return {
-		skills: [],
-		prompts: [],
-		slashCommands: [],
-		mcpServers: [],
-		diagnostics: [],
-	};
-}
-
-function createCapabilityInvocationFromSlashCommand(
-	command: DesktopSlashCommandSummary,
-): DesktopPromptCapabilityInvocation | undefined {
-	if (command.source === "skill" && command.name.startsWith("skill:")) {
-		return {
-			type: "skill",
-			name: command.name.slice("skill:".length),
-			...(command.description ? { description: command.description } : {}),
-			...(command.sourcePath ? { sourcePath: command.sourcePath } : {}),
-		};
-	}
-	if (command.source === "prompt") {
-		return {
-			type: "prompt_template",
-			name: command.name,
-			...(command.description ? { description: command.description } : {}),
-			...(command.sourcePath ? { sourcePath: command.sourcePath } : {}),
-		};
-	}
-	return undefined;
-}
-
-function upsertCapabilityInvocation(
-	current: DesktopPromptCapabilityInvocation[],
-	invocation: DesktopPromptCapabilityInvocation,
-): DesktopPromptCapabilityInvocation[] {
-	if (invocation.type === "prompt_template") {
-		return [invocation, ...current.filter((item) => item.type !== "prompt_template")];
-	}
-	if (current.some((item) => item.type === "skill" && item.name === invocation.name)) {
-		return current;
-	}
-	return [...current, invocation];
-}
-
-function removeCapabilityInvocation(
-	current: DesktopPromptCapabilityInvocation[],
-	target: DesktopPromptCapabilityInvocation,
-): DesktopPromptCapabilityInvocation[] {
-	return current.filter((item) => item.type !== target.type || item.name !== target.name);
-}
-
-function getCapabilityInvocationLabel(invocation: DesktopPromptCapabilityInvocation): string {
-	return invocation.type === "skill" ? invocation.name : invocation.name;
-}
-
-function getMessageCapabilityInvocations(customMetadata: unknown): DesktopPromptCapabilityInvocation[] {
-	if (!customMetadata || typeof customMetadata !== "object") {
-		return [];
-	}
-	const value = (customMetadata as Record<string, unknown>)[DESKTOP_CAPABILITY_INVOCATIONS_METADATA_KEY];
-	if (!Array.isArray(value)) {
-		return [];
-	}
-	return value.filter((item): item is DesktopPromptCapabilityInvocation => {
-		if (!item || typeof item !== "object") {
-			return false;
-		}
-		const record = item as Record<string, unknown>;
-		return (
-			(record.type === "skill" || record.type === "prompt_template") &&
-			typeof record.name === "string" &&
-			record.name.length > 0
-		);
-	});
-}
-
 function CapabilityInvocationChip({
 	invocation,
 	onRemove,
@@ -1314,14 +1164,6 @@ function PromptAttachmentChips({
 	);
 }
 
-type SlashCommandSectionKey = "commands" | "skills" | "prompts";
-
-interface SlashCommandSection {
-	key: SlashCommandSectionKey;
-	title: string;
-	commands: DesktopSlashCommandSummary[];
-}
-
 type ComposerSuggestionListItem =
 	| {
 			key: string;
@@ -1340,86 +1182,6 @@ type ComposerSuggestionListItem =
 			suggestionIndex: number;
 			type: "file";
 	  };
-
-interface AtReferenceToken {
-	start: number;
-	end: number;
-	query: string;
-}
-
-function groupSlashCommandSuggestions(commands: DesktopSlashCommandSummary[]): SlashCommandSection[] {
-	const sections: SlashCommandSection[] = [
-		{ key: "commands", title: "Commands", commands: [] },
-		{ key: "skills", title: "Skills", commands: [] },
-		{ key: "prompts", title: "Prompt templates", commands: [] },
-	];
-	for (const command of commands) {
-		if (command.source === "skill") {
-			sections[1]?.commands.push(command);
-			continue;
-		}
-		if (command.source === "prompt") {
-			sections[2]?.commands.push(command);
-			continue;
-		}
-		sections[0]?.commands.push(command);
-	}
-	return sections.filter((section) => section.commands.length > 0);
-}
-
-function getAtReferenceTokenEnd(text: string, start: number): number {
-	let end = start;
-	while (end < text.length && !/\s/.test(text[end] ?? "")) {
-		end += 1;
-	}
-	return end;
-}
-
-function isAtTokenBoundary(text: string, atIndex: number): boolean {
-	if (atIndex === 0) {
-		return true;
-	}
-	const previous = text[atIndex - 1];
-	return previous === undefined || /[\s([{'"`]/.test(previous);
-}
-
-function resolveAtReferenceToken(text: string, cursor: number | undefined): AtReferenceToken | undefined {
-	const cursorIndex = Math.min(Math.max(cursor ?? text.length, 0), text.length);
-	const beforeCursor = text.slice(0, cursorIndex);
-	const atIndex = beforeCursor.lastIndexOf("@");
-	if (atIndex < 0 || !isAtTokenBoundary(text, atIndex)) {
-		return undefined;
-	}
-	const query = text.slice(atIndex + 1, cursorIndex);
-	if (/\s/.test(query)) {
-		return undefined;
-	}
-	return {
-		start: atIndex,
-		end: getAtReferenceTokenEnd(text, atIndex),
-		query,
-	};
-}
-
-function filterWorkspaceFileSuggestions(
-	files: DesktopWorkspaceFileEntry[],
-	query: string,
-): DesktopWorkspaceFileEntry[] {
-	const normalizedQuery = query.replace(/^"/, "").toLowerCase();
-	if (!normalizedQuery) {
-		return files;
-	}
-	return files.filter(
-		(file) => file.name.toLowerCase().includes(normalizedQuery) || file.path.toLowerCase().includes(normalizedQuery),
-	);
-}
-
-function formatWorkspaceFileReference(path: string): string {
-	if (!/\s/.test(path)) {
-		return `@${path}`;
-	}
-	return `@"${path.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-}
 
 function getWorkspaceFileIcon(file: DesktopWorkspaceFileEntry): ReactNode {
 	switch (file.type) {
@@ -1629,228 +1391,6 @@ function SafeMarkdownAnchor({ children, className, href, ...props }: ComponentPr
 			{children}
 		</a>
 	);
-}
-
-function workspacePreviewLinkRemarkPlugin() {
-	return (tree: MarkdownAstNode): void => {
-		rewriteWorkspacePreviewLinkUrls(tree);
-	};
-}
-
-function rewriteWorkspacePreviewLinkUrls(node: MarkdownAstNode): void {
-	if (node.type === "link" && typeof node.url === "string") {
-		const workspacePreviewHref = encodeWorkspacePreviewLinkHref(node.url);
-		if (workspacePreviewHref) {
-			node.url = workspacePreviewHref;
-		}
-	}
-
-	for (const child of node.children ?? []) {
-		rewriteWorkspacePreviewLinkUrls(child);
-	}
-}
-
-function encodeWorkspacePreviewLinkHref(href: string): string | undefined {
-	const trimmedHref = href.trim();
-	if (!shouldRewriteWorkspacePreviewLinkHref(trimmedHref)) {
-		return undefined;
-	}
-	return `${WORKSPACE_PREVIEW_LINK_PREFIX}${encodeURIComponent(trimmedHref)}`;
-}
-
-function decodeWorkspacePreviewLinkHref(href: string | undefined): string | undefined {
-	if (!href?.startsWith(WORKSPACE_PREVIEW_LINK_PREFIX)) {
-		return undefined;
-	}
-
-	try {
-		return decodeURIComponent(href.slice(WORKSPACE_PREVIEW_LINK_PREFIX.length));
-	} catch {
-		return undefined;
-	}
-}
-
-function shouldRewriteWorkspacePreviewLinkHref(href: string): boolean {
-	if (!href || href.startsWith("#") || href.startsWith("?") || href.startsWith("//")) {
-		return false;
-	}
-	if (/^https?:\/\//i.test(href) || /^mailto:/i.test(href)) {
-		return false;
-	}
-
-	const schemeMatch = /^[a-z][a-z0-9+.-]*:/i.exec(href);
-	if (!schemeMatch) {
-		return href.startsWith("./") || href.startsWith("../") || href.includes("/") || href.includes("\\");
-	}
-	return schemeMatch[0].toLowerCase() === "file:";
-}
-
-function isExternalBrowserHref(href: string): boolean {
-	const trimmedHref = href.trim();
-	return /^https?:\/\//i.test(trimmedHref) || /^mailto:/i.test(trimmedHref);
-}
-
-function isWorkspacePreviewHref(href: string): boolean {
-	const trimmedHref = href.trim();
-	if (!trimmedHref || trimmedHref.startsWith("#") || trimmedHref.startsWith("?")) {
-		return false;
-	}
-
-	const schemeMatch = /^[a-z][a-z0-9+.-]*:/i.exec(trimmedHref);
-	if (!schemeMatch) {
-		return true;
-	}
-	return schemeMatch[0].toLowerCase() === "file:";
-}
-
-type AssistantMarkdownSegment =
-	| {
-			key: string;
-			text: string;
-			type: "markdown";
-	  }
-	| {
-			items: ThreadImagePreviewGridItem[];
-			key: string;
-			type: "images";
-	  };
-
-const MARKDOWN_IMAGE_PATTERN = /!\[([^\]\n]*)\]\(([^)\s]+)(?:\s+(?:"[^"]*"|'[^']*'))?\)/g;
-
-function normalizeMarkdownImageAlt(alt: string | undefined, src: string): string {
-	const trimmedAlt = alt?.trim();
-	if (trimmedAlt) {
-		return trimmedAlt;
-	}
-	return (
-		src
-			.split(/[\\/]+/)
-			.filter(Boolean)
-			.at(-1) ?? "Image"
-	);
-}
-
-function createMarkdownImagePreviewItem(src: string | undefined, alt: string | undefined, indexKey: string) {
-	const trimmedSrc = src?.trim();
-	if (!trimmedSrc) {
-		return undefined;
-	}
-
-	const label = normalizeMarkdownImageAlt(alt, trimmedSrc);
-	if (/^data:image\//i.test(trimmedSrc) || /^blob:/i.test(trimmedSrc)) {
-		return {
-			alt: label,
-			id: `markdown-image:${indexKey}:${trimmedSrc.slice(0, 96)}`,
-			kind: "direct" as const,
-			src: trimmedSrc,
-			title: label,
-		};
-	}
-
-	if (/^https?:\/\//i.test(trimmedSrc)) {
-		return {
-			alt: label,
-			href: trimmedSrc,
-			id: `markdown-image:${indexKey}:${trimmedSrc}`,
-			kind: "external" as const,
-			title: label,
-		};
-	}
-
-	if (isWorkspacePreviewHref(trimmedSrc)) {
-		return {
-			alt: label,
-			id: `markdown-image:${indexKey}:${trimmedSrc}`,
-			kind: "workspace" as const,
-			path: trimmedSrc,
-			title: label,
-		};
-	}
-
-	return {
-		alt: label,
-		href: trimmedSrc,
-		id: `markdown-image:${indexKey}:${trimmedSrc}`,
-		kind: "external" as const,
-		title: label,
-	};
-}
-
-function parseImageOnlyMarkdownBlock(block: string, blockIndex: number): ThreadImagePreviewGridItem[] | undefined {
-	const trimmedBlock = block.trim();
-	if (!trimmedBlock.includes("![")) {
-		return undefined;
-	}
-
-	MARKDOWN_IMAGE_PATTERN.lastIndex = 0;
-	const items: ThreadImagePreviewGridItem[] = [];
-	let cursor = 0;
-	for (const match of trimmedBlock.matchAll(MARKDOWN_IMAGE_PATTERN)) {
-		const matchIndex = match.index ?? 0;
-		if (trimmedBlock.slice(cursor, matchIndex).trim().length > 0) {
-			return undefined;
-		}
-
-		const item = createMarkdownImagePreviewItem(match[2], match[1], `${blockIndex}:${items.length}`);
-		if (!item) {
-			return undefined;
-		}
-		items.push(item);
-		cursor = matchIndex + match[0].length;
-	}
-
-	if (items.length === 0 || trimmedBlock.slice(cursor).trim().length > 0) {
-		return undefined;
-	}
-	return items;
-}
-
-function splitAssistantMarkdownImageBlocks(text: string): AssistantMarkdownSegment[] {
-	const blocks = text.split(/\r?\n\s*\r?\n/);
-	const segments: AssistantMarkdownSegment[] = [];
-	let pendingMarkdown: string[] = [];
-	let pendingImages: ThreadImagePreviewGridItem[] = [];
-
-	function flushMarkdown(): void {
-		if (pendingMarkdown.length === 0) {
-			return;
-		}
-		const segmentText = pendingMarkdown.join("\n\n");
-		segments.push({
-			key: `markdown:${segments.length}:${segmentText.slice(0, 80)}`,
-			text: segmentText,
-			type: "markdown",
-		});
-		pendingMarkdown = [];
-	}
-
-	function flushImages(): void {
-		if (pendingImages.length === 0) {
-			return;
-		}
-		segments.push({
-			items: pendingImages,
-			key: `images:${segments.length}:${pendingImages.map((item) => item.id).join("|")}`,
-			type: "images",
-		});
-		pendingImages = [];
-	}
-
-	for (const [blockIndex, block] of blocks.entries()) {
-		const imageItems = parseImageOnlyMarkdownBlock(block, blockIndex);
-		if (imageItems) {
-			flushMarkdown();
-			pendingImages.push(...imageItems);
-			continue;
-		}
-
-		flushImages();
-		pendingMarkdown.push(block);
-	}
-
-	flushMarkdown();
-	flushImages();
-	return segments;
 }
 
 const ASSISTANT_MARKDOWN_COMPONENTS = {
@@ -2254,62 +1794,6 @@ function FileReferenceGroup({
 	);
 }
 
-function getMessageFileReferences(value: unknown): DesktopThreadFileReference[] {
-	if (!value || typeof value !== "object" || Array.isArray(value)) {
-		return [];
-	}
-	const record = value as Record<string, unknown>;
-	const references = record[DESKTOP_FILE_REFERENCES_METADATA_KEY];
-	if (!Array.isArray(references)) {
-		return [];
-	}
-	return references.filter((reference): reference is DesktopThreadFileReference => {
-		if (!reference || typeof reference !== "object" || Array.isArray(reference)) {
-			return false;
-		}
-		const item = reference as Record<string, unknown>;
-		return (
-			(item.kind === "changed" || item.kind === "found") &&
-			typeof item.path === "string" &&
-			item.path.length > 0 &&
-			typeof item.displayPath === "string" &&
-			item.displayPath.length > 0 &&
-			typeof item.toolName === "string" &&
-			item.toolName.length > 0
-		);
-	});
-}
-
-function getMessageProposedPlan(value: unknown): DesktopProposedPlanMetadata | undefined {
-	if (!value || typeof value !== "object" || Array.isArray(value)) {
-		return undefined;
-	}
-	const plan = (value as Record<string, unknown>)[DESKTOP_PROPOSED_PLAN_METADATA_KEY];
-	if (!plan || typeof plan !== "object" || Array.isArray(plan)) {
-		return undefined;
-	}
-	const text = (plan as Record<string, unknown>).text;
-	return typeof text === "string" && text.trim().length > 0 ? { text } : undefined;
-}
-
-function findLatestCompletedProposedPlanMessageId(messages: readonly DesktopThreadMessage[]): string | undefined {
-	for (let index = messages.length - 1; index >= 0; index -= 1) {
-		const message = messages[index];
-		if (
-			message?.role === "assistant" &&
-			message.status?.type === "complete" &&
-			getMessageProposedPlan(message.metadata?.custom)
-		) {
-			return message.id;
-		}
-	}
-	return undefined;
-}
-
-function shouldCollapseProposedPlan(text: string): boolean {
-	return text.length > PROPOSED_PLAN_COLLAPSED_LENGTH || text.split("\n").length > PROPOSED_PLAN_COLLAPSED_LINES;
-}
-
 function AssistantProposedPlanCard({
 	messageCustomMetadata,
 	messageStatus,
@@ -2606,20 +2090,6 @@ function UserMessage({
 	);
 }
 
-function getCompactionNotice(value: unknown): DesktopCompactionNoticeMetadata | undefined {
-	if (!value || typeof value !== "object") {
-		return undefined;
-	}
-	const record = value as { status?: unknown; tokensBefore?: unknown };
-	if (record.status !== "completed" || typeof record.tokensBefore !== "number") {
-		return undefined;
-	}
-	return {
-		status: record.status,
-		tokensBefore: record.tokensBefore,
-	};
-}
-
 function CompactionTimelineDivider({ status }: { status: "completed" | "running" }) {
 	const isRunning = status === "running";
 	return (
@@ -2650,48 +2120,6 @@ function SystemMessage({ message }: { message: DesktopThreadMessage }) {
 		return <CompactionTimelineDivider status={compactionNotice.status} />;
 	}
 	return null;
-}
-
-type AssistantTimelineItem =
-	| {
-			key: string;
-			message: DesktopThreadMessage;
-			type: "message";
-	  }
-	| {
-			key: string;
-			type: "compaction-running";
-	  };
-
-function shouldRenderTimelineMessage(message: DesktopThreadMessage): boolean {
-	if (message.role !== "system") {
-		return true;
-	}
-	const messageCustomMetadata = message.metadata?.custom;
-	return Boolean(getCompactionNotice(messageCustomMetadata?.[DESKTOP_COMPACTION_NOTICE_METADATA_KEY]));
-}
-
-function estimateTimelineMessageSize(message: DesktopThreadMessage): number {
-	if (message.role === "user") {
-		const imageCount = getThreadImageParts(message).length;
-		const attachmentCount = getUserPromptAttachments(message.metadata?.custom).length;
-		const textLength = getThreadTextParts(message).reduce((total, part) => total + part.text.length, 0);
-		return Math.max(92, 76 + imageCount * 112 + attachmentCount * 44 + Math.ceil(textLength / 90) * 18);
-	}
-	if (message.role === "assistant") {
-		const activityCount = getThreadActivityParts(message).length;
-		const imageCount = getThreadImageParts(message).length;
-		const textLength = getThreadTextParts(message).reduce((total, part) => total + part.text.length, 0);
-		return Math.max(116, 88 + activityCount * 72 + imageCount * 112 + Math.ceil(textLength / 80) * 20);
-	}
-	return 56;
-}
-
-function estimateAssistantTimelineItemSize(item: AssistantTimelineItem): number {
-	if (item.type === "compaction-running") {
-		return 56;
-	}
-	return estimateTimelineMessageSize(item.message);
 }
 
 function AssistantTimelineItemView({
@@ -2983,11 +2411,7 @@ function AssistantComposerInput({
 		event.preventDefault();
 		void createPromptAttachmentCandidatesFromFiles(event.dataTransfer.files)
 			.then(onAppendAttachmentCandidates)
-			.catch((error: unknown) =>
-				setAttachmentErrors([
-					{ name: "Dropped files", message: error instanceof Error ? error.message : String(error) },
-				]),
-			);
+			.catch((error: unknown) => setAttachmentErrors([{ name: "Dropped files", message: getErrorMessage(error) }]));
 	}
 
 	function handlePaste(event: ClipboardEvent<HTMLTextAreaElement>): void {
@@ -3001,11 +2425,7 @@ function AssistantComposerInput({
 		event.preventDefault();
 		void createPromptAttachmentCandidatesFromFiles(imageFiles)
 			.then(onAppendAttachmentCandidates)
-			.catch((error: unknown) =>
-				setAttachmentErrors([
-					{ name: "Pasted image", message: error instanceof Error ? error.message : String(error) },
-				]),
-			);
+			.catch((error: unknown) => setAttachmentErrors([{ name: "Pasted image", message: getErrorMessage(error) }]));
 	}
 
 	return (
@@ -3067,10 +2487,6 @@ function AssistantComposer({
 	const [isSubmitting, setIsSubmitting] = useState(false);
 	const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(0);
 	const [suggestionsSuppressed, setSuggestionsSuppressed] = useState(false);
-	const [workspaceFiles, setWorkspaceFiles] = useState<DesktopWorkspaceFileEntry[]>([]);
-	const [workspaceFilesStatus, setWorkspaceFilesStatus] = useState<"idle" | "loading" | "loaded" | "error">("idle");
-	const [workspaceFilesError, setWorkspaceFilesError] = useState<string | undefined>();
-	const workspaceFileScopeKey = `${activeProjectId ?? ""}\u0000${activeSessionId ?? ""}`;
 	const resolvedCapabilityCatalog = capabilityCatalog ?? emptyCapabilityCatalog();
 	const slashCommands = useMemo(
 		() => resolveSlashCommandSuggestions(composerDraft, resolvedCapabilityCatalog.slashCommands),
@@ -3086,6 +2502,17 @@ function AssistantComposer({
 		!disabled && !suggestionsSuppressed && slashCommands.length > 0 && composerDraft.startsWith("/");
 	const showFileSuggestions =
 		!disabled && !suggestionsSuppressed && !showSlashSuggestions && Boolean(atReferenceToken);
+	const {
+		errorMessage: workspaceFilesError,
+		files: workspaceFiles,
+		status: workspaceFilesStatus,
+	} = useWorkspaceFiles({
+		enabled: showFileSuggestions,
+		includeSessionIdWithProject: true,
+		limit: 1000,
+		projectId: activeProjectId,
+		sessionId: activeSessionId,
+	});
 	const fileSuggestions = useMemo(
 		() => filterWorkspaceFileSuggestions(workspaceFiles, atReferenceToken?.query ?? ""),
 		[atReferenceToken?.query, workspaceFiles],
@@ -3297,57 +2724,6 @@ function AssistantComposer({
 		},
 		[disabled],
 	);
-
-	useEffect(() => {
-		if (workspaceFileScopeKey.length === 0) {
-			setWorkspaceFilesError(undefined);
-		}
-		setWorkspaceFiles([]);
-		setWorkspaceFilesStatus("idle");
-		setWorkspaceFilesError(undefined);
-	}, [workspaceFileScopeKey]);
-
-	useEffect(() => {
-		if (!showFileSuggestions || workspaceFilesStatus !== "idle") {
-			return;
-		}
-		const desktopBridge = (window as Partial<Window>).desktopAgent as Partial<DesktopAgentBridge> | undefined;
-		if (typeof desktopBridge?.listWorkspaceFiles !== "function") {
-			setWorkspaceFilesStatus("error");
-			setWorkspaceFilesError("Restart Skylark to enable workspace file listing.");
-			return;
-		}
-		if (!activeProjectId && !activeSessionId) {
-			setWorkspaceFilesStatus("error");
-			setWorkspaceFilesError("Workspace is unavailable.");
-			return;
-		}
-		let isCanceled = false;
-		void desktopBridge
-			.listWorkspaceFiles({
-				...(activeProjectId ? { projectId: activeProjectId } : {}),
-				...(activeSessionId ? { sessionId: activeSessionId } : {}),
-				limit: 1000,
-			})
-			.then((result) => {
-				if (isCanceled) {
-					return;
-				}
-				setWorkspaceFiles(result.files);
-				setWorkspaceFilesStatus(result.errorMessage ? "error" : "loaded");
-				setWorkspaceFilesError(result.errorMessage);
-			})
-			.catch((error: unknown) => {
-				if (isCanceled) {
-					return;
-				}
-				setWorkspaceFilesStatus("error");
-				setWorkspaceFilesError(error instanceof Error ? error.message : String(error));
-			});
-		return () => {
-			isCanceled = true;
-		};
-	}, [activeProjectId, activeSessionId, showFileSuggestions, workspaceFilesStatus]);
 
 	useEffect(() => {
 		if (activeSuggestionCount === 0) {
@@ -3877,14 +3253,7 @@ export function ChatWorkbench({
 			setComposerInset((currentInset) => (currentInset === nextInset ? currentInset : nextInset));
 		}
 
-		updateComposerInset();
-		if (typeof ResizeObserver === "undefined") {
-			return;
-		}
-
-		const resizeObserver = new ResizeObserver(updateComposerInset);
-		resizeObserver.observe(composerDockElement);
-		return () => resizeObserver.disconnect();
+		return observeElementResize(composerDockElement, updateComposerInset);
 	}, []);
 
 	useEffect(() => {

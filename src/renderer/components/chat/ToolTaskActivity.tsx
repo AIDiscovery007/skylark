@@ -1,10 +1,12 @@
 import { ChevronRight, FileTextIcon } from "lucide-react";
 import type { CSSProperties, ReactNode, UIEvent } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { VirtualStack } from "@/components/ui/virtual-stack";
+import { useNowTicker } from "@/hooks/use-now-ticker";
 import { useStreamingPresentationFrame } from "@/hooks/use-streaming-presentation-frame";
 import { cn } from "@/lib/utils";
+import { isRecord } from "../../../shared/guards.ts";
 import type { ToolCallActivity } from "../../lib/conversation-timeline-projection.ts";
 import { TaskItem, TaskItemFile } from "../ai-elements/task.tsx";
 
@@ -50,10 +52,6 @@ type ToolTaskDisplayItem =
 
 const TOOL_TASK_GROUP_MINIMUM = 3;
 const IMAGE_FILE_EXTENSION_PATTERN = /\.(?:png|jpe?g|gif|webp|bmp|tiff?|avif|heic|heif)$/i;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null;
-}
 
 function getStringProperty(value: unknown, keys: string[]): string | undefined {
 	if (!isRecord(value)) {
@@ -429,22 +427,12 @@ export function useToolTaskDurationMs(
 	const timestampDurationMs = getTaskDurationMs(toolCalls, runStartedAt, runEndedAt);
 	const liveStartedAtRef = useRef<number | undefined>(undefined);
 	const frozenDurationMsRef = useRef<number | undefined>(undefined);
-	const [now, setNow] = useState(() => Date.now());
+	const now = useNowTicker({ enabled: isRunActive, getNow: Date.now, intervalMs: 1000 });
 
 	if (isRunActive && liveStartedAtRef.current === undefined) {
 		liveStartedAtRef.current = Date.now() - timestampDurationMs;
 		frozenDurationMsRef.current = undefined;
 	}
-
-	useEffect(() => {
-		if (!isRunActive) {
-			return;
-		}
-
-		setNow(Date.now());
-		const intervalId = window.setInterval(() => setNow(Date.now()), 1000);
-		return () => window.clearInterval(intervalId);
-	}, [isRunActive]);
 
 	useEffect(() => {
 		if (isRunActive || liveStartedAtRef.current === undefined) {
@@ -726,5 +714,3 @@ export function ToolTaskActivity({
 		/>
 	);
 }
-
-export type ToolTaskActivityComponent = typeof ToolTaskActivity;

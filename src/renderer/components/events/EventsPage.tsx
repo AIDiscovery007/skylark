@@ -32,6 +32,7 @@ import type {
 	DesktopEventSummary,
 	DesktopProjectSummary,
 } from "../../../shared/types.ts";
+import { useNowTicker } from "../../hooks/use-now-ticker.ts";
 import { MessageResponse } from "../ai-elements/message.tsx";
 import { WorkbenchPageHeader } from "../layout/WorkbenchPageHeader.tsx";
 import { formatRelativeUpdatedAt } from "../sidebar/SessionList.tsx";
@@ -62,6 +63,10 @@ const EVENT_RUN_STATUS_LABELS: Record<DesktopEventRun["status"], string> = {
 const DEFAULT_COLUMNS: DesktopEventStatus[] = ["inbox", "ready", "running", "completed"];
 const DISCARDED_COLUMNS: DesktopEventStatus[] = [...DEFAULT_COLUMNS, "discarded"];
 const EVENT_PRIORITIES: DesktopEventPriority[] = ["P0", "P1", "P2", "P3"];
+
+function createNowDate(): Date {
+	return new Date();
+}
 
 type EventManagementProgress =
 	| { status: "running"; startedAt: Date }
@@ -812,7 +817,10 @@ export function EventsPage({
 	const [isManagementConfirmOpen, setIsManagementConfirmOpen] = useState(false);
 	const [selectedProposalItemIds, setSelectedProposalItemIds] = useState<string[]>([]);
 	const [managementProgress, setManagementProgress] = useState<EventManagementProgress | undefined>();
-	const [now, setNow] = useState(() => new Date());
+	const now = useNowTicker({
+		getNow: createNowDate,
+		intervalMs: managementProgress?.status === "running" ? 1_000 : 60_000,
+	});
 	const managementConfirmRegionRef = useRef<HTMLDivElement | null>(null);
 	const columns = showDiscarded ? DISCARDED_COLUMNS : DEFAULT_COLUMNS;
 	const visibleEvents = useMemo(
@@ -832,12 +840,6 @@ export function EventsPage({
 	const isManagementWorking = isManagingEvents || managementProgress?.status === "running";
 	const visibleManagementProgress =
 		managementProgress ?? (isManagingEvents ? { status: "running" as const, startedAt: now } : undefined);
-
-	useEffect(() => {
-		const intervalMs = managementProgress?.status === "running" ? 1_000 : 60_000;
-		const intervalId = window.setInterval(() => setNow(new Date()), intervalMs);
-		return () => window.clearInterval(intervalId);
-	}, [managementProgress?.status]);
 
 	useEffect(() => {
 		if (!activeEvent) {
@@ -876,7 +878,6 @@ export function EventsPage({
 	async function createManagementProposal(): Promise<void> {
 		const startedAt = new Date();
 		setIsManagementConfirmOpen(false);
-		setNow(startedAt);
 		setManagementProgress({ status: "running", startedAt });
 		try {
 			const proposal = await onCreateEventManagementProposal();

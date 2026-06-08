@@ -1,3 +1,4 @@
+import { getErrorMessage } from "../../shared/errors.ts";
 import type {
 	DesktopEventDetail,
 	DesktopEventRunRequest,
@@ -7,10 +8,6 @@ import type {
 } from "../../shared/types.ts";
 import type { DesktopRuntimeHost } from "../runtime/desktop-runtime-host.ts";
 import type { DesktopEventStore } from "./event-store.ts";
-
-function getErrorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
 
 function buildEventPromptAttachments(
 	event: DesktopEventDetail,

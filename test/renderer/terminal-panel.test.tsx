@@ -349,7 +349,6 @@ function installBridge() {
 		subscribeToSubagentEvents: vi.fn(() => () => undefined),
 		subscribeToTerminalEvents: terminalEvents.subscribe,
 		subscribeToWebPreviewEvents: vi.fn(() => () => undefined),
-		subscribeToWorkspaceRuntimeEvents: vi.fn(() => () => undefined),
 		switchProject: vi.fn(async () => undefined),
 		switchSession: vi.fn(async () => undefined),
 		updateWebPreviewBounds: vi.fn(async () => undefined),

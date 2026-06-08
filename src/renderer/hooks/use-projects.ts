@@ -1,5 +1,6 @@
 import { useCallback, useEffect } from "react";
 import type { DesktopProjectSummary, DesktopSessionSummary } from "../../shared/types.ts";
+import { resolveDesktopAgentBridge } from "../lib/desktop-agent-bridge.ts";
 import { markRendererPerformance, measureRendererPerformance } from "../lib/performance-marks.ts";
 import type { ProjectStoreBridge } from "../stores/project-store.ts";
 import { useProjectStore } from "../stores/project-store.ts";
@@ -27,7 +28,7 @@ export interface UseProjectsResult {
 }
 
 export function useProjects(options: UseProjectsOptions = {}): UseProjectsResult {
-	const bridge = options.bridge ?? window.desktopAgent;
+	const bridge = resolveDesktopAgentBridge(options.bridge);
 	const activeProjectId = useProjectStore((state) => state.activeProjectId);
 	const createProjectFromFolder = useProjectStore((state) => state.createProjectFromFolder);
 	const errorMessage = useProjectStore((state) => state.errorMessage);

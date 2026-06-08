@@ -6,8 +6,3 @@ export function stripPromptFileBlocks(text: string): string {
 		.replace(/\n{3,}/g, "\n\n")
 		.trim();
 }
-
-export function hasPromptFileBlock(text: string): boolean {
-	PROMPT_FILE_BLOCK_PATTERN.lastIndex = 0;
-	return PROMPT_FILE_BLOCK_PATTERN.test(text);
-}

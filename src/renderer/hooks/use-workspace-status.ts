@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { getErrorMessage } from "../../shared/errors.ts";
 import type { DesktopAgentBridge } from "../../shared/ipc-contract.ts";
 import type {
 	DesktopEnvironmentEvent,
@@ -6,6 +7,7 @@ import type {
 	DesktopEnvironmentResourceStatus,
 	DesktopTaskProgress,
 } from "../../shared/types.ts";
+import { useSubscribedResource } from "./use-subscribed-resource.ts";
 
 const ENVIRONMENT_VISIBLE_STATUSES = new Set<DesktopEnvironmentResourceStatus>([
 	"completed",
@@ -122,24 +124,31 @@ export function useWorkspaceStatus({
 				if (isDisposed) {
 					return;
 				}
-				setErrorMessage(error instanceof Error ? error.message : String(error));
+				setErrorMessage(getErrorMessage(error));
 			}
 		}
 
 		void refresh();
-		const unsubscribe =
-			typeof bridge.subscribeToEnvironmentEvents === "function"
-				? bridge.subscribeToEnvironmentEvents((event) => {
-						if (!isDisposed) {
-							setResources((currentResources) => applyEnvironmentEvent(currentResources, event));
-						}
-					})
-				: undefined;
 		return () => {
 			isDisposed = true;
-			unsubscribe?.();
 		};
 	}, [activeSessionId, enabled]);
+
+	useSubscribedResource<DesktopEnvironmentEvent>(
+		(onEvent) => {
+			if (!enabled) {
+				return undefined;
+			}
+			const bridge = getDesktopAgentBridge();
+			return typeof bridge?.subscribeToEnvironmentEvents === "function"
+				? bridge.subscribeToEnvironmentEvents(onEvent)
+				: undefined;
+		},
+		(event) => {
+			setResources((currentResources) => applyEnvironmentEvent(currentResources, event));
+		},
+		[enabled],
+	);
 
 	const environmentResources = useMemo(
 		() => getRelevantEnvironmentResources(resources, { cwd, sessionId: activeSessionId }),

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { isRecord } from "../../shared/guards.ts";
 import type {
 	DesktopEventDetail,
 	DesktopEventManagementCriteria,
@@ -11,6 +12,7 @@ import type {
 	DesktopEventStatus,
 } from "../../shared/types.ts";
 import { DESKTOP_EVENT_PRIORITIES } from "../../shared/types.ts";
+import { isMissingFileError } from "../storage/fs-errors.ts";
 import type { DesktopEventStore } from "./event-store.ts";
 
 const DEFAULT_EVENT_MANAGEMENT_CRITERIA = `# Event Management Criteria
@@ -57,15 +59,6 @@ export interface DesktopEventManagementGenerateInput {
 
 export type DesktopEventManagementGenerateText = (input: DesktopEventManagementGenerateInput) => Promise<string>;
 
-function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
-	return (
-		typeof error === "object" &&
-		error !== null &&
-		"code" in error &&
-		(error as NodeJS.ErrnoException).code === "ENOENT"
-	);
-}
-
 async function canonicalizeCriteriaPath(criteriaFilePath: string): Promise<void> {
 	const criteriaDir = dirname(criteriaFilePath);
 	const criteriaFileName = basename(criteriaFilePath);
@@ -88,10 +81,6 @@ async function deleteLegacyCriteriaFiles(criteriaDir: string): Promise<void> {
 			await unlink(join(criteriaDir, entry));
 		}
 	}
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function normalizeRequiredString(value: unknown, label: string): string {

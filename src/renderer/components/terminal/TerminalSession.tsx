@@ -1,8 +1,12 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { type ITheme, Terminal } from "@xterm/xterm";
 import { useCallback, useEffect, useRef } from "react";
+import { getErrorMessage } from "../../../shared/errors.ts";
+import type { SerializedTerminalEvent } from "../../../shared/serialized-terminal-event.ts";
 import type { DesktopTerminalSource } from "../../../shared/types.ts";
+import { useSubscribedResource } from "../../hooks/use-subscribed-resource.ts";
 import { markRendererPerformance, measureRendererPerformance } from "../../lib/performance-marks.ts";
+import { observeElementResize } from "../../lib/resize-observer.ts";
 
 const FALLBACK_TERMINAL_SIZE = { cols: 80, rows: 24 };
 const FALLBACK_TERMINAL_FONT_FAMILY =
@@ -214,7 +218,7 @@ export function TerminalSession({
 	}, [onErrorMessageChange, onExitMessageChange]);
 
 	const recordError = useCallback((error: unknown) => {
-		onErrorMessageChangeRef.current(error instanceof Error ? error.message : String(error));
+		onErrorMessageChangeRef.current(getErrorMessage(error));
 	}, []);
 
 	const applyTerminalAppearance = useCallback(() => {
@@ -267,6 +271,29 @@ export function TerminalSession({
 		}
 	}, [applyTerminalAppearance, fitAndResize, isActive, isPanelOpen]);
 
+	useSubscribedResource<SerializedTerminalEvent>(
+		(onEvent) => window.desktopAgent.subscribeToTerminalEvents(onEvent),
+		(event) => {
+			if (event.sessionId !== sessionId || event.terminalId !== terminalId) {
+				return;
+			}
+
+			const terminal = terminalRef.current;
+			if (!terminal) {
+				return;
+			}
+			if (event.type === "terminal_data") {
+				terminal.write(event.data);
+				return;
+			}
+
+			const nextExitMessage = formatExit(event.exitCode, event.signal);
+			onExitMessageChangeRef.current(nextExitMessage);
+			terminal.write(`\r\n[${nextExitMessage}]\r\n`);
+		},
+		[sessionId, terminalId],
+	);
+
 	useEffect(() => {
 		void restartToken;
 		const container = containerRef.current;
@@ -306,19 +333,6 @@ export function TerminalSession({
 				void window.desktopAgent.writeTerminal({ data, terminalId }).catch(recordActiveError);
 			}
 		});
-		const unsubscribeTerminalEvents = window.desktopAgent.subscribeToTerminalEvents((event) => {
-			if (event.sessionId !== sessionId || event.terminalId !== terminalId) {
-				return;
-			}
-			if (event.type === "terminal_data") {
-				terminal.write(event.data);
-				return;
-			}
-
-			const nextExitMessage = formatExit(event.exitCode, event.signal);
-			onExitMessageChangeRef.current(nextExitMessage);
-			terminal.write(`\r\n[${nextExitMessage}]\r\n`);
-		});
 
 		fitAndResize();
 		const initialSize = getTerminalSize(terminal);
@@ -345,15 +359,7 @@ export function TerminalSession({
 				);
 			});
 
-		const resizeObserver =
-			typeof ResizeObserver === "undefined"
-				? undefined
-				: new ResizeObserver(() => {
-						fitAndResize();
-					});
-		if (resizeObserver) {
-			resizeObserver.observe(container);
-		}
+		const cleanupResizeObserver = observeElementResize(container, fitAndResize, { notifyImmediately: false });
 
 		const themeObserver =
 			typeof MutationObserver === "undefined"
@@ -369,10 +375,9 @@ export function TerminalSession({
 
 		return () => {
 			isDisposed = true;
-			resizeObserver?.disconnect();
+			cleanupResizeObserver();
 			themeObserver?.disconnect();
 			terminalDataDisposable.dispose();
-			unsubscribeTerminalEvents();
 			terminal.dispose();
 			if (terminalRef.current === terminal) {
 				terminalRef.current = null;

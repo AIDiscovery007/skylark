@@ -11,6 +11,7 @@ import type {
 	DesktopPromptTemplateDeleteRequest,
 	DesktopPromptTemplateUpsertRequest,
 } from "../../shared/types.ts";
+import { type AsyncStorePendingKey, runAsyncStoreCommand } from "../lib/async-store-command.ts";
 
 export type CapabilitiesStoreBridge = Pick<
 	DesktopAgentBridge,
@@ -35,10 +36,6 @@ function emptyCatalog(): DesktopCapabilityCatalog {
 		mcpServers: [],
 		diagnostics: [],
 	};
-}
-
-function getErrorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
 }
 
 export interface CapabilitiesStoreState {
@@ -70,115 +67,87 @@ export interface CapabilitiesStoreState {
 }
 
 export function createCapabilitiesStore() {
-	return createStore<CapabilitiesStoreState>()((set, get) => ({
-		catalog: emptyCatalog(),
-		hasLoaded: false,
-		isLoading: false,
-		isSaving: false,
-		errorMessage: undefined,
-		getCapabilityDetail: async (bridge, request) => bridge.getCapabilityDetail(request),
-		loadCapabilities: async (bridge) => {
-			if (get().hasLoaded) {
-				return;
-			}
-			set((state) => ({ ...state, isLoading: true, errorMessage: undefined }));
-			try {
-				const catalog = await bridge.listCapabilities();
-				set((state) => ({ ...state, catalog, hasLoaded: true, isLoading: false }));
-			} catch (error: unknown) {
-				set((state) => ({ ...state, isLoading: false, errorMessage: getErrorMessage(error) }));
-			}
-		},
-		reloadCapabilities: async (bridge) => {
-			set((state) => ({ ...state, isSaving: true, errorMessage: undefined }));
-			try {
-				const catalog = await bridge.reloadCapabilities();
-				set((state) => ({ ...state, catalog, hasLoaded: true, isSaving: false }));
-			} catch (error: unknown) {
-				set((state) => ({ ...state, isSaving: false, errorMessage: getErrorMessage(error) }));
-			}
-		},
-		createSkill: async (bridge, request) => {
-			set((state) => ({ ...state, isSaving: true, errorMessage: undefined }));
-			try {
-				const catalog = await bridge.createSkill(request);
-				set((state) => ({ ...state, catalog, hasLoaded: true, isSaving: false }));
-			} catch (error: unknown) {
-				set((state) => ({ ...state, isSaving: false, errorMessage: getErrorMessage(error) }));
-			}
-		},
-		upsertPromptTemplate: async (bridge, request) => {
-			set((state) => ({ ...state, isSaving: true, errorMessage: undefined }));
-			try {
-				const catalog = await bridge.upsertPromptTemplate(request);
-				set((state) => ({ ...state, catalog, hasLoaded: true, isSaving: false }));
-			} catch (error: unknown) {
-				set((state) => ({ ...state, isSaving: false, errorMessage: getErrorMessage(error) }));
-			}
-		},
-		deletePromptTemplate: async (bridge, request) => {
-			set((state) => ({ ...state, isSaving: true, errorMessage: undefined }));
-			try {
-				const catalog = await bridge.deletePromptTemplate(request);
-				set((state) => ({ ...state, catalog, hasLoaded: true, isSaving: false }));
-			} catch (error: unknown) {
-				set((state) => ({ ...state, isSaving: false, errorMessage: getErrorMessage(error) }));
-			}
-		},
-		upsertMcpServer: async (bridge, request) => {
-			set((state) => ({ ...state, isSaving: true, errorMessage: undefined }));
-			try {
-				const catalog = await bridge.upsertMcpServer(request);
-				set((state) => ({ ...state, catalog, hasLoaded: true, isSaving: false }));
-			} catch (error: unknown) {
-				set((state) => ({ ...state, isSaving: false, errorMessage: getErrorMessage(error) }));
-			}
-		},
-		setMcpServerEnabled: async (bridge, serverId, enabled) => {
-			set((state) => ({ ...state, isSaving: true, errorMessage: undefined }));
-			try {
-				const catalog = await bridge.setMcpServerEnabled(serverId, enabled);
-				set((state) => ({ ...state, catalog, hasLoaded: true, isSaving: false }));
-			} catch (error: unknown) {
-				set((state) => ({ ...state, isSaving: false, errorMessage: getErrorMessage(error) }));
-			}
-		},
-		testMcpServer: async (bridge, serverId) => {
-			set((state) => ({ ...state, isSaving: true, errorMessage: undefined }));
-			try {
-				await bridge.testMcpServer(serverId);
-				const catalog = await bridge.listCapabilities();
-				set((state) => ({ ...state, catalog, hasLoaded: true, isSaving: false }));
-			} catch (error: unknown) {
-				set((state) => ({ ...state, isSaving: false, errorMessage: getErrorMessage(error) }));
-			}
-		},
-		restartMcpServer: async (bridge, serverId) => {
-			set((state) => ({ ...state, isSaving: true, errorMessage: undefined }));
-			try {
-				const catalog = await bridge.restartMcpServer(serverId);
-				set((state) => ({ ...state, catalog, hasLoaded: true, isSaving: false }));
-			} catch (error: unknown) {
-				set((state) => ({ ...state, isSaving: false, errorMessage: getErrorMessage(error) }));
-			}
-		},
-		handleCapabilityEvent: (event) => {
-			set((state) => {
-				if (event.type === "catalog_changed") {
-					return { ...state, catalog: event.catalog, hasLoaded: true };
-				}
-				return {
-					...state,
-					catalog: {
-						...state.catalog,
-						mcpServers: state.catalog.mcpServers.map((server) =>
-							server.id === event.server.id ? event.server : server,
-						),
-					},
-				};
+	return createStore<CapabilitiesStoreState>()((set, get) => {
+		const runCommand = <TResult>(
+			pendingKey: AsyncStorePendingKey,
+			command: () => Promise<TResult>,
+			applySuccess: (state: CapabilitiesStoreState, result: TResult) => CapabilitiesStoreState,
+		) =>
+			runAsyncStoreCommand({
+				applySuccess,
+				command,
+				pendingKey,
+				set: (update) => set((state) => update(state)),
 			});
-		},
-	}));
+		const applyCatalog = (
+			state: CapabilitiesStoreState,
+			catalog: DesktopCapabilityCatalog,
+		): CapabilitiesStoreState => ({
+			...state,
+			catalog,
+			hasLoaded: true,
+		});
+		const runCatalogCommand = (pendingKey: AsyncStorePendingKey, command: () => Promise<DesktopCapabilityCatalog>) =>
+			runCommand(pendingKey, command, applyCatalog);
+
+		return {
+			catalog: emptyCatalog(),
+			hasLoaded: false,
+			isLoading: false,
+			isSaving: false,
+			errorMessage: undefined,
+			getCapabilityDetail: async (bridge, request) => bridge.getCapabilityDetail(request),
+			loadCapabilities: async (bridge) => {
+				if (get().hasLoaded) {
+					return;
+				}
+				await runCatalogCommand("isLoading", () => bridge.listCapabilities());
+			},
+			reloadCapabilities: async (bridge) => {
+				await runCatalogCommand("isSaving", () => bridge.reloadCapabilities());
+			},
+			createSkill: async (bridge, request) => {
+				await runCatalogCommand("isSaving", () => bridge.createSkill(request));
+			},
+			upsertPromptTemplate: async (bridge, request) => {
+				await runCatalogCommand("isSaving", () => bridge.upsertPromptTemplate(request));
+			},
+			deletePromptTemplate: async (bridge, request) => {
+				await runCatalogCommand("isSaving", () => bridge.deletePromptTemplate(request));
+			},
+			upsertMcpServer: async (bridge, request) => {
+				await runCatalogCommand("isSaving", () => bridge.upsertMcpServer(request));
+			},
+			setMcpServerEnabled: async (bridge, serverId, enabled) => {
+				await runCatalogCommand("isSaving", () => bridge.setMcpServerEnabled(serverId, enabled));
+			},
+			testMcpServer: async (bridge, serverId) => {
+				await runCatalogCommand("isSaving", async () => {
+					await bridge.testMcpServer(serverId);
+					return bridge.listCapabilities();
+				});
+			},
+			restartMcpServer: async (bridge, serverId) => {
+				await runCatalogCommand("isSaving", () => bridge.restartMcpServer(serverId));
+			},
+			handleCapabilityEvent: (event) => {
+				set((state) => {
+					if (event.type === "catalog_changed") {
+						return { ...state, catalog: event.catalog, hasLoaded: true };
+					}
+					return {
+						...state,
+						catalog: {
+							...state.catalog,
+							mcpServers: state.catalog.mcpServers.map((server) =>
+								server.id === event.server.id ? event.server : server,
+							),
+						},
+					};
+				});
+			},
+		};
+	});
 }
 
 export const capabilitiesStore = createCapabilitiesStore();

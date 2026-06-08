@@ -7,6 +7,7 @@ import {
 	type Model,
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
+import { getErrorMessage } from "../../shared/errors.ts";
 import type { DesktopProviderKeyTestResult, DesktopRuntimeCatalog } from "../../shared/types.ts";
 import { getDesktopCatalogModelsForProvider, pickPreferredDesktopModelForProvider } from "../runtime/create-runtime.ts";
 import type { DesktopProviderKeysStore } from "../storage/provider-keys-store.ts";
@@ -24,10 +25,6 @@ export interface TestDesktopProviderKeyOptions {
 	providerKeysStore: Pick<DesktopProviderKeysStore, "get">;
 	runtimeCatalog: DesktopRuntimeCatalog;
 	complete?: ProviderKeyTestComplete;
-}
-
-function getErrorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
 }
 
 function createFailedResult(provider: string, message: string): DesktopProviderKeyTestResult {

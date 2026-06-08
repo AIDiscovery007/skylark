@@ -55,11 +55,6 @@ export function isDesktopLoopbackWebPreviewUrl(value: string): boolean {
 	}
 }
 
-export function normalizeDesktopLoopbackWebPreviewUrl(value: string): string | undefined {
-	const previewUrl = normalizeDesktopWebPreviewUrl(value);
-	return previewUrl && isDesktopLoopbackWebPreviewUrl(previewUrl) ? previewUrl : undefined;
-}
-
 function isDesktopLoopbackWebPreviewCandidate(value: string): boolean {
 	return isDesktopLoopbackWebPreviewUrl(`http://${value}`);
 }

@@ -2,6 +2,7 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { Tool as McpTool } from "@modelcontextprotocol/sdk/types.js";
+import { getErrorMessage } from "../../shared/errors.ts";
 import type {
 	DesktopCapabilityEvent,
 	DesktopMcpServerStatus,
@@ -10,6 +11,7 @@ import type {
 } from "../../shared/types.ts";
 import { SKYLARK_RELEASE } from "../app-identity.ts";
 import type { DesktopApprovalRequester } from "../security/approval-broker.ts";
+import { Listeners } from "../util/port-fanout.ts";
 import type { DesktopMcpServerConfig, DesktopMcpStore } from "./mcp-store.ts";
 
 const DEFAULT_MCP_CONNECTION_TIMEOUT_MS = 10_000;
@@ -50,10 +52,6 @@ function getAdapterToolName(serverId: string, toolName: string): string {
 
 function normalizeInputSchema(tool: McpTool): Record<string, unknown> {
 	return tool.inputSchema as Record<string, unknown>;
-}
-
-function getErrorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
 }
 
 function createTimeoutError(label: string, timeoutMs: number): Error {
@@ -185,7 +183,7 @@ function createSummary(
 
 export class DesktopMcpManager {
 	private readonly connections = new Map<string, DesktopMcpConnection>();
-	private readonly listeners = new Set<(event: DesktopCapabilityEvent) => void>();
+	private readonly listeners = new Listeners<DesktopCapabilityEvent>();
 	private configs = new Map<string, DesktopMcpServerConfig>();
 	private initialized = false;
 	private readonly approvalRequester?: DesktopApprovalRequester;
@@ -204,10 +202,7 @@ export class DesktopMcpManager {
 	}
 
 	subscribe(listener: (event: DesktopCapabilityEvent) => void): () => void {
-		this.listeners.add(listener);
-		return () => {
-			this.listeners.delete(listener);
-		};
+		return this.listeners.subscribe(listener);
 	}
 
 	async initialize(): Promise<void> {
@@ -449,8 +444,6 @@ export class DesktopMcpManager {
 	}
 
 	private emit(event: DesktopCapabilityEvent): void {
-		for (const listener of this.listeners) {
-			listener(event);
-		}
+		this.listeners.emit(event);
 	}
 }

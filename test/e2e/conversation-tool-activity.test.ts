@@ -6,12 +6,13 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { JsonEnvironmentResourceStore } from "../../src/main/environment/environment-resource-store.ts";
-import { createDesktopAgentRuntime, DESKTOP_SUBAGENT_TOOL_NAME } from "../../src/main/runtime/create-runtime.ts";
+import { createDesktopAgentRuntime } from "../../src/main/runtime/create-runtime.ts";
 import { DesktopRuntimeHost } from "../../src/main/runtime/desktop-runtime-host.ts";
 import { DESKTOP_BASELINE_TOOL_NAMES } from "../../src/main/runtime/mode-aware-runtime-policy.ts";
 import { MessageList } from "../../src/renderer/components/chat/MessageList.tsx";
 import { INITIAL_AGENT_RENDERER_STATE } from "../../src/renderer/lib/conversation-timeline-projection.ts";
 import { agentStore } from "../../src/renderer/stores/agent-store.ts";
+import { DESKTOP_SUBAGENT_TOOL_NAME } from "../../src/shared/types.ts";
 import { registerFauxProvider } from "../support/pi-provider-test-registry.ts";
 
 const registrations: FauxProviderRegistration[] = [];

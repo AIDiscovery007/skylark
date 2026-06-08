@@ -1,7 +1,7 @@
-import { realpath } from "node:fs/promises";
-import { basename, isAbsolute, relative, resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DesktopPreviewFile } from "../../shared/types.ts";
+import { containRealPath, isPathInside } from "../util/path-scope.ts";
 import { type DesktopPreviewFileReadOptions, readDesktopPreviewFile } from "./preview-file-service.ts";
 
 const PREVIEW_ERROR_TIMESTAMP = new Date(0).toISOString();
@@ -42,13 +42,6 @@ function parsePreviewPath(path: string): string {
 	return decodePath(withoutLineSuffix);
 }
 
-function isInsideDirectory(parentPath: string, childPath: string): boolean {
-	const relativePath = relative(parentPath, childPath);
-	return (
-		relativePath === "" || (relativePath.length > 0 && !relativePath.startsWith("..") && !isAbsolute(relativePath))
-	);
-}
-
 export async function readWorkspacePreviewFile(
 	cwd: string | undefined,
 	path: string,
@@ -63,23 +56,27 @@ export async function readWorkspacePreviewFile(
 	const absolutePath = resolve(workspaceRoot, parsedPath);
 	let realWorkspaceRoot: string;
 	try {
-		realWorkspaceRoot = await realpath(workspaceRoot);
+		const containedWorkspaceRoot = await containRealPath(workspaceRoot, workspaceRoot);
+		if (!containedWorkspaceRoot) {
+			return createPreviewErrorFile(parsedPath, "当前 workspace 不可用，无法预览文件。");
+		}
+		realWorkspaceRoot = containedWorkspaceRoot;
 	} catch {
 		return createPreviewErrorFile(parsedPath, "当前 workspace 不可用，无法预览文件。");
 	}
 
-	let realTargetPath: string;
+	let realTargetPath: string | null;
 	try {
-		realTargetPath = await realpath(absolutePath);
+		realTargetPath = await containRealPath(realWorkspaceRoot, absolutePath);
 	} catch {
-		if (!isInsideDirectory(workspaceRoot, absolutePath)) {
+		if (!isPathInside(workspaceRoot, absolutePath)) {
 			return createPreviewErrorFile(absolutePath, "只能预览当前 workspace 内的文件。");
 		}
 		return createPreviewErrorFile(absolutePath, "文件不存在或无法读取。");
 	}
 
-	if (!isInsideDirectory(realWorkspaceRoot, realTargetPath)) {
-		return createPreviewErrorFile(realTargetPath, "只能预览当前 workspace 内的文件。");
+	if (!realTargetPath) {
+		return createPreviewErrorFile(absolutePath, "只能预览当前 workspace 内的文件。");
 	}
 
 	try {

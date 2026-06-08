@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { relative, resolve, sep } from "node:path";
+import { getErrorMessage } from "../../shared/errors.ts";
 import type { DesktopWorkspace, DesktopWorkspacePaneRole } from "../../shared/types.ts";
 import { JsonFileStore } from "../storage/json-file-store.ts";
 import type { TmuxPaneInfo, TmuxRuntime } from "../tmux/tmux-runtime.ts";
+import { isPathInside } from "../util/path-scope.ts";
 import type { DesktopWorkspaceStore } from "../workspace/workspace-store.ts";
 
 type SnapshotIndex = Record<string, PaneSnapshot>;
@@ -88,11 +89,6 @@ const MAX_SNAPSHOT_CHARS = 200_000;
 
 function toTimestamp(now: () => Date): string {
 	return now().toISOString();
-}
-
-function isPathInside(parentPath: string, childPath: string): boolean {
-	const relativePath = relative(resolve(parentPath), resolve(childPath));
-	return relativePath.length === 0 || (!relativePath.startsWith("..") && !relativePath.startsWith(`..${sep}`));
 }
 
 function isInsideAllowedRuntimeSocketRoot(options: ContextHarvesterOptions, socketPath: string): boolean {
@@ -385,7 +381,7 @@ export class ContextHarvester {
 					}),
 				);
 			} catch (error) {
-				failures.push({ role, message: error instanceof Error ? error.message : String(error) });
+				failures.push({ role, message: getErrorMessage(error) });
 			}
 		}
 		return {

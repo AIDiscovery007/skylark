@@ -1,15 +1,8 @@
 import { PanelLeft } from "lucide-react";
-import { MotionConfig, motion, type PanInfo } from "motion/react";
-import {
-	type CSSProperties,
-	type KeyboardEvent,
-	type ReactNode,
-	useCallback,
-	useEffect,
-	useRef,
-	useState,
-} from "react";
+import { MotionConfig, motion } from "motion/react";
+import { type CSSProperties, type ReactNode, useCallback, useRef, useState } from "react";
 import { IconButton } from "@/components/ui/icon-button";
+import { useDragResize } from "@/hooks/use-drag-resize";
 import { noMotionTransition, sidebarWidthTransition } from "@/lib/motion";
 
 export const SIDEBAR_WIDTH = {
@@ -41,7 +34,6 @@ export function AppLayout({ sidebar, titlebarControls, header, children }: AppLa
 	const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
 	const [isResizingSidebar, setIsResizingSidebar] = useState(false);
 	const shellRef = useRef<HTMLDivElement | null>(null);
-	const dragStartWidthRef = useRef<number>(SIDEBAR_WIDTH.default);
 	const resolvedExpandedWidth = clampSidebarWidth(sidebarWidth);
 	const resolvedSidebarWidth = isSidebarCollapsed ? SIDEBAR_WIDTH.collapsed : resolvedExpandedWidth;
 	const sidebarTransition = isResizingSidebar ? noMotionTransition : sidebarWidthTransition;
@@ -72,76 +64,37 @@ export function AppLayout({ sidebar, titlebarControls, header, children }: AppLa
 		setIsResizingSidebar(active);
 	}, []);
 
-	useEffect(() => {
-		if (!isResizingSidebar) {
-			return;
-		}
-
-		function stopSidebarResizeSession(): void {
-			setSidebarResizeActive(false);
-		}
-
-		window.addEventListener("pointerup", stopSidebarResizeSession);
-		window.addEventListener("pointercancel", stopSidebarResizeSession);
-		window.addEventListener("blur", stopSidebarResizeSession);
-		return () => {
-			window.removeEventListener("pointerup", stopSidebarResizeSession);
-			window.removeEventListener("pointercancel", stopSidebarResizeSession);
-			window.removeEventListener("blur", stopSidebarResizeSession);
-		};
-	}, [isResizingSidebar, setSidebarResizeActive]);
-
 	function setExpandedSidebarWidth(width: number): void {
 		const nextWidth = clampSidebarWidth(width);
 		setSidebarWidth(nextWidth);
 		setLastExpandedSidebarWidth(nextWidth);
 	}
 
-	function handleResizePointerDown(): void {
-		setSidebarResizeActive(true);
-	}
-
-	function handleResizeDragStart(): void {
-		dragStartWidthRef.current = resolvedExpandedWidth;
-		setSidebarResizeActive(true);
-	}
-
-	function handleResizeDrag(_event: MouseEvent | TouchEvent | PointerEvent, info: PanInfo): void {
-		setExpandedSidebarWidth(dragStartWidthRef.current + info.offset.x);
-	}
-
-	function handleResizeDragEnd(): void {
-		setSidebarResizeActive(false);
-	}
-
-	function handleResizeKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
-		if (isSidebarCollapsed) {
-			return;
-		}
-
-		if (event.key === "ArrowLeft") {
-			event.preventDefault();
-			setExpandedSidebarWidth(resolvedExpandedWidth - 16);
-			return;
-		}
-
-		if (event.key === "ArrowRight") {
-			event.preventDefault();
-			setExpandedSidebarWidth(resolvedExpandedWidth + 16);
-			return;
-		}
-
-		if (event.key === "Home") {
-			event.preventDefault();
-			setExpandedSidebarWidth(SIDEBAR_WIDTH.min);
-			return;
-		}
-
-		if (event.key === "End") {
-			event.preventDefault();
-			setExpandedSidebarWidth(SIDEBAR_WIDTH.max);
-		}
-	}
+	const sidebarResize = useDragResize({
+		clampValue: clampSidebarWidth,
+		getKeyValue: (key, currentWidth) => {
+			if (isSidebarCollapsed) {
+				return undefined;
+			}
+			if (key === "ArrowLeft") {
+				return currentWidth - 16;
+			}
+			if (key === "ArrowRight") {
+				return currentWidth + 16;
+			}
+			if (key === "Home") {
+				return SIDEBAR_WIDTH.min;
+			}
+			if (key === "End") {
+				return SIDEBAR_WIDTH.max;
+			}
+			return undefined;
+		},
+		getMotionValue: (startWidth, info) => startWidth + info.offset.x,
+		onActiveChange: setSidebarResizeActive,
+		setValue: setExpandedSidebarWidth,
+		value: resolvedExpandedWidth,
+	});
 
 	return (
 		<div
@@ -218,11 +171,11 @@ export function AppLayout({ sidebar, titlebarControls, header, children }: AppLa
 							dragConstraints={{ left: 0, right: 0 }}
 							dragElastic={0}
 							dragMomentum={false}
-							onDrag={handleResizeDrag}
-							onDragEnd={handleResizeDragEnd}
-							onDragStart={handleResizeDragStart}
-							onKeyDown={handleResizeKeyDown}
-							onPointerDownCapture={handleResizePointerDown}
+							onDrag={(_event, info) => sidebarResize.handleMotionDrag(info)}
+							onDragEnd={sidebarResize.handleMotionDragEnd}
+							onDragStart={sidebarResize.handleMotionDragStart}
+							onKeyDown={sidebarResize.handleKeyDown}
+							onPointerDownCapture={sidebarResize.startResize}
 							role="separator"
 							style={{ x: 0 }}
 							tabIndex={0}

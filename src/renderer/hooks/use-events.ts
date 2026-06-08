@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getErrorMessage } from "../../shared/errors.ts";
 import type { DesktopAgentBridge } from "../../shared/ipc-contract.ts";
 import type {
 	DesktopEventCommentCreateRequest,
 	DesktopEventCreateRequest,
 	DesktopEventDetail,
+	DesktopEventEvent,
 	DesktopEventManagementApplyRequest,
 	DesktopEventManagementProposal,
 	DesktopEventManagementProposalRequest,
@@ -15,6 +17,8 @@ import type {
 	DesktopPrepareEventAttachmentsRequest,
 	DesktopPrepareEventAttachmentsResult,
 } from "../../shared/types.ts";
+import { resolveDesktopAgentBridge } from "../lib/desktop-agent-bridge.ts";
+import { useSubscribedResource } from "./use-subscribed-resource.ts";
 
 type EventBridge = Pick<
 	DesktopAgentBridge,
@@ -70,10 +74,6 @@ export interface UseEventsResult {
 	updateEvent: (eventId: string, input: { title?: string; body?: string }) => Promise<DesktopEventDetail | undefined>;
 }
 
-function getErrorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
-
 function toSummary(event: DesktopEventDetail): DesktopEventSummary {
 	const { attachments: _attachments, body: _body, comments: _comments, runs: _runs, ...summary } = event;
 	return summary;
@@ -91,7 +91,7 @@ function replaceEventSummary(events: DesktopEventSummary[], event: DesktopEventD
 }
 
 export function useEvents(options: { bridge?: EventBridge; enabled?: boolean } = {}): UseEventsResult {
-	const bridge = options.bridge ?? window.desktopAgent;
+	const bridge = resolveDesktopAgentBridge(options.bridge);
 	const enabled = options.enabled ?? true;
 	const [events, setEvents] = useState<DesktopEventSummary[]>([]);
 	const [activeEventId, setActiveEventId] = useState<string | undefined>();
@@ -142,11 +142,9 @@ export function useEvents(options: { bridge?: EventBridge; enabled?: boolean } =
 		void refreshEvents();
 	}, [enabled, hasLoaded, refreshEvents]);
 
-	useEffect(() => {
-		if (!enabled) {
-			return;
-		}
-		return bridge.subscribeToEventEvents((event) => {
+	useSubscribedResource<DesktopEventEvent>(
+		(onEvent) => (enabled ? bridge.subscribeToEventEvents(onEvent) : undefined),
+		(event) => {
 			if (event.type === "event_deleted") {
 				setEvents((currentEvents) => currentEvents.filter((candidate) => candidate.id !== event.eventId));
 				setActiveEvent((currentEvent) => (currentEvent?.id === event.eventId ? undefined : currentEvent));
@@ -156,8 +154,9 @@ export function useEvents(options: { bridge?: EventBridge; enabled?: boolean } =
 
 			setEvents((currentEvents) => replaceEventSummary(currentEvents, event.event));
 			setActiveEvent((currentEvent) => (currentEvent?.id === event.event.id ? event.event : currentEvent));
-		});
-	}, [bridge, enabled]);
+		},
+		[bridge, enabled],
+	);
 
 	useEffect(() => {
 		if (!enabled) {

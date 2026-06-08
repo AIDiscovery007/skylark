@@ -114,13 +114,6 @@ export interface DesktopThreadMessage {
 	};
 }
 
-export interface DesktopAppendMessage extends Omit<DesktopThreadMessage, "id"> {
-	parentId: string | null;
-	sourceId: string | null;
-	runConfig: { custom?: Record<string, unknown> } | undefined;
-	startRun?: boolean;
-}
-
 type ThreadContentPart = DesktopThreadContentPart;
 type ThreadToolCallPart = DesktopThreadToolCallPart;
 type ThreadImagePart = DesktopThreadImagePart;
@@ -394,18 +387,6 @@ export function createAssistantUiRuntimeMessages({
 		);
 	}
 	return convertedMessages;
-}
-
-export function getAppendMessageText(message: DesktopAppendMessage): string {
-	if (typeof message.content === "string") {
-		return message.content.trim();
-	}
-
-	return message.content
-		.filter((part) => part.type === "text")
-		.map((part) => part.text)
-		.join("\n")
-		.trim();
 }
 
 export function extractProposedPlan(text: string): string | undefined {

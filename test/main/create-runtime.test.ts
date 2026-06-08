@@ -12,7 +12,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	createDesktopAgentRuntime,
 	createDesktopRuntimeCatalog,
-	DESKTOP_SUBAGENT_TOOL_NAME,
 	pickPreferredDesktopModelForProvider,
 } from "../../src/main/runtime/create-runtime.ts";
 import {
@@ -22,6 +21,7 @@ import {
 	validatePlanModeBashCommand,
 } from "../../src/main/runtime/mode-aware-runtime-policy.ts";
 import {
+	DESKTOP_SUBAGENT_TOOL_NAME,
 	DESKTOP_TASK_PROGRESS_TOOL_NAME,
 	type DesktopPromptSubmission,
 	type DesktopSubagentRuntimeEvent,

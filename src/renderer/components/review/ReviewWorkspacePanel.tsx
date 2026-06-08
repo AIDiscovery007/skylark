@@ -28,13 +28,11 @@ import {
 	UploadCloud,
 	X,
 } from "lucide-react";
-import { MotionConfig, motion, type PanInfo } from "motion/react";
+import { MotionConfig, motion } from "motion/react";
 import parseDiff from "parse-diff";
 import {
 	type CSSProperties,
-	type KeyboardEvent,
 	type ReactNode,
-	type PointerEvent as ReactPointerEvent,
 	useCallback,
 	useEffect,
 	useLayoutEffect,
@@ -42,21 +40,48 @@ import {
 	useRef,
 	useState,
 } from "react";
+import { getErrorMessage } from "../../../shared/errors.ts";
 import { isDesktopStaticWebPreviewUrl, normalizeDesktopWebPreviewUrl } from "../../../shared/preview-url.ts";
+import type { SerializedAgentEvent } from "../../../shared/serialized-agent-event.ts";
 import type {
 	DesktopPreviewFile,
 	DesktopReviewFile,
 	DesktopReviewSnapshot,
 	DesktopSubagentOpenRequest,
 	DesktopWebPreviewElementSelection,
+	DesktopWebPreviewEvent,
 	DesktopWebPreviewState,
 	DesktopWorkspaceFileEntry,
 	DesktopWorkspaceFileListResult,
 } from "../../../shared/types.ts";
+import { useDragResize } from "../../hooks/use-drag-resize.ts";
 import { useReviewWorkspace } from "../../hooks/use-review-workspace.ts";
+import { useSubscribedResource } from "../../hooks/use-subscribed-resource.ts";
+import { useWorkspaceFiles, type WorkspaceFileListStatus } from "../../hooks/use-workspace-files.ts";
 import { noMotionTransition, panelSpring } from "../../lib/motion.ts";
+import { observeElementResize } from "../../lib/resize-observer.ts";
+import {
+	createPathTree,
+	createPreviewErrorFile,
+	createWorkspacePreviewItem,
+	filterTreeFiles,
+	flattenTreeRows,
+	formatDiffChunkRange,
+	getDiffChunkContext,
+	getDiffChunkKey,
+	getWebPreviewTitle,
+	getWorkspaceItemTitle,
+	isRelatedWebPreviewUrl,
+	isWorkspacePreviewFileItem,
+	type PathTreeFileRow,
+	type PathTreeFlatRow,
+	REVIEW_WORKSPACE_ITEM,
+	resolvePreviewSourceLanguage,
+	retainRecentWorkspacePreviewFiles,
+	type WorkspacePanelItem,
+} from "../../lib/review-workspace-model.ts";
 import { cn } from "../../lib/utils.ts";
-import { CodeBlock, type CodeBlockLanguage } from "../ai-elements/code-block.tsx";
+import { CodeBlock } from "../ai-elements/code-block.tsx";
 import {
 	WebPreview,
 	WebPreviewConsole,
@@ -103,64 +128,9 @@ export interface ReviewWorkspaceChromeSummary {
 	workspaceLabel: string;
 }
 
-interface PathTreeNode<TFile extends { path: string }> {
-	name: string;
-	path: string;
-	children: PathTreeNode<TFile>[];
-	file?: TFile;
-}
-
-type PathTreeFlatRow<TFile extends { path: string }> =
-	| {
-			depth: number;
-			expanded: boolean;
-			id: string;
-			name: string;
-			path: string;
-			type: "folder";
-	  }
-	| {
-			depth: number;
-			file: TFile;
-			id: string;
-			name: string;
-			path: string;
-			type: "file";
-	  };
-type PathTreeFileRow<TFile extends { path: string }> = Extract<PathTreeFlatRow<TFile>, { type: "file" }>;
-
 type ParsedDiffFile = ReturnType<typeof parseDiff>[number];
-type WorkspacePanelItem =
-	| {
-			id: "review";
-			type: "review";
-			title: "审查";
-	  }
-	| {
-			id: string;
-			type: "file";
-			file: DesktopPreviewFile;
-	  }
-	| {
-			id: string;
-			sourceFile?: Pick<DesktopPreviewFile, "kind" | "mimeType" | "name" | "path">;
-			type: "browser";
-			title: string;
-			url: string;
-	  }
-	| {
-			id: string;
-			type: "subagent";
-			request: DesktopSubagentOpenRequest;
-	  };
-type WorkspacePreviewFileItem =
-	| Extract<WorkspacePanelItem, { type: "file" }>
-	| (Extract<WorkspacePanelItem, { type: "browser" }> & {
-			sourceFile: Pick<DesktopPreviewFile, "kind" | "mimeType" | "name" | "path">;
-	  });
 type NativeWebPreviewOcclusionSource = "browser-actions" | "git-actions" | "workspace-create";
 type SetNativeWebPreviewOcclusion = (source: NativeWebPreviewOcclusionSource, occluded: boolean) => void;
-type WorkspaceFileListStatus = "idle" | "loading" | "loaded" | "error";
 interface FileTreeToggleState {
 	active: boolean;
 	label: string;
@@ -188,70 +158,7 @@ const STATUS_LABELS: Record<DesktopReviewFile["status"], string> = {
 	renamed: "R",
 	untracked: "U",
 };
-const REVIEW_WORKSPACE_ITEM: WorkspacePanelItem = { id: "review", type: "review", title: "审查" };
-const MAX_WORKSPACE_PREVIEW_FILE_ITEMS = 8;
 const WORKSPACE_FILE_TREE_LIMIT = 5000;
-const PREVIEW_ERROR_TIMESTAMP = new Date(0).toISOString();
-const PREVIEW_SOURCE_LANGUAGE_BY_EXTENSION: Record<string, CodeBlockLanguage> = {
-	bash: "bash",
-	c: "c",
-	cc: "cpp",
-	cjs: "javascript",
-	cpp: "cpp",
-	cs: "csharp",
-	css: "css",
-	go: "go",
-	h: "c",
-	hpp: "cpp",
-	java: "java",
-	js: "javascript",
-	json: "json",
-	jsx: "jsx",
-	kotlin: "kotlin",
-	kt: "kotlin",
-	kts: "kotlin",
-	less: "less",
-	log: "log",
-	md: "markdown",
-	mjs: "javascript",
-	php: "php",
-	py: "python",
-	rb: "ruby",
-	rs: "rust",
-	sass: "sass",
-	scss: "scss",
-	sh: "bash",
-	sql: "sql",
-	svelte: "svelte",
-	swift: "swift",
-	toml: "toml",
-	ts: "typescript",
-	tsx: "tsx",
-	txt: "text",
-	vue: "vue",
-	xml: "xml",
-	yaml: "yaml",
-	yml: "yaml",
-	zsh: "zsh",
-};
-const PREVIEW_SOURCE_LANGUAGE_BY_FILE_NAME: Record<string, CodeBlockLanguage> = {
-	dockerfile: "dockerfile",
-	makefile: "makefile",
-};
-const PREVIEW_SOURCE_LANGUAGE_BY_MIME_TYPE: Record<string, CodeBlockLanguage> = {
-	"application/json": "json",
-	"application/xml": "xml",
-	"text/css": "css",
-	"text/javascript": "javascript",
-	"text/markdown": "markdown",
-	"text/plain": "text",
-	"text/typescript": "typescript",
-	"text/x-dockerfile": "dockerfile",
-	"text/x-go": "go",
-	"text/x-makefile": "makefile",
-	"text/x-python": "python",
-	"text/yaml": "yaml",
-};
 const WEB_PREVIEW_ERROR_MESSAGE = "仅支持 http、https 或 skylark-preview 的预览 URL。";
 
 function formatWebPreviewElementSelection(selection: DesktopWebPreviewElementSelection): string {
@@ -259,23 +166,6 @@ function formatWebPreviewElementSelection(selection: DesktopWebPreviewElementSel
 	const label = selection.ariaLabel || selection.text;
 	const suffix = label ? ` "${label.slice(0, 120)}"` : "";
 	return `已选择 ${target}${suffix}`;
-}
-
-function getComparableWebPreviewHost(url: string): string | undefined {
-	try {
-		return new URL(url).host.toLowerCase().replace(/^www\./, "");
-	} catch {
-		return undefined;
-	}
-}
-
-function isRelatedWebPreviewUrl(firstUrl: string, secondUrl: string): boolean {
-	if (firstUrl === secondUrl) {
-		return true;
-	}
-	const firstHost = getComparableWebPreviewHost(firstUrl);
-	const secondHost = getComparableWebPreviewHost(secondUrl);
-	return Boolean(firstHost && secondHost && firstHost === secondHost);
 }
 
 function clampFileTreeWidth(width: number): number {
@@ -320,82 +210,6 @@ function getStatusClassName(status: DesktopReviewFile["status"]): string {
 	}
 }
 
-function createPathTree<TFile extends { path: string }>(files: TFile[]): PathTreeNode<TFile>[] {
-	const root: PathTreeNode<TFile> = { name: "", path: "", children: [] };
-	for (const file of files) {
-		const parts = file.path.split("/").filter(Boolean);
-		let current = root;
-		for (const [index, part] of parts.entries()) {
-			const path = parts.slice(0, index + 1).join("/");
-			let child = current.children.find((node) => node.name === part);
-			if (!child) {
-				child = { name: part, path, children: [] };
-				current.children.push(child);
-			}
-			if (index === parts.length - 1) {
-				child.file = file;
-			}
-			current = child;
-		}
-	}
-	return sortTree(root.children);
-}
-
-function sortTree<TFile extends { path: string }>(nodes: PathTreeNode<TFile>[]): PathTreeNode<TFile>[] {
-	return nodes
-		.map((node) => ({ ...node, children: sortTree(node.children) }))
-		.sort((left, right) => {
-			if (Boolean(left.file) !== Boolean(right.file)) {
-				return left.file ? 1 : -1;
-			}
-			return left.name.localeCompare(right.name);
-		});
-}
-
-function flattenTreeRows<TFile extends { path: string }>(
-	nodes: PathTreeNode<TFile>[],
-	collapsedPaths: ReadonlySet<string>,
-	forceExpanded: boolean,
-	depth = 0,
-): PathTreeFlatRow<TFile>[] {
-	const rows: PathTreeFlatRow<TFile>[] = [];
-	for (const node of nodes) {
-		if (node.file) {
-			rows.push({
-				depth,
-				file: node.file,
-				id: `file:${node.file.path}`,
-				name: node.name,
-				path: node.path,
-				type: "file",
-			});
-			continue;
-		}
-
-		const expanded = forceExpanded || !collapsedPaths.has(node.path);
-		rows.push({
-			depth,
-			expanded,
-			id: `folder:${node.path}`,
-			name: node.name,
-			path: node.path,
-			type: "folder",
-		});
-		if (expanded) {
-			rows.push(...flattenTreeRows(node.children, collapsedPaths, forceExpanded, depth + 1));
-		}
-	}
-	return rows;
-}
-
-function filterTreeFiles<TFile extends { path: string }>(files: TFile[], query: string): TFile[] {
-	const normalizedQuery = query.trim().toLowerCase();
-	if (!normalizedQuery) {
-		return files;
-	}
-	return files.filter((file) => file.path.toLowerCase().includes(normalizedQuery));
-}
-
 function getFileIcon(path: string) {
 	if (path.endsWith(".tsx") || path.endsWith(".jsx")) {
 		return <Braces className="size-3.5 text-[color:var(--info)]" />;
@@ -404,52 +218,6 @@ function getFileIcon(path: string) {
 		return <FileCode2 className="size-3.5 text-[color:var(--accent)]" />;
 	}
 	return <FileCode2 className="size-3.5 text-[color:var(--text-tertiary)]" />;
-}
-
-function getPreviewFileName(file: Pick<DesktopPreviewFile, "name" | "path">): string {
-	return file.name || file.path.split(/[\\/]/).pop() || file.path;
-}
-
-function createPreviewErrorFile(path: string, errorMessage: string): DesktopPreviewFile {
-	return {
-		path,
-		name: path.split(/[\\/]/).pop() || path,
-		mimeType: "application/octet-stream",
-		size: 0,
-		kind: "unsupported",
-		updatedAt: PREVIEW_ERROR_TIMESTAMP,
-		errorMessage,
-	};
-}
-
-function getErrorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
-
-function getPreviewFileExtension(file: Pick<DesktopPreviewFile, "name" | "path">): string {
-	const fileName = getPreviewFileName(file);
-	const extensionStart = fileName.lastIndexOf(".");
-	return extensionStart > 0 ? fileName.slice(extensionStart + 1).toLowerCase() : "";
-}
-
-function resolvePreviewSourceLanguage(file: DesktopPreviewFile): CodeBlockLanguage {
-	const normalizedFileName = getPreviewFileName(file).toLowerCase();
-	const namedLanguage = PREVIEW_SOURCE_LANGUAGE_BY_FILE_NAME[normalizedFileName];
-	if (namedLanguage) {
-		return namedLanguage;
-	}
-
-	const extensionLanguage = PREVIEW_SOURCE_LANGUAGE_BY_EXTENSION[getPreviewFileExtension(file)];
-	if (extensionLanguage) {
-		return extensionLanguage;
-	}
-
-	const mimeLanguage = PREVIEW_SOURCE_LANGUAGE_BY_MIME_TYPE[file.mimeType.toLowerCase()];
-	if (mimeLanguage) {
-		return mimeLanguage;
-	}
-
-	return "text";
 }
 
 function GitActionMenu({
@@ -682,86 +450,6 @@ function ReviewErrorState({ message }: { message: string }) {
 			</div>
 		</div>
 	);
-}
-
-function getWorkspaceItemTitle(item: WorkspacePanelItem): string {
-	if (item.type === "review") {
-		return item.title;
-	}
-	if (item.type === "browser") {
-		return item.title;
-	}
-	if (item.type === "subagent") {
-		return item.request.title ?? item.request.subagentId;
-	}
-	return item.file.name;
-}
-
-function getWebPreviewTitle(url: string): string {
-	try {
-		const parsedUrl = new URL(url);
-		if (isDesktopStaticWebPreviewUrl(url)) {
-			return "本地预览";
-		}
-		return parsedUrl.port ? `${parsedUrl.hostname}:${parsedUrl.port}` : parsedUrl.hostname;
-	} catch {
-		return "网页预览";
-	}
-}
-
-function hashWorkspaceItemId(value: string): string {
-	let hash = 2166136261;
-	for (let index = 0; index < value.length; index += 1) {
-		hash ^= value.charCodeAt(index);
-		hash = Math.imul(hash, 16777619);
-	}
-	return (hash >>> 0).toString(36);
-}
-
-function isPreviewFileWebPreview(file: DesktopPreviewFile): boolean {
-	return (file.kind === "html" || file.kind === "svg") && Boolean(file.previewUrl);
-}
-
-function createWorkspacePreviewItem(file: DesktopPreviewFile): WorkspacePanelItem {
-	if (isPreviewFileWebPreview(file) && file.previewUrl) {
-		return {
-			id: `browser:file:${hashWorkspaceItemId(file.path)}`,
-			sourceFile: {
-				kind: file.kind,
-				mimeType: file.mimeType,
-				name: file.name,
-				path: file.path,
-			},
-			title: getPreviewFileName(file),
-			type: "browser",
-			url: file.previewUrl,
-		};
-	}
-	return {
-		file,
-		id: `file:${file.path}`,
-		type: "file",
-	};
-}
-
-function isWorkspacePreviewFileItem(item: WorkspacePanelItem): item is WorkspacePreviewFileItem {
-	return item.type === "file" || (item.type === "browser" && Boolean(item.sourceFile));
-}
-
-function retainRecentWorkspacePreviewFiles(items: WorkspacePanelItem[], activeItemId: string): WorkspacePanelItem[] {
-	const fileItems = items.filter(isWorkspacePreviewFileItem);
-	if (fileItems.length <= MAX_WORKSPACE_PREVIEW_FILE_ITEMS) {
-		return items;
-	}
-
-	const removableCount = fileItems.length - MAX_WORKSPACE_PREVIEW_FILE_ITEMS;
-	const removableFileIds = new Set(
-		fileItems
-			.filter((item) => item.id !== activeItemId)
-			.slice(0, removableCount)
-			.map((item) => item.id),
-	);
-	return items.filter((item) => !isWorkspacePreviewFileItem(item) || !removableFileIds.has(item.id));
 }
 
 function WorkspacePanelTabs({
@@ -1015,52 +703,29 @@ function ResizableFileTreePanel({
 	spacerSlot: string;
 	width: number;
 }) {
-	const [isResizingFileTree, setIsResizingFileTree] = useState(false);
-	const resizeStartWidthRef = useRef(width);
 	const panelHidden = !open;
-	const panelTransition = isResizingFileTree ? noMotionTransition : PUSH_REVEAL_TRANSITION;
-
-	function setClampedFileTreeWidth(nextWidth: number): void {
-		setWidth(clampFileTreeWidth(nextWidth));
-	}
-
-	function handleFileTreeResizeStart(): void {
-		resizeStartWidthRef.current = width;
-		setIsResizingFileTree(true);
-	}
-
-	function handleFileTreeResize(_event: MouseEvent | TouchEvent | PointerEvent, info: PanInfo): void {
-		setClampedFileTreeWidth(resizeStartWidthRef.current - info.offset.x);
-	}
-
-	function handleFileTreeResizeEnd(): void {
-		setIsResizingFileTree(false);
-	}
-
-	function handleFileTreeResizeKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
-		if (event.key === "ArrowLeft") {
-			event.preventDefault();
-			setClampedFileTreeWidth(width + 16);
-			return;
-		}
-
-		if (event.key === "ArrowRight") {
-			event.preventDefault();
-			setClampedFileTreeWidth(width - 16);
-			return;
-		}
-
-		if (event.key === "Home") {
-			event.preventDefault();
-			setWidth(FILE_TREE_WIDTH.min);
-			return;
-		}
-
-		if (event.key === "End") {
-			event.preventDefault();
-			setWidth(FILE_TREE_WIDTH.max);
-		}
-	}
+	const fileTreeResize = useDragResize({
+		clampValue: clampFileTreeWidth,
+		getKeyValue: (key, currentWidth) => {
+			if (key === "ArrowLeft") {
+				return currentWidth + 16;
+			}
+			if (key === "ArrowRight") {
+				return currentWidth - 16;
+			}
+			if (key === "Home") {
+				return FILE_TREE_WIDTH.min;
+			}
+			if (key === "End") {
+				return FILE_TREE_WIDTH.max;
+			}
+			return undefined;
+		},
+		getMotionValue: (startWidth, info) => startWidth - info.offset.x,
+		setValue: setWidth,
+		value: width,
+	});
+	const panelTransition = fileTreeResize.isResizing ? noMotionTransition : PUSH_REVEAL_TRANSITION;
 
 	return (
 		<motion.div
@@ -1092,10 +757,10 @@ function ResizableFileTreePanel({
 					dragConstraints={{ left: 0, right: 0 }}
 					dragElastic={0}
 					dragMomentum={false}
-					onDrag={handleFileTreeResize}
-					onDragEnd={handleFileTreeResizeEnd}
-					onDragStart={handleFileTreeResizeStart}
-					onKeyDown={handleFileTreeResizeKeyDown}
+					onDrag={(_event, info) => fileTreeResize.handleMotionDrag(info)}
+					onDragEnd={fileTreeResize.handleMotionDragEnd}
+					onDragStart={fileTreeResize.handleMotionDragStart}
+					onKeyDown={fileTreeResize.handleKeyDown}
 					role="separator"
 					style={{ x: 0 }}
 					tabIndex={panelHidden ? -1 : 0}
@@ -1154,23 +819,6 @@ function DiffLine({ change }: { change: ParsedDiffFile["chunks"][number]["change
 	);
 }
 
-function getDiffChunkKey(chunk: ParsedDiffFile["chunks"][number]): string {
-	return `${chunk.oldStart}:${chunk.oldLines}:${chunk.newStart}:${chunk.newLines}:${chunk.content}`;
-}
-
-function formatDiffChunkRange(start: number, lines: number): string {
-	if (lines <= 0) {
-		return "-";
-	}
-
-	const end = start + lines - 1;
-	return end === start ? `${start}` : `${start}-${end}`;
-}
-
-function getDiffChunkContext(content: string): string {
-	return content.replace(/^@@.*?@@\s*/, "").trim();
-}
-
 function DiffViewer({
 	file,
 	isPatchLoading = false,
@@ -1192,16 +840,7 @@ function DiffViewer({
 			return;
 		}
 
-		const updateViewportWidth = () => setDiffViewportWidth(viewport.clientWidth);
-		updateViewportWidth();
-
-		if (typeof ResizeObserver === "undefined") {
-			return;
-		}
-
-		const resizeObserver = new ResizeObserver(updateViewportWidth);
-		resizeObserver.observe(viewport);
-		return () => resizeObserver.disconnect();
+		return observeElementResize(viewport, () => setDiffViewportWidth(viewport.clientWidth));
 	}, []);
 
 	function toggleChunk(chunkKey: string): void {
@@ -1714,7 +1353,7 @@ function BrowserPreviewPane({
 			})
 			.then(applyTrustedPreviewState)
 			.catch((error: unknown) => {
-				setErrorMessage(error instanceof Error ? error.message : String(error));
+				setErrorMessage(getErrorMessage(error));
 			});
 	}, [applyTrustedPreviewState, getPreviewBounds, isVisible, item.id, item.url]);
 
@@ -1757,11 +1396,10 @@ function BrowserPreviewPane({
 		updatePreviewBounds();
 	}, [hasPreviewUrl, isNativePreviewOccluded, isVisible, updatePreviewBounds]);
 
-	useLayoutEffect(() => {
-		if (!hasPreviewUrl || !isVisible) {
-			return undefined;
-		}
-		return window.desktopAgent?.subscribeToWebPreviewEvents?.((event) => {
+	useSubscribedResource<DesktopWebPreviewEvent>(
+		(onEvent) =>
+			hasPreviewUrl && isVisible ? window.desktopAgent?.subscribeToWebPreviewEvents?.(onEvent) : undefined,
+		(event) => {
 			if (event.type === "web_preview_element_selected") {
 				if (event.id !== item.id) {
 					return;
@@ -1789,17 +1427,18 @@ function BrowserPreviewPane({
 			if (!isAddressDirtyRef.current && event.state.url && event.state.url !== item.url) {
 				onUpdateUrl(item.id, event.state.url);
 			}
-		});
-	}, [
-		appendConsoleLog,
-		applyTrustedPreviewState,
-		hasPreviewUrl,
-		isStalePreviewState,
-		isVisible,
-		item.id,
-		item.url,
-		onUpdateUrl,
-	]);
+		},
+		[
+			appendConsoleLog,
+			applyTrustedPreviewState,
+			hasPreviewUrl,
+			isStalePreviewState,
+			isVisible,
+			item.id,
+			item.url,
+			onUpdateUrl,
+		],
+	);
 
 	useLayoutEffect(() => {
 		if (!hasPreviewUrl || !isVisible) {
@@ -1807,13 +1446,9 @@ function BrowserPreviewPane({
 		}
 		updatePreviewBounds();
 		const viewport = previewViewportRef.current;
-		const resizeObserver =
-			viewport && typeof ResizeObserver !== "undefined"
-				? new ResizeObserver(() => updatePreviewBounds())
-				: undefined;
-		if (viewport) {
-			resizeObserver?.observe(viewport);
-		}
+		const cleanupResizeObserver = viewport
+			? observeElementResize(viewport, updatePreviewBounds, { notifyImmediately: false })
+			: undefined;
 		window.addEventListener("resize", updatePreviewBounds);
 		window.addEventListener("scroll", updatePreviewBounds, true);
 		const animationFrame = window.requestAnimationFrame(updatePreviewBounds);
@@ -1825,7 +1460,7 @@ function BrowserPreviewPane({
 			}
 			window.removeEventListener("resize", updatePreviewBounds);
 			window.removeEventListener("scroll", updatePreviewBounds, true);
-			resizeObserver?.disconnect();
+			cleanupResizeObserver?.();
 			void window.desktopAgent?.closeWebPreview?.({ id: item.id }).catch(() => undefined);
 		};
 	}, [hasPreviewUrl, isVisible, item.id, updatePreviewBounds]);
@@ -1868,7 +1503,7 @@ function BrowserPreviewPane({
 			})
 			.then(applyPreviewState)
 			.catch((error: unknown) => {
-				appendConsoleLog("error", error instanceof Error ? error.message : String(error));
+				appendConsoleLog("error", getErrorMessage(error));
 			});
 	}
 
@@ -1885,7 +1520,7 @@ function BrowserPreviewPane({
 			})
 			.then(applyPreviewState)
 			.catch((error: unknown) => {
-				appendConsoleLog("error", error instanceof Error ? error.message : String(error));
+				appendConsoleLog("error", getErrorMessage(error));
 			});
 	}
 
@@ -1903,7 +1538,7 @@ function BrowserPreviewPane({
 			})
 			.then(applyPreviewState)
 			.catch((error: unknown) => {
-				appendConsoleLog("error", error instanceof Error ? error.message : String(error));
+				appendConsoleLog("error", getErrorMessage(error));
 			});
 		appendConsoleLog("log", `已刷新 ${item.url}`);
 	}
@@ -1927,7 +1562,7 @@ function BrowserPreviewPane({
 			})
 			.catch((error: unknown) => {
 				setIsSelectMode(false);
-				appendConsoleLog("error", error instanceof Error ? error.message : String(error));
+				appendConsoleLog("error", getErrorMessage(error));
 			});
 	}
 
@@ -1937,7 +1572,7 @@ function BrowserPreviewPane({
 		}
 		appendConsoleLog("log", `在浏览器打开 ${item.url}`);
 		void window.desktopAgent?.openExternalUrl?.(item.url).catch((error: unknown) => {
-			appendConsoleLog("error", error instanceof Error ? error.message : String(error));
+			appendConsoleLog("error", getErrorMessage(error));
 		});
 	}
 
@@ -1958,7 +1593,7 @@ function BrowserPreviewPane({
 				appendConsoleLog("log", storage === "cache" ? "已清除网页预览缓存" : "已清除网页预览 Cookie");
 			})
 			.catch((error: unknown) => {
-				appendConsoleLog("error", error instanceof Error ? error.message : String(error));
+				appendConsoleLog("error", getErrorMessage(error));
 			});
 	}
 
@@ -2319,9 +1954,6 @@ export function ReviewWorkspacePanel({
 	const [workspaceFileTreeWidth, setWorkspaceFileTreeWidth] = useState<number>(FILE_TREE_WIDTH.default);
 	const [query, setQuery] = useState("");
 	const [workspaceFileQuery, setWorkspaceFileQuery] = useState("");
-	const [workspaceFileListStatus, setWorkspaceFileListStatus] = useState<WorkspaceFileListStatus>("idle");
-	const [workspaceFileListResult, setWorkspaceFileListResult] = useState<DesktopWorkspaceFileListResult | undefined>();
-	const [workspaceFileListError, setWorkspaceFileListError] = useState<string | undefined>();
 	const [selectedPath, setSelectedPath] = useState<string | undefined>();
 	const [reviewPanelWidth, setReviewPanelWidth] = useState<number>(REVIEW_PANEL_WIDTH.default);
 	const [containerWidth, setContainerWidth] = useState<number | undefined>();
@@ -2333,7 +1965,6 @@ export function ReviewWorkspacePanel({
 	const [isNativeWebPreviewOccluded, setIsNativeWebPreviewOccluded] = useState(false);
 	const closeButtonRef = useRef<HTMLButtonElement | null>(null);
 	const reviewSpacerRef = useRef<HTMLDivElement | null>(null);
-	const reviewResizeDragCleanupRef = useRef<(() => void) | undefined>(undefined);
 	const containerResizeFrameRef = useRef<number | undefined>(undefined);
 	const handledPreviewRequestNonceRef = useRef<number | undefined>(undefined);
 	const handledWebPreviewRequestNonceRef = useRef<number | undefined>(undefined);
@@ -2341,7 +1972,6 @@ export function ReviewWorkspacePanel({
 	const nativeWebPreviewOcclusionSourcesRef = useRef<Set<NativeWebPreviewOcclusionSource>>(new Set());
 	const requestedPatchPathsRef = useRef<Set<string>>(new Set());
 	const workspaceContextKeyRef = useRef<string | undefined>(undefined);
-	const workspaceFileListRequestKeyRef = useRef<string | undefined>(undefined);
 	const [loadingPatchPath, setLoadingPatchPath] = useState<string | undefined>();
 	const [patchErrorByPath, setPatchErrorByPath] = useState<Record<string, string>>({});
 	const activeWorkspaceItem = workspaceItems.find((item) => item.id === activeWorkspaceItemId);
@@ -2349,6 +1979,17 @@ export function ReviewWorkspacePanel({
 	const hasReviewWorkspaceItem = workspaceItems.some((item) => item.type === "review");
 	const isReviewWorkspaceItemActive = activeWorkspaceItem?.type === "review";
 	const isFileWorkspaceItemActive = activeWorkspaceItem?.type === "file";
+	const {
+		errorMessage: workspaceFileListError,
+		result: workspaceFileListResult,
+		status: workspaceFileListStatus,
+	} = useWorkspaceFiles({
+		enabled: open && isFileWorkspaceItemActive && workspaceFileTreeOpen,
+		limit: WORKSPACE_FILE_TREE_LIMIT,
+		projectId,
+		sessionId,
+		unavailableMessage: "当前 workspace 不可用，无法列出文件。",
+	});
 	const selectedFile = snapshot?.files.find((file) => file.path === selectedPath) ?? snapshot?.files[0];
 	const reviewAdditions = snapshot?.totals.additions ?? 0;
 	const reviewDeletions = snapshot?.totals.deletions ?? 0;
@@ -2395,6 +2036,33 @@ export function ReviewWorkspacePanel({
 		reviewSpacerRef.current?.setAttribute("data-review-resizing", String(active));
 		setIsResizingReviewPanel(active);
 	}, []);
+	const reviewPanelResize = useDragResize({
+		clampValue: (width) => clampReviewPanelWidth(width, containerWidth),
+		getKeyValue: (key, currentWidth) => {
+			if (key === "ArrowLeft") {
+				return currentWidth + 16;
+			}
+			if (key === "ArrowRight") {
+				return currentWidth - 16;
+			}
+			if (key === "Home") {
+				return REVIEW_PANEL_WIDTH.min;
+			}
+			if (key === "End") {
+				return REVIEW_PANEL_WIDTH.max;
+			}
+			return undefined;
+		},
+		onActiveChange: setReviewResizeActive,
+		pointer: {
+			cursor: "col-resize",
+			getValue: (event, start) => start.value - (event.clientX - start.clientX),
+			shouldStart: (event) => event.button === 0,
+			userSelect: "none",
+		},
+		setValue: setReviewPanelWidth,
+		value: resolvedReviewPanelWidth,
+	});
 
 	const handleRefreshWorkspaceFile = useCallback(async (itemId: string, path: string): Promise<void> => {
 		const refreshedFile = await window.desktopAgent.refreshPreviewFile({ path });
@@ -2472,8 +2140,6 @@ export function ReviewWorkspacePanel({
 			if (containerResizeFrameRef.current !== undefined) {
 				cancelAnimationFrame(containerResizeFrameRef.current);
 			}
-			workspaceFileListRequestKeyRef.current = undefined;
-			reviewResizeDragCleanupRef.current?.();
 		};
 	}, []);
 
@@ -2527,54 +2193,9 @@ export function ReviewWorkspacePanel({
 		requestedPatchPathsRef.current = new Set();
 		setLoadingPatchPath(undefined);
 		setPatchErrorByPath({});
-		workspaceFileListRequestKeyRef.current = undefined;
 		setWorkspaceFileTreeOpen(false);
 		setWorkspaceFileQuery("");
-		setWorkspaceFileListStatus("idle");
-		setWorkspaceFileListResult(undefined);
-		setWorkspaceFileListError(undefined);
 	}, [projectId, sessionId]);
-
-	useEffect(() => {
-		if (!open || !isFileWorkspaceItemActive || !workspaceFileTreeOpen || workspaceFileListStatus !== "idle") {
-			return undefined;
-		}
-
-		const request = projectId
-			? { projectId, limit: WORKSPACE_FILE_TREE_LIMIT }
-			: sessionId
-				? { sessionId, limit: WORKSPACE_FILE_TREE_LIMIT }
-				: undefined;
-		if (!request) {
-			setWorkspaceFileListStatus("error");
-			setWorkspaceFileListError("当前 workspace 不可用，无法列出文件。");
-			return undefined;
-		}
-
-		const requestKey = projectId ? `project:${projectId}` : `session:${sessionId}`;
-		workspaceFileListRequestKeyRef.current = requestKey;
-		setWorkspaceFileListStatus("loading");
-		setWorkspaceFileListError(undefined);
-		void window.desktopAgent
-			.listWorkspaceFiles(request)
-			.then((result) => {
-				if (workspaceFileListRequestKeyRef.current !== requestKey) {
-					return;
-				}
-				setWorkspaceFileListResult(result);
-				setWorkspaceFileListStatus(result.errorMessage ? "error" : "loaded");
-				setWorkspaceFileListError(result.errorMessage);
-			})
-			.catch((error: unknown) => {
-				if (workspaceFileListRequestKeyRef.current !== requestKey) {
-					return;
-				}
-				setWorkspaceFileListStatus("error");
-				setWorkspaceFileListError(getErrorMessage(error));
-			});
-
-		return undefined;
-	}, [isFileWorkspaceItemActive, open, projectId, sessionId, workspaceFileTreeOpen, workspaceFileListStatus]);
 
 	const snapshotGeneratedAt = snapshot?.generatedAt;
 
@@ -2706,12 +2327,9 @@ export function ReviewWorkspacePanel({
 		upsertWebPreviewUrl(webPreviewRequest.url);
 	}, [open, upsertWebPreviewUrl, webPreviewRequest]);
 
-	useEffect(() => {
-		if (!open) {
-			return undefined;
-		}
-
-		const unsubscribe = window.desktopAgent.subscribeToAgentEvents((event) => {
+	useSubscribedResource<SerializedAgentEvent>(
+		(onEvent) => (open ? window.desktopAgent.subscribeToAgentEvents(onEvent) : undefined),
+		(event) => {
 			if (event.type !== "agent_end" || (sessionId && event.sessionId !== sessionId)) {
 				return;
 			}
@@ -2728,9 +2346,9 @@ export function ReviewWorkspacePanel({
 					await window.desktopAgent.controlWebPreview({ action: "reload", id: item.id });
 				}),
 			);
-		});
-		return unsubscribe;
-	}, [handleRefreshWorkspaceFile, open, sessionId, workspaceItems]);
+		},
+		[handleRefreshWorkspaceFile, open, sessionId, workspaceItems],
+	);
 
 	useEffect(() => {
 		if (!open || !hasReviewWorkspaceItem || hasHydratedReviewBody) {
@@ -2769,83 +2387,8 @@ export function ReviewWorkspacePanel({
 			});
 		}
 
-		updateContainerWidth();
-		if (typeof ResizeObserver === "undefined") {
-			window.addEventListener("resize", updateContainerWidth);
-			return () => window.removeEventListener("resize", updateContainerWidth);
-		}
-
-		const resizeObserver = new ResizeObserver(updateContainerWidth);
-		resizeObserver.observe(container);
-		return () => resizeObserver.disconnect();
+		return observeElementResize(container, updateContainerWidth, { fallbackToWindow: true });
 	}, [isFullscreen, markFollowingContainerResize]);
-
-	function setClampedReviewPanelWidth(width: number): void {
-		setReviewPanelWidth(clampReviewPanelWidth(width, containerWidth));
-	}
-
-	function handleReviewResizePointerDown(event: ReactPointerEvent<HTMLDivElement>): void {
-		if (event.button !== 0) {
-			return;
-		}
-
-		event.preventDefault();
-		reviewResizeDragCleanupRef.current?.();
-		const startX = event.clientX;
-		const startWidth = resolvedReviewPanelWidth;
-		const previousCursor = document.body.style.cursor;
-		const previousUserSelect = document.body.style.userSelect;
-
-		setReviewResizeActive(true);
-		document.body.style.cursor = "col-resize";
-		document.body.style.userSelect = "none";
-
-		const stopReviewResizeSession = (): void => {
-			window.removeEventListener("pointermove", handlePointerMove);
-			window.removeEventListener("pointerup", stopReviewResizeSession);
-			window.removeEventListener("pointercancel", stopReviewResizeSession);
-			window.removeEventListener("blur", stopReviewResizeSession);
-			document.body.style.cursor = previousCursor;
-			document.body.style.userSelect = previousUserSelect;
-			setReviewResizeActive(false);
-			reviewResizeDragCleanupRef.current = undefined;
-		};
-
-		const handlePointerMove = (moveEvent: PointerEvent): void => {
-			setClampedReviewPanelWidth(startWidth - (moveEvent.clientX - startX));
-		};
-
-		window.addEventListener("pointermove", handlePointerMove);
-		window.addEventListener("pointerup", stopReviewResizeSession);
-		window.addEventListener("pointercancel", stopReviewResizeSession);
-		window.addEventListener("blur", stopReviewResizeSession);
-		reviewResizeDragCleanupRef.current = stopReviewResizeSession;
-	}
-
-	function handleReviewResizeKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
-		if (event.key === "ArrowLeft") {
-			event.preventDefault();
-			setClampedReviewPanelWidth(resolvedReviewPanelWidth + 16);
-			return;
-		}
-
-		if (event.key === "ArrowRight") {
-			event.preventDefault();
-			setClampedReviewPanelWidth(resolvedReviewPanelWidth - 16);
-			return;
-		}
-
-		if (event.key === "Home") {
-			event.preventDefault();
-			setClampedReviewPanelWidth(REVIEW_PANEL_WIDTH.min);
-			return;
-		}
-
-		if (event.key === "End") {
-			event.preventDefault();
-			setClampedReviewPanelWidth(REVIEW_PANEL_WIDTH.max);
-		}
-	}
 
 	async function handleOpenPreviewFiles(): Promise<void> {
 		const request = projectId ? { projectId } : sessionId ? { sessionId } : undefined;
@@ -2978,8 +2521,8 @@ export function ReviewWorkspacePanel({
 							aria-valuenow={Math.round(resolvedReviewPanelWidth)}
 							className="absolute inset-y-0 left-0 z-20 w-3 cursor-col-resize touch-none focus-visible:outline-none"
 							data-slot="review-workspace-resizer"
-							onKeyDown={handleReviewResizeKeyDown}
-							onPointerDownCapture={handleReviewResizePointerDown}
+							onKeyDown={reviewPanelResize.handleKeyDown}
+							onPointerDownCapture={reviewPanelResize.handlePointerDown}
 							role="separator"
 							tabIndex={open ? 0 : -1}
 						/>

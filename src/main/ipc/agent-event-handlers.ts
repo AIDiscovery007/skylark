@@ -1,8 +1,8 @@
 import { IPC_CHANNELS } from "../../shared/ipc-contract.ts";
 import { DESKTOP_SUBAGENT_TOOL_NAME } from "../../shared/types.ts";
 import type { DesktopRuntimeHost } from "../runtime/desktop-runtime-host.ts";
+import { pipeSubscriptionToPort } from "../util/port-fanout.ts";
 import type { DesktopBridgeGroupDescriptor } from "./desktop-bridge-registry.ts";
-import { openAgentStream } from "./open-agent-stream.ts";
 
 const subscribedHosts = new WeakSet<object>();
 
@@ -17,7 +17,7 @@ export function createAgentStreamBridgeGroup(host: DesktopRuntimeHost): DesktopB
 		streams: [
 			{
 				channel: IPC_CHANNELS.openStream,
-				open: (port) => openAgentStream(host, port),
+				open: (port) => pipeSubscriptionToPort((listener) => host.subscribe(listener), port),
 			},
 		],
 	};

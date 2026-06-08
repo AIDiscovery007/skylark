@@ -18,6 +18,7 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { layoutSpring, subtleReveal } from "@/lib/motion";
 import { cn } from "@/lib/utils";
+import { getErrorMessage } from "../../../shared/errors.ts";
 import type {
 	DesktopOAuthProviderStatus,
 	DesktopProviderKeyStatus,
@@ -414,8 +415,7 @@ export function ApiKeySettings({
 																		[runtimeProvider.id]: {
 																			provider: runtimeProvider.id,
 																			ok: false,
-																			message:
-																				error instanceof Error ? error.message : String(error),
+																			message: getErrorMessage(error),
 																		},
 																	}));
 																})

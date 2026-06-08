@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { copyFile, mkdir, readFile, stat } from "node:fs/promises";
 import { basename, extname, join, resolve } from "node:path";
 import mammoth from "mammoth";
+import { getErrorMessage } from "../../shared/errors.ts";
 import type {
 	DesktopEventAttachment,
 	DesktopEventAttachmentDraft,
@@ -99,7 +100,7 @@ export async function prepareDesktopEventAttachments(
 		try {
 			fileStat = await stat(sourcePath);
 		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
+			const message = getErrorMessage(error);
 			errors.push(createAttachmentError(sourcePath, message));
 			continue;
 		}
@@ -130,7 +131,7 @@ export async function prepareDesktopEventAttachments(
 				draft.extractionError = "No text could be extracted from this attachment.";
 			}
 		} catch (error) {
-			draft.extractionError = error instanceof Error ? error.message : String(error);
+			draft.extractionError = getErrorMessage(error);
 		}
 
 		attachments.push(draft);

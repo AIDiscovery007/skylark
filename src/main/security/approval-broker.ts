@@ -7,6 +7,7 @@ import type {
 	DesktopSettingsData,
 } from "../../shared/types.ts";
 import { resolveDesktopPermissionApprovalSettings } from "../../shared/types.ts";
+import { Listeners } from "../util/port-fanout.ts";
 
 const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -55,16 +56,13 @@ function categorySettingKey(
 }
 
 export class DesktopApprovalBroker implements DesktopApprovalRequester {
-	private readonly listeners = new Set<(event: DesktopApprovalEvent) => void>();
+	private readonly listeners = new Listeners<DesktopApprovalEvent>();
 	private readonly pending = new Map<string, PendingApproval>();
 
 	constructor(private readonly getSettings: () => Promise<DesktopSettingsData> | DesktopSettingsData) {}
 
 	subscribe(listener: (event: DesktopApprovalEvent) => void): () => void {
-		this.listeners.add(listener);
-		return () => {
-			this.listeners.delete(listener);
-		};
+		return this.listeners.subscribe(listener);
 	}
 
 	async requestApproval(input: DesktopApprovalRequestInput): Promise<void> {
@@ -161,8 +159,6 @@ export class DesktopApprovalBroker implements DesktopApprovalRequester {
 	}
 
 	private emit(event: DesktopApprovalEvent): void {
-		for (const listener of this.listeners) {
-			listener(event);
-		}
+		this.listeners.emit(event);
 	}
 }

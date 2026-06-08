@@ -1,4 +1,5 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { isRecord } from "../../shared/guards.ts";
 import { normalizeDesktopWebPreviewUrl } from "../../shared/preview-url.ts";
 import type { DesktopSessionMessagesRequest } from "../../shared/serialized-agent-event.ts";
 import type {
@@ -145,10 +146,6 @@ export type ValidatedDesktopSetting = {
 
 function reject(label: string, reason: string): never {
 	throw new TypeError(`Invalid ${label}: ${reason}`);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function validateString(value: unknown, label: string, maxLength: number): string {

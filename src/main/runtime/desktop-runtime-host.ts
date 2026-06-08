@@ -1,13 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { unlink } from "node:fs/promises";
 import { join } from "node:path";
-import type { AgentMessage, AgentState } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
-import type { CompactionResult } from "@earendil-works/pi-coding-agent";
+import { getErrorMessage } from "../../shared/errors.ts";
+import { normalizeDesktopProviderIdentifier } from "../../shared/provider-id.ts";
 import type {
-	DesktopAgentDiagnostic,
-	DesktopAgentMessageWindow,
-	DesktopAgentModel,
 	DesktopAgentSnapshot,
 	DesktopSessionMessagesRequest,
 	DesktopSessionMessagesResult,
@@ -15,7 +12,6 @@ import type {
 } from "../../shared/serialized-agent-event.ts";
 import { clampDesktopThinkingLevelForModel } from "../../shared/thinking-levels.ts";
 import type {
-	DesktopAgentMode,
 	DesktopCapabilityCatalog,
 	DesktopCapabilityDetail,
 	DesktopCapabilityDetailRequest,
@@ -33,9 +29,6 @@ import type {
 	DesktopSessionModeUpdateRequest,
 	DesktopSessionProfileUpdateRequest,
 	DesktopSessionSummary,
-	DesktopSettingKey,
-	DesktopSettingsData,
-	DesktopTaskProgress,
 	DesktopWorkspaceOverview,
 } from "../../shared/types.ts";
 import {
@@ -50,86 +43,29 @@ import {
 	getFirstUserMessageText,
 	isGenericSessionTitle,
 } from "../session-title-utils.ts";
+import { isMissingFileError } from "../storage/fs-errors.ts";
 import { normalizeProjectCwd } from "../storage/project-store.ts";
-import { normalizeDesktopProviderIdentifier } from "../storage/provider-id.ts";
+import { Listeners } from "../util/port-fanout.ts";
+import type { CreateDesktopAgentRuntimeOptions } from "./create-runtime.ts";
+import { findDesktopCatalogModel, hydrateDesktopModelMetadata } from "./desktop-model-catalog.ts";
 import {
-	type CreateDesktopAgentRuntimeOptions,
-	findDesktopCatalogModel,
-	hydrateDesktopModelMetadata,
-} from "./create-runtime.ts";
+	areStringArraysEqual,
+	areTaskProgressValuesEqual,
+	createDesktopAgentSnapshot,
+	type DesktopAgentRuntime,
+	type DesktopRuntimeHostPersistence,
+	sliceMessagesBefore,
+	waitWithTimeout,
+} from "./runtime-contract.ts";
 import { type SerializableAgentEvent, serializeAgentEvent } from "./serialize-agent-event.ts";
 import { generateSessionTitleFromPrompt } from "./session-title-generator.ts";
+
+export type { DesktopAgentRuntime, DesktopRuntimeHostPersistence } from "./runtime-contract.ts";
+export { createDesktopAgentSnapshot } from "./runtime-contract.ts";
 
 const WORKSPACE_OVERVIEW_PROJECT_SESSION_PREVIEW_LIMIT = 8;
 const SNAPSHOT_MESSAGE_WINDOW_LIMIT = 120;
 const SESSION_MESSAGE_PAGE_LIMIT = 80;
-
-export interface DesktopAgentRuntime {
-	readonly cwd: string;
-	readonly agentMode: DesktopAgentMode;
-	readonly diagnostics: readonly DesktopAgentDiagnostic[];
-	readonly availableTools: readonly string[];
-	readonly taskProgress?: DesktopTaskProgress;
-	getState(): AgentState;
-	setAgentMode(agentMode: DesktopAgentMode): void;
-	applySessionProfile?(update: {
-		model: Model<any>;
-		thinkingLevel: AgentState["thinkingLevel"];
-		apiKey?: string;
-	}): Promise<void>;
-	prompt(request: DesktopPromptSubmission | string): Promise<void>;
-	compact(customInstructions?: string): Promise<CompactionResult>;
-	abort(): void;
-	waitForIdle(): Promise<void>;
-	subscribe(listener: (event: SerializableAgentEvent) => void): () => void;
-	dispose?(): Promise<void> | void;
-	listCapabilities?(): Promise<DesktopCapabilityCatalog>;
-	getCapabilityDetail?(request: DesktopCapabilityDetailRequest): Promise<DesktopCapabilityDetail>;
-	createSkill?(request: DesktopCreateSkillRequest): Promise<DesktopCapabilityCatalog>;
-	upsertPromptTemplate?(request: DesktopPromptTemplateUpsertRequest): Promise<DesktopCapabilityCatalog>;
-	deletePromptTemplate?(request: DesktopPromptTemplateDeleteRequest): Promise<DesktopCapabilityCatalog>;
-	upsertMcpServer?(request: DesktopMcpServerUpsertRequest): Promise<DesktopCapabilityCatalog>;
-	setMcpServerEnabled?(serverId: string, enabled: boolean): Promise<DesktopCapabilityCatalog>;
-	testMcpServer?(serverId: string): Promise<DesktopMcpServerSummary>;
-	restartMcpServer?(serverId: string): Promise<DesktopCapabilityCatalog>;
-	reloadCapabilities?(): Promise<DesktopCapabilityCatalog>;
-}
-
-export interface DesktopRuntimeHostPersistence {
-	projectStore?: {
-		createOrGet(cwd: string): Promise<DesktopProjectSummary>;
-		get(projectId: string): Promise<DesktopProjectSummary | null>;
-		list(): Promise<DesktopProjectSummary[]>;
-		listWithSessionStats(sessions: readonly DesktopSessionSummary[]): Promise<DesktopProjectSummary[]>;
-		updateLastOpenedSession(projectId: string, sessionId: string | undefined): Promise<DesktopProjectSummary | null>;
-	};
-	sessionStore: {
-		create(options: {
-			id?: string;
-			cwd: string;
-			model: DesktopPersistedSession["model"];
-			thinkingLevel: DesktopPersistedSession["thinkingLevel"];
-			messages?: DesktopPersistedSession["messages"];
-			title?: string;
-			agentMode?: DesktopAgentMode;
-		}): Promise<DesktopPersistedSession>;
-		get(sessionId: string): Promise<DesktopPersistedSession | null>;
-		delete(sessionId: string): Promise<boolean>;
-		list(): Promise<DesktopSessionSummary[]>;
-		save(session: DesktopPersistedSession): Promise<DesktopPersistedSession>;
-	};
-	settingsStore: {
-		get<TKey extends DesktopSettingKey>(key: TKey): Promise<DesktopSettingsData[TKey]>;
-		set<TKey extends DesktopSettingKey>(key: TKey, value: DesktopSettingsData[TKey]): Promise<void>;
-	};
-	instructionStore?: {
-		getCompactInstruction(): Promise<string>;
-	};
-	getApiKey?: (provider: string) => Promise<string | undefined> | string | undefined;
-	agentDir?: string;
-	agentSessionsDir?: string;
-	defaultCwd: string;
-}
 
 interface DesktopRuntimeEntry {
 	sessionId: string;
@@ -181,133 +117,13 @@ function requireCapabilityRuntime(runtime: DesktopAgentRuntime): CapabilityRunti
 	return runtime as CapabilityRuntime;
 }
 
-function serializeModel(state: AgentState): DesktopAgentModel | undefined {
-	const model = hydrateDesktopModelMetadata(state.model);
-	if (!model?.id || !model.provider || !model.name) {
-		return undefined;
-	}
-
-	return {
-		id: model.id,
-		provider: model.provider,
-		name: model.name,
-		reasoning: model.reasoning,
-		contextWindow: model.contextWindow,
-	};
-}
-
-function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
-	return (
-		typeof error === "object" &&
-		error !== null &&
-		"code" in error &&
-		(error as NodeJS.ErrnoException).code === "ENOENT"
-	);
-}
-
-function areStringArraysEqual(left: readonly string[] | undefined, right: readonly string[]): boolean {
-	if (!left || left.length !== right.length) {
-		return false;
-	}
-	return left.every((value, index) => value === right[index]);
-}
-
-function areTaskProgressValuesEqual(left: unknown, right: unknown): boolean {
-	return JSON.stringify(resolveDesktopTaskProgress(left)) === JSON.stringify(resolveDesktopTaskProgress(right));
-}
-
-async function waitWithTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | undefined> {
-	let timeout: NodeJS.Timeout | undefined;
-	try {
-		return await Promise.race([
-			promise,
-			new Promise<undefined>((resolve) => {
-				timeout = setTimeout(() => resolve(undefined), timeoutMs);
-				timeout.unref();
-			}),
-		]);
-	} finally {
-		if (timeout) {
-			clearTimeout(timeout);
-		}
-	}
-}
-
 function isNonFatalManualCompactionError(error: unknown): boolean {
-	const message = error instanceof Error ? error.message : String(error);
+	const message = getErrorMessage(error);
 	return message.includes("Nothing to compact") || message.includes("Already compacted");
 }
 
-export function createDesktopAgentSnapshot(
-	sessionId: string,
-	runtime: DesktopAgentRuntime,
-	options: { consumedProposedPlanMessageIds?: readonly string[]; messageWindowLimit?: number } = {},
-): DesktopAgentSnapshot {
-	const state = runtime.getState();
-	const messageWindow = sliceLatestMessages(state.messages, options.messageWindowLimit);
-
-	return {
-		sessionId,
-		cwd: runtime.cwd,
-		agentMode: resolveDesktopAgentMode(runtime.agentMode),
-		consumedProposedPlanMessageIds: [...(options.consumedProposedPlanMessageIds ?? [])],
-		taskProgress: resolveDesktopTaskProgress(runtime.taskProgress),
-		diagnostics: [...runtime.diagnostics],
-		model: serializeModel(state),
-		thinkingLevel: state.thinkingLevel,
-		availableTools: [...runtime.availableTools],
-		messages: messageWindow.messages,
-		...(messageWindow.window ? { messageWindow: messageWindow.window } : {}),
-		streamingMessage: state.streamingMessage,
-		pendingToolCalls: Array.from(state.pendingToolCalls),
-		isStreaming: state.isStreaming,
-		errorMessage: state.errorMessage,
-	};
-}
-
-function createMessageWindow(total: number, start: number, end: number): DesktopAgentMessageWindow {
-	return {
-		start,
-		end,
-		total,
-		hasMoreBefore: start > 0,
-	};
-}
-
-function sliceMessagesBefore(
-	messages: readonly AgentMessage[],
-	before: number,
-	limit: number,
-): { messages: AgentMessage[]; window: DesktopAgentMessageWindow } {
-	const total = messages.length;
-	const safeBefore = Math.min(Math.max(0, before), total);
-	const safeLimit = Math.max(1, limit);
-	const start = Math.max(0, safeBefore - safeLimit);
-	const end = safeBefore;
-	return {
-		messages: messages.slice(start, end),
-		window: createMessageWindow(total, start, end),
-	};
-}
-
-function sliceLatestMessages(
-	messages: readonly AgentMessage[],
-	limit: number | undefined,
-): { messages: AgentMessage[]; window?: DesktopAgentMessageWindow } {
-	if (limit === undefined || messages.length <= limit) {
-		return { messages: [...messages] };
-	}
-
-	const end = messages.length;
-	const start = Math.max(0, end - Math.max(1, limit));
-	return {
-		messages: messages.slice(start, end),
-		window: createMessageWindow(messages.length, start, end),
-	};
-}
-
 export class DesktopRuntimeHost {
-	private listeners = new Set<(event: SerializedAgentEvent) => void>();
+	private readonly listeners = new Listeners<SerializedAgentEvent>();
 	private entries = new Map<string, DesktopRuntimeEntry>();
 	private activeProjectId?: string;
 	private activeSessionId?: string;
@@ -324,9 +140,7 @@ export class DesktopRuntimeHost {
 			...serializeAgentEvent(event),
 			sessionId,
 		} as SerializedAgentEvent;
-		for (const listener of this.listeners) {
-			listener(serialized);
-		}
+		this.listeners.emit(serialized);
 	}
 
 	private shouldPersistEvent(event: SerializableAgentEvent): boolean {
@@ -689,6 +503,12 @@ export class DesktopRuntimeHost {
 		return Boolean(entry.activeRun) || entry.runtime?.getState().isStreaming === true;
 	}
 
+	private assertEntryNotRunning(entry: DesktopRuntimeEntry): void {
+		if (this.isEntryRunning(entry)) {
+			throw new Error(`Session '${entry.sessionId}' is already running.`);
+		}
+	}
+
 	private async deleteAgentSessionTranscript(sessionId: string): Promise<void> {
 		if (!this.persistence?.agentSessionsDir) {
 			return;
@@ -703,27 +523,35 @@ export class DesktopRuntimeHost {
 		}
 	}
 
+	private unsubscribeRuntime(entry: DesktopRuntimeEntry): void {
+		entry.runtimeSubscription?.();
+		entry.runtimeSubscription = undefined;
+	}
+
+	private async disposeRuntime(runtime: DesktopAgentRuntime | undefined): Promise<void> {
+		if (!runtime) {
+			return;
+		}
+		try {
+			await Promise.resolve(runtime.dispose?.());
+		} catch {}
+	}
+
 	private releaseEntry(entry: DesktopRuntimeEntry | undefined): void {
 		if (!entry) {
 			return;
 		}
 
-		entry.runtimeSubscription?.();
-		entry.runtimeSubscription = undefined;
+		this.unsubscribeRuntime(entry);
 		this.entries.delete(entry.sessionId);
 	}
 
 	private async discardEntryRuntime(entry: DesktopRuntimeEntry): Promise<void> {
-		entry.runtimeSubscription?.();
-		entry.runtimeSubscription = undefined;
+		this.unsubscribeRuntime(entry);
 		const runtime = entry.runtime;
 		entry.runtime = undefined;
 		entry.runtimePromise = undefined;
-		if (runtime) {
-			try {
-				await Promise.resolve(runtime.dispose?.());
-			} catch {}
-		}
+		await this.disposeRuntime(runtime);
 	}
 
 	private getAdjacentReplacementCandidates(
@@ -811,7 +639,7 @@ export class DesktopRuntimeHost {
 
 	private attachRuntime(entry: DesktopRuntimeEntry, runtime: DesktopAgentRuntime): DesktopAgentRuntime {
 		entry.runtime = runtime;
-		entry.runtimeSubscription?.();
+		this.unsubscribeRuntime(entry);
 		entry.runtimeSubscription = runtime.subscribe((event) => {
 			this.broadcast(entry.sessionId, event);
 			if (this.shouldPersistEvent(event)) {
@@ -1015,9 +843,7 @@ export class DesktopRuntimeHost {
 		request: DesktopPromptSubmission,
 		options: { trimText?: boolean } = {},
 	): void {
-		if (entry.activeRun || runtime.getState().isStreaming) {
-			throw new Error(`Session '${entry.sessionId}' is already running.`);
-		}
+		this.assertEntryNotRunning(entry);
 
 		const text = options.trimText === false ? request.text : request.text.trim();
 		const capabilityInvocations = request.capabilityInvocations ?? [];
@@ -1069,9 +895,7 @@ export class DesktopRuntimeHost {
 	async compact(sessionId: string, customInstructions?: string): Promise<DesktopAgentSnapshot> {
 		const entry = await this.ensureSessionEntry(sessionId);
 		const runtime = await this.ensureRuntimeForEntry(entry);
-		if (entry.activeRun || runtime.getState().isStreaming) {
-			throw new Error(`Session '${entry.sessionId}' is already running.`);
-		}
+		this.assertEntryNotRunning(entry);
 
 		entry.runStartedAt = new Date().toISOString();
 		const compactInstructions =
@@ -1097,10 +921,8 @@ export class DesktopRuntimeHost {
 	async updateSessionProfile(request: DesktopSessionProfileUpdateRequest): Promise<DesktopAgentSnapshot> {
 		const entry = await this.ensureSessionEntry(request.sessionId);
 		const runtime = await this.ensureRuntimeForEntry(entry);
+		this.assertEntryNotRunning(entry);
 		const state = runtime.getState();
-		if (entry.activeRun || state.isStreaming) {
-			throw new Error(`Session '${entry.sessionId}' is already running.`);
-		}
 
 		const nextProfileModel = await this.resolveSessionProfileModel(state.model, request);
 		const nextModel = nextProfileModel.model;
@@ -1126,9 +948,7 @@ export class DesktopRuntimeHost {
 	async setSessionMode(request: DesktopSessionModeUpdateRequest): Promise<DesktopAgentSnapshot> {
 		const entry = await this.ensureSessionEntry(request.sessionId);
 		const runtime = await this.ensureRuntimeForEntry(entry);
-		if (entry.activeRun || runtime.getState().isStreaming) {
-			throw new Error(`Session '${entry.sessionId}' is already running.`);
-		}
+		this.assertEntryNotRunning(entry);
 
 		runtime.setAgentMode(request.agentMode);
 		if (entry.session) {
@@ -1160,9 +980,7 @@ export class DesktopRuntimeHost {
 	async executePlan(request: DesktopExecutePlanRequest): Promise<DesktopAgentSnapshot> {
 		const entry = await this.ensureSessionEntry(request.sessionId);
 		const runtime = await this.ensureRuntimeForEntry(entry);
-		if (entry.activeRun || runtime.getState().isStreaming) {
-			throw new Error(`Session '${entry.sessionId}' is already running.`);
-		}
+		this.assertEntryNotRunning(entry);
 
 		runtime.setAgentMode("execute");
 		if (entry.session) {
@@ -1435,8 +1253,8 @@ export class DesktopRuntimeHost {
 		}
 
 		const entry = this.entries.get(sessionId);
-		if (entry && this.isEntryRunning(entry)) {
-			throw new Error(`Session '${sessionId}' is already running.`);
+		if (entry) {
+			this.assertEntryNotRunning(entry);
 		}
 		await entry?.saveQueue.catch(() => undefined);
 
@@ -1484,8 +1302,7 @@ export class DesktopRuntimeHost {
 	}
 
 	private async disposeEntry(entry: DesktopRuntimeEntry): Promise<void> {
-		entry.runtimeSubscription?.();
-		entry.runtimeSubscription = undefined;
+		this.unsubscribeRuntime(entry);
 		const runtime = entry.runtime;
 		if (runtime) {
 			if (entry.activeRun || runtime.getState().isStreaming) {
@@ -1495,9 +1312,7 @@ export class DesktopRuntimeHost {
 				} catch {}
 			}
 
-			try {
-				await Promise.resolve(runtime.dispose?.());
-			} catch {}
+			await this.disposeRuntime(runtime);
 		}
 
 		await entry.saveQueue.catch(() => undefined);
@@ -1513,14 +1328,12 @@ export class DesktopRuntimeHost {
 	}
 
 	async subscribe(listener: (event: SerializedAgentEvent) => void): Promise<() => void> {
-		this.listeners.add(listener);
+		const unsubscribe = this.listeners.subscribe(listener);
 		if (!this.persistence) {
 			const entry = await this.ensureStandaloneEntry();
 			await this.ensureRuntimeForEntry(entry);
 		}
 
-		return () => {
-			this.listeners.delete(listener);
-		};
+		return unsubscribe;
 	}
 }

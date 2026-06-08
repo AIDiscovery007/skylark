@@ -538,7 +538,6 @@ function installDesktopAgentBridge(overrides: Partial<DesktopAgentBridge> = {}) 
 		subscribeToSettingsOpenRequests: vi.fn(() => () => undefined),
 		subscribeToSubagentEvents: vi.fn(() => () => undefined),
 		subscribeToTerminalEvents: vi.fn(() => () => undefined),
-		subscribeToWorkspaceRuntimeEvents: vi.fn(() => () => undefined),
 		...overrides,
 		listWorkspaceFiles: overrides.listWorkspaceFiles ?? vi.fn(async () => ({ files: [], truncated: false })),
 		testProviderKey:

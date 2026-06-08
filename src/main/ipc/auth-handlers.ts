@@ -3,8 +3,8 @@ import type { DesktopProviderKeyTestResult, DesktopRuntimeCatalog } from "../../
 import type { DesktopAuthService } from "../auth/desktop-auth-service.ts";
 import { testDesktopProviderKey } from "../auth/provider-key-test-service.ts";
 import type { DesktopProviderKeysStore } from "../storage/provider-keys-store.ts";
+import { pipeSubscriptionToPort } from "../util/port-fanout.ts";
 import type { DesktopBridgeGroupDescriptor } from "./desktop-bridge-registry.ts";
-import { openAuthStream } from "./open-auth-stream.ts";
 import { validateOAuthCode, validateProviderId, validateProviderKey } from "./validate-ipc.ts";
 
 export interface DesktopAuthBridgeGroupOptions {
@@ -82,7 +82,7 @@ export function createAuthBridgeGroup(options: DesktopAuthBridgeGroupOptions): D
 		streams: [
 			{
 				channel: IPC_CHANNELS.openAuthStream,
-				open: (port) => openAuthStream(options.authService, port),
+				open: (port) => pipeSubscriptionToPort((listener) => options.authService.subscribe(listener), port),
 			},
 		],
 	};

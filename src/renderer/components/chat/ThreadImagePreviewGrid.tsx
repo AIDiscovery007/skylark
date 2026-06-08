@@ -1,7 +1,9 @@
 import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { VirtualStack } from "@/components/ui/virtual-stack";
 import { useStreamingPresentationFrame } from "@/hooks/use-streaming-presentation-frame";
+import { isRecord } from "../../../shared/guards.ts";
 import type { ToolCallActivity } from "../../lib/conversation-timeline-projection.ts";
+import { observeElementResize } from "../../lib/resize-observer.ts";
 import { cn } from "../../lib/utils.ts";
 
 const IMAGE_GRID_GAP_PX = 12;
@@ -62,10 +64,6 @@ interface ThreadImagePreviewTileProps {
 interface ThreadImagePreviewVirtualRow {
 	id: string;
 	items: ThreadImagePreviewGridItem[];
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function getStringProperty(value: unknown, ...keys: string[]): string | undefined {
@@ -304,13 +302,7 @@ export function ThreadImagePreviewGrid({
 			});
 		};
 
-		updateColumnCount();
-		if (typeof ResizeObserver === "undefined") {
-			return;
-		}
-		const resizeObserver = new ResizeObserver(updateColumnCount);
-		resizeObserver.observe(viewportElement);
-		return () => resizeObserver.disconnect();
+		return observeElementResize(viewportElement, updateColumnCount);
 	}, [viewportElement]);
 
 	if (presentedItems.length === 0) {

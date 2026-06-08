@@ -9,6 +9,9 @@ This subtree owns the safe bridge between Electron IPC and renderer code.
   access, or other Electron primitives to the renderer.
 - Keep bridge methods aligned with `src/shared/ipc-contract.ts` and registered
   main IPC handlers.
+- Promise-returning bridge methods are generated from the invoke descriptor
+  table in `create-bridge.ts`. When adding one, update the descriptor instead
+  of hand-writing another `ipcRenderer.invoke` wrapper.
 - MessagePort streams should be opened once per stream type and tested for
   event forwarding and unsubscribe behavior.
 - When adding or materially changing bridge surface area, stream behavior,

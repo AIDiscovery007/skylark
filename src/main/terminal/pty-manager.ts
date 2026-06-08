@@ -9,6 +9,7 @@ import type {
 	DesktopTerminalResizeRequest,
 	DesktopTerminalWriteRequest,
 } from "../../shared/types.ts";
+import { Listeners } from "../util/port-fanout.ts";
 
 type PtySpawn = typeof spawn;
 const require = createRequire(import.meta.url);
@@ -128,7 +129,7 @@ export function ensurePtySpawnHelperExecutable(
 
 export class DesktopPtyManager {
 	private readonly activeTerminals = new Map<string, ActiveTerminal>();
-	private listeners = new Set<(event: SerializedTerminalEvent) => void>();
+	private readonly listeners = new Listeners<SerializedTerminalEvent>();
 
 	constructor(
 		private readonly spawnPty: PtySpawn = spawn,
@@ -136,9 +137,7 @@ export class DesktopPtyManager {
 	) {}
 
 	private broadcast(event: SerializedTerminalEvent): void {
-		for (const listener of this.listeners) {
-			listener(event);
-		}
+		this.listeners.emit(event);
 	}
 
 	private getActiveTerminal(terminalId: string): ActiveTerminal {
@@ -259,11 +258,7 @@ export class DesktopPtyManager {
 	}
 
 	subscribe(listener: (event: SerializedTerminalEvent) => void): () => void {
-		this.listeners.add(listener);
-
-		return () => {
-			this.listeners.delete(listener);
-		};
+		return this.listeners.subscribe(listener);
 	}
 
 	private async resolveSpawnInput(request: DesktopTerminalCreateRequest): Promise<{

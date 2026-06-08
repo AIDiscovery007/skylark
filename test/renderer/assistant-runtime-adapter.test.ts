@@ -7,9 +7,7 @@ import {
 	DESKTOP_PROMPT_ATTACHMENTS_METADATA_KEY,
 	DESKTOP_PROPOSED_PLAN_METADATA_KEY,
 	DESKTOP_RUN_ACTIVITY_METADATA_KEY,
-	type DesktopAppendMessage,
 	type DesktopThreadMessage,
-	getAppendMessageText,
 } from "../../src/renderer/lib/assistant-runtime-adapter.ts";
 import type { ToolCallActivity } from "../../src/renderer/lib/conversation-timeline-projection.ts";
 import { DESKTOP_TASK_PROGRESS_TOOL_NAME } from "../../src/shared/types.ts";
@@ -707,44 +705,5 @@ describe("assistant runtime adapter", () => {
 		expect(converted[0]).toMatchObject({ role: "user", content: "completed session" });
 		expect(getParts(converted[1]).map((part) => part.type)).toEqual(["text"]);
 		expect(getParts(converted[1])[0]).toMatchObject({ text: "Completed answer." });
-	});
-
-	it("extracts text from desktop append messages", () => {
-		const message = {
-			content: [
-				{ text: "first", type: "text" },
-				{ text: "second", type: "text" },
-			],
-			createdAt: new Date(0),
-			attachments: [],
-			metadata: {
-				custom: {},
-				steps: undefined,
-				unstable_annotations: undefined,
-				unstable_data: undefined,
-				unstable_state: undefined,
-			},
-			parentId: null,
-			role: "user",
-			runConfig: undefined,
-			sourceId: null,
-		} satisfies DesktopAppendMessage;
-
-		expect(getAppendMessageText(message)).toBe("first\nsecond");
-	});
-
-	it("extracts text from string desktop append messages", () => {
-		const message = {
-			content: "  direct prompt  ",
-			createdAt: new Date(0),
-			attachments: [],
-			metadata: { custom: {} },
-			parentId: null,
-			role: "user",
-			runConfig: undefined,
-			sourceId: null,
-		} satisfies DesktopAppendMessage;
-
-		expect(getAppendMessageText(message)).toBe("direct prompt");
 	});
 });

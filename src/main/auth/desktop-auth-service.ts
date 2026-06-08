@@ -2,8 +2,10 @@ import type { OAuthLoginCallbacks, OAuthPrompt, OAuthSelectPrompt } from "@earen
 import { getOAuthProvider, getOAuthProviders } from "@earendil-works/pi-ai/oauth";
 import { AuthStorage } from "@earendil-works/pi-coding-agent";
 import { shell } from "electron";
+import { getErrorMessage } from "../../shared/errors.ts";
 import type { DesktopOAuthLoginEvent, DesktopOAuthProviderStatus } from "../../shared/types.ts";
 import type { DesktopProviderKeysStore } from "../storage/provider-keys-store.ts";
+import { Listeners } from "../util/port-fanout.ts";
 
 const DESKTOP_OAUTH_PROVIDER_IDS = ["anthropic", "github-copilot", "openai-codex"] as const;
 const DESKTOP_OAUTH_PROVIDER_ID_SET = new Set<string>(DESKTOP_OAUTH_PROVIDER_IDS);
@@ -17,16 +19,12 @@ interface PendingOAuthLogin {
 	rejectManualInput?: (error: Error) => void;
 }
 
-function getErrorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
-
 function isDesktopOAuthProviderId(providerId: string): providerId is DesktopOAuthProviderId {
 	return DESKTOP_OAUTH_PROVIDER_ID_SET.has(providerId);
 }
 
 export class DesktopAuthService {
-	private readonly listeners = new Set<(event: DesktopOAuthLoginEvent) => void>();
+	private readonly listeners = new Listeners<DesktopOAuthLoginEvent>();
 	private pendingLogin?: PendingOAuthLogin;
 
 	constructor(
@@ -36,10 +34,7 @@ export class DesktopAuthService {
 	) {}
 
 	subscribe(listener: (event: DesktopOAuthLoginEvent) => void): () => void {
-		this.listeners.add(listener);
-		return () => {
-			this.listeners.delete(listener);
-		};
+		return this.listeners.subscribe(listener);
 	}
 
 	async getApiKey(provider: string): Promise<string | undefined> {
@@ -265,8 +260,6 @@ export class DesktopAuthService {
 	}
 
 	private emit(event: DesktopOAuthLoginEvent): void {
-		for (const listener of this.listeners) {
-			listener(event);
-		}
+		this.listeners.emit(event);
 	}
 }

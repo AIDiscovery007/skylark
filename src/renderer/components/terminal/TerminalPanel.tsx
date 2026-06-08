@@ -3,6 +3,7 @@ import { MotionConfig, motion } from "motion/react";
 import { type CSSProperties, lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { IconButton } from "@/components/ui/icon-button";
 import { Spinner } from "@/components/ui/spinner";
+import { useDragResize } from "@/hooks/use-drag-resize";
 import type { DesktopTerminalSource } from "../../../shared/types.ts";
 import { activityDrawerTransition, noMotionTransition } from "../../lib/motion.ts";
 import { cn } from "../../lib/utils.ts";
@@ -53,7 +54,6 @@ export function TerminalPanel({
 	openEnvironmentResourceRequest,
 	sessionId,
 }: TerminalPanelProps) {
-	const resizeDragCleanupRef = useRef<(() => void) | undefined>(undefined);
 	const terminalIdCounterRef = useRef(0);
 	const terminalTitleCounterRef = useRef(0);
 	const terminalScopeRef = useRef<string | undefined>(undefined);
@@ -67,6 +67,16 @@ export function TerminalPanel({
 	const resolvedHeight = isOpen ? height : COLLAPSED_TERMINAL_HEIGHT;
 	const terminalScope = `${sessionId ?? "no-session"}:${cwd ?? "no-cwd"}`;
 	const environmentRequestIdRef = useRef<number | undefined>(undefined);
+	const terminalResize = useDragResize({
+		clampValue: clampHeight,
+		onActiveChange: setIsResizing,
+		pointer: {
+			cursor: "ns-resize",
+			getValue: (event) => window.innerHeight - event.clientY,
+		},
+		setValue: setHeight,
+		value: height,
+	});
 
 	const createTerminalTab = useCallback((source: DesktopTerminalSource): TerminalTab => {
 		const idIndex = terminalIdCounterRef.current + 1;
@@ -78,12 +88,6 @@ export function TerminalPanel({
 			source,
 			title: getTerminalTitle(titleIndex),
 			restartToken: 0,
-		};
-	}, []);
-
-	useEffect(() => {
-		return () => {
-			resizeDragCleanupRef.current?.();
 		};
 	}, []);
 
@@ -199,26 +203,6 @@ export function TerminalPanel({
 		});
 	}
 
-	function startResize(): void {
-		resizeDragCleanupRef.current?.();
-		document.body.style.cursor = "ns-resize";
-		setIsResizing(true);
-		const handlePointerMove = (event: PointerEvent) => {
-			const nextHeight = window.innerHeight - event.clientY;
-			setHeight(clampHeight(nextHeight));
-		};
-		const handlePointerUp = () => {
-			document.body.style.cursor = "";
-			setIsResizing(false);
-			window.removeEventListener("pointermove", handlePointerMove);
-			window.removeEventListener("pointerup", handlePointerUp);
-			resizeDragCleanupRef.current = undefined;
-		};
-		window.addEventListener("pointermove", handlePointerMove);
-		window.addEventListener("pointerup", handlePointerUp);
-		resizeDragCleanupRef.current = handlePointerUp;
-	}
-
 	return (
 		<MotionConfig reducedMotion="never">
 			<motion.section
@@ -256,7 +240,7 @@ export function TerminalPanel({
 						<button
 							aria-label="Resize terminal"
 							className="group block h-2 w-full shrink-0 cursor-ns-resize bg-transparent"
-							onPointerDown={startResize}
+							onPointerDown={terminalResize.handlePointerDown}
 							type="button"
 						>
 							<span className="mx-auto mt-1 block h-px w-12 rounded-full bg-transparent transition-colors group-hover:bg-[color:color-mix(in_oklch,var(--foreground)_10%,transparent)]" />
