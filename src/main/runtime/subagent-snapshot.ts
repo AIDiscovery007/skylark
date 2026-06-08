@@ -2,13 +2,14 @@ import { access } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import type { DesktopAgentModel } from "../../shared/serialized-agent-event.ts";
+import type { DesktopAgentDiagnostic, DesktopAgentModel } from "../../shared/serialized-agent-event.ts";
 import type {
 	DesktopEnvironmentResource,
 	DesktopSubagentSnapshot,
 	DesktopSubagentSnapshotRequest,
 } from "../../shared/types.ts";
 import type { JsonEnvironmentResourceStore } from "../environment/environment-resource-store.ts";
+import { isMissingFileError } from "../storage/fs-errors.ts";
 
 interface ReadSubagentSnapshotOptions {
 	environmentResourceStore: Pick<JsonEnvironmentResourceStore, "listResources">;
@@ -79,6 +80,31 @@ function resolveThinkingLevel(value: string | undefined): ThinkingLevel {
 	}
 }
 
+async function readTranscriptEntries(transcriptPath: string, cwd: string) {
+	try {
+		await access(transcriptPath);
+	} catch (error) {
+		if (!isMissingFileError(error)) {
+			throw error;
+		}
+		return {
+			diagnostics: [
+				{
+					type: "warning",
+					message: "Subagent transcript file is not available yet.",
+				},
+			] satisfies DesktopAgentDiagnostic[],
+			entries: [],
+		};
+	}
+
+	const sessionManager = SessionManager.open(transcriptPath, dirname(transcriptPath), cwd);
+	return {
+		diagnostics: [] satisfies DesktopAgentDiagnostic[],
+		entries: sessionManager.getEntries(),
+	};
+}
+
 export async function readSubagentSnapshot({
 	environmentResourceStore,
 	request,
@@ -90,9 +116,7 @@ export async function readSubagentSnapshot({
 		request,
 		subagentSessionsDir,
 	});
-	await access(transcriptPath);
-	const sessionManager = SessionManager.open(transcriptPath, dirname(transcriptPath), resource.cwd);
-	const entries = sessionManager.getEntries();
+	const { diagnostics, entries } = await readTranscriptEntries(transcriptPath, resource.cwd);
 	const messages = entries.flatMap((entry) => (entry.type === "message" ? [entry.message] : []));
 	const latestThinkingEntry = entries.findLast((entry) => entry.type === "thinking_level_change");
 	const latestModelEntry = entries.findLast((entry) => entry.type === "model_change");
@@ -114,7 +138,7 @@ export async function readSubagentSnapshot({
 		sessionId: request.subagentId,
 		cwd: resource.cwd,
 		agentMode: "execute",
-		diagnostics: [],
+		diagnostics,
 		...(model ? { model } : {}),
 		thinkingLevel: resolveThinkingLevel(
 			latestThinkingEntry?.type === "thinking_level_change" ? latestThinkingEntry.thinkingLevel : undefined,
